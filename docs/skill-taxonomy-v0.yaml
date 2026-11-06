@@ -1,0 +1,12 @@
+# 技能分类学 v0 种子（MVP 三技能；粒度问题待学长拍板，见 HANDOFF §4 问题 2）
+# 错误模式标签词表见 docs/data-model.md ErrorPattern；本文件只管技能节点
+skills:
+  - skill_id: tool_param_validation
+    name: 工具参数校验
+    prerequisites: []   # MVP 只存不推（数据模型开放决策 3）
+  - skill_id: multi_step_planning
+    name: 多步任务分解
+    prerequisites: []
+  - skill_id: failure_retry
+    name: 失败重试策略
+    prerequisites: []

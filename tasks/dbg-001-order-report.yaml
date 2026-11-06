@@ -1,0 +1,110 @@
+# 调试向任务 #1（M-1 第 3 步产物；第 4/5 步 A2E / agentevals 试验共用此任务）
+# 字段对齐 docs/data-model.md Task 实体（v0 已定稿）；rubric 为 M0 第 8 步断言执行器的直接输入
+task_id: dbg-001-order-report
+title: 订单数据核对报告（调试向）
+domain: 工具调用与多步任务调试
+primary_skill_id: multi_step_planning
+secondary_skill_ids:
+  - tool_param_validation
+  - failure_retry
+variant_template_id: null
+fault_injection:
+  enabled: true
+  target_tool: fetch_orders
+  behavior: "offset=10 的调用首次返回 HTTP 500，重试后成功（考失败重试策略）"
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部订单（服务端每页最多 10 条，共 20 条）
+  2. 剔除无效订单：amount 字段缺失、为 null 或为负数
+  3. 统计有效订单数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效订单数>, "total_amount": <总金额, 浮点>}
+
+tools:
+  - name: fetch_orders
+    description: '分页拉取订单，返回 {"orders": [...], "total": <总数>}'
+    parameters:
+      - name: offset
+        type: integer
+        required: true
+      - name: limit
+        type: integer
+        required: true
+    mock:
+      source: inline
+      total: 20
+
+  - name: write_report
+    description: 将报告内容写入指定路径
+    parameters:
+      - name: path
+        type: string
+        required: true
+      - name: content
+        type: string
+        required: true
+
+# 20 条订单；o-007 金额为负、o-012 缺 amount 字段、o-018 金额为 null → 有效 17 条
+test_inputs:
+  orders_fixture:
+    - {order_id: o-001, amount: 120.5}
+    - {order_id: o-002, amount: 80}
+    - {order_id: o-003, amount: 45.25}
+    - {order_id: o-004, amount: 200}
+    - {order_id: o-005, amount: 60}
+    - {order_id: o-006, amount: 99.99}
+    - {order_id: o-007, amount: -50}
+    - {order_id: o-008, amount: 150}
+    - {order_id: o-009, amount: 30.5}
+    - {order_id: o-010, amount: 75}
+    - {order_id: o-011, amount: 220.25}
+    - {order_id: o-012, user_id: u-12}          # 缺 amount 字段
+    - {order_id: o-013, amount: 88}
+    - {order_id: o-014, amount: 40}
+    - {order_id: o-015, amount: 310}
+    - {order_id: o-016, amount: 55.5}
+    - {order_id: o-017, amount: 66}
+    - {order_id: o-018, amount: null}           # 金额为 null
+    - {order_id: o-019, amount: 77}
+    - {order_id: o-020, amount: 120}
+  expected:
+    valid_count: 17
+    total_amount: 1837.99
+
+# 最小 trace schema（对齐计划书 4.2-1：不报轨迹只有断言分、无诊断报告）
+# 本地为简化版，M1 定稿时对齐评测底座（OTel GenAI / agentevals 约定）
+trace_requirements:
+  minimum:
+    - agent_id
+    - tool_calls        # 数组，每项含 name / params / status / result_summary
+    - final_status      # completed / crashed / timeout
+
+# 原子断言 5 条：全部可确定性判定（硬分）；LLM judge 的软分在 M0 第 9 步另配
+rubric:
+  - id: R1_file_exists
+    type: file_exists
+    target: /workspace/report.json
+    weight: 1
+  - id: R2_report_correct
+    type: json_field_equals
+    target: /workspace/report.json
+    expected: {valid_count: 17, total_amount: 1837.99}
+    weight: 2
+  - id: R3_retry_evidence
+    type: trace_sequence_contains
+    target: tool_calls
+    expected: "fetch_orders(offset=10) 首次失败后被再次调用且最终成功"
+    detects: 失败重试策略
+    weight: 1
+  - id: R4_no_param_hallucination
+    type: trace_param_schema_valid
+    target: tool_calls
+    expected: "所有工具调用的参数名均在对应工具 schema 内"
+    detects: 参数幻觉
+    weight: 1
+  - id: R5_clean_exit
+    type: trace_final_status
+    target: final_status
+    expected: completed
+    weight: 1

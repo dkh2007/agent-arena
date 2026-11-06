@@ -2,5 +2,6 @@
 # M-1 spike 后按评测底座二选一追加：
 # agentevals==x.y.z   # 若选 agentevals（Apache-2.0）
 # a2e 相关依赖         # 若选 A2E（license 核实通过后）
-fsrs==5.2.4            # py-fsrs，FSRS 官方 Python 实现
+fsrs==6.3.2            # py-fsrs，FSRS 官方 Python 实现（勘误：5.2.4 不存在，官方 5.1.3 后直接 6.0.0）
 pytest==8.4.2
+pyyaml==6.0.3          # 任务 YAML 解析
