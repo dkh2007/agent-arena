@@ -1,11 +1,122 @@
-# 数据模型 v0（步骤 2 填充定稿）
+# 数据模型 v0 草案（M-1 第 2 步）
 
-> 状态：占位。M-1 第 2 步定稿五个实体的字段与关系，此后任何字段变更视为破坏性变更，走单独一步并更新本文件。
+> 状态：**v0 定稿（2026-11-06 小D 拍板：骨架 5 实体扩编至 7 实体）**。此后任何字段变更视为破坏性变更，走单独一步并更新本文件。
+> 约定：字段名 snake_case（Python/SQLite）；实体名 PascalCase；字段变更视为破坏性变更，走单独一步并更新本文件。
 
-| 实体 | 职责 | 字段 |
+## 0. 设计原则
+
+1. **任务定义本体存 YAML 文件**（`tasks/<task_id>.yaml`：描述 + 原子 rubric + 测试输入 + 故障注入配置），数据库只存元数据与运行时状态——任务可走 Git 版本锁定（借鉴 PinchBench 的 Git 哈希锁）。
+2. **掌握度模型 = FSRS 状态，不另设 mastery 表**。技能节点掌握度即 py-fsrs Card 的 D/S/R，推论：一切"掌握度"查询都走 UserSkillState，不引入第二套掌握度口径。
+3. **错误模式标签词表先行**：`ErrorPattern.label` 全局唯一，新增标签先入词表再使用（对齐 HANDOFF 6.1）。
+4. SQLite 起步，字段类型按 SQLite 可存 JSON 的现实设计（trace/diagnosis 存 JSON 文本）。
+
+## 1. 骨架五实体
+
+### User（学习者）
+
+| 字段 | 类型 | 说明 |
 |---|---|---|
-| User | 学习者 | 【步骤 2 定稿】 |
-| Task | 情景任务（YAML 定义 + rubric） | 【步骤 2 定稿】 |
-| Skill | 技能图谱节点 | 【步骤 2 定稿】 |
-| ErrorPattern | 错误模式（→ 技能缺口映射） | 【步骤 2 定稿】 |
-| ReviewItem | 复习项（FSRS 调度对象 = 可执行任务） | 【步骤 2 定稿】 |
+| user_id | TEXT PK | UUID |
+| display_name | TEXT | 匿名占位 |
+| agent_endpoint_url | TEXT | 黑盒提交的 Agent 服务地址（注册填，单次提交可覆盖） |
+| daily_review_cap | INTEGER, 默认 2 | 每日复习队列上限（风险对策 4.2-5） |
+| created_at | DATETIME | |
+
+### Task（情景任务，元数据）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| task_id | TEXT PK | 与 YAML 文件名一致 |
+| title | TEXT | |
+| primary_skill_id | TEXT FK→Skill | 主考察技能 |
+| secondary_skill_ids | JSON（FK 数组，可空） | 次要技能 |
+| variant_template_id | TEXT, 可空 | 同模板 = 同变体组；FSRS 调度的是变体实例 |
+| fault_injection | BOOLEAN | 是否含故障注入位 |
+| git_hash | TEXT | 该版本任务的 Git 锁 |
+| rubric_count | INTEGER | 原子断言条数（冗余存，免解析 YAML） |
+| created_at | DATETIME | |
+
+### Skill（技能节点，全局共享，不含用户状态）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| skill_id | TEXT PK | |
+| name | TEXT | 如"工具参数校验" |
+| prerequisites | JSON（FK 数组，可空） | 先决关系；MVP 只存不推（pyBKT 升级时启用） |
+| created_at | DATETIME | |
+
+> 注意：Skill 是全局分类学节点，**不挂任何用户状态**——这是新增 UserSkillState 的原因。
+
+### ErrorPattern（错误模式）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| pattern_id | TEXT PK | |
+| label | TEXT UNIQUE | 词表标签：参数幻觉 / 工具选择错误 / 循环不收敛 / 未检查返回值 / 命名不一致 / 目录缺失 / 日期陷阱 … |
+| description | TEXT | 判定口径 |
+| detection_rule | JSON | 检测来源：原子断言 id / judge prompt id / trace 分析规则 id，三者其一 |
+| mapped_skill_ids | JSON（FK 数组） | **错误模式 → 技能缺口映射表（自研核心）**，一个模式可映射多个缺口 |
+| created_at | DATETIME | |
+
+### ReviewItem（复习项 = 可执行任务实例）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| review_id | TEXT PK | |
+| user_id | TEXT FK→User | |
+| skill_id | TEXT FK→Skill | |
+| kind | TEXT enum | `variant`（同技能新变体）/ `fault_injection`（注入故障调试题）/ `timed`（限时练习）/ `replay`（错题重放） |
+| task_id | TEXT FK→Task, 可空 | replay 引用原任务；variant 由模板生成后回填 |
+| source_submission_id | TEXT FK→Submission, 可空 | replay 的失败来源 |
+| due | DATETIME | py-fsrs 输出的到期时间 |
+| status | TEXT enum | `pending` / `done` / `skipped` |
+| created_at | DATETIME | |
+
+## 2. 运行时实体（2026-11-06 拍板采纳）
+
+### 5.1 Submission（评测记录）——诊断报告与分数的落库处
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| submission_id | TEXT PK | |
+| user_id | TEXT FK→User | |
+| task_id | TEXT FK→Task | |
+| task_git_hash | TEXT | 提交时锁定的任务版本 |
+| agent_endpoint_url | TEXT | 本次评测实际调用的端点快照 |
+| trace | JSON | OTel GenAI 标准轨迹（最小 trace schema 为提交格式一部分） |
+| assert_score | REAL | 硬分 = 原子 rubric 通过率 |
+| judge_scores | JSON | 双评软分数组 |
+| judge_agreement | REAL, 可空 | 双评一致率（4.2-4 机制） |
+| detected_patterns | JSON（FK 数组） | 轨迹分析检出的错误模式 |
+| diagnosis | JSON | 错误诊断报告（含按断言/judge 归类的混合呈现） |
+| fsrs_rating | INTEGER 1–4 | 本次表现映射成的 FSRS 评分，用于更新卡片 |
+| created_at | DATETIME | |
+
+### 5.2 UserSkillState（用户×技能的 FSRS 卡片宿主）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| user_id | TEXT PK(联合) | 联合主键 (user_id, skill_id) |
+| skill_id | TEXT PK(联合) | |
+| fsrs_card | JSON | py-fsrs Card 序列化（due / stability / difficulty / last_review…） |
+| updated_at | DATETIME | |
+
+> FSRS 卡片粒度 = **(用户, 技能)** 二元组：同一技能每用户一张卡。首次提交产生检出错误模式后初始化卡片；此后每次 Submission 的 `fsrs_rating` 驱动 `review_card(card, rating)` 更新。技能掌握度 = 本表 R 值（可提取性），无第二口径。
+> ReviewLog（py-fsrs 的复习日志）**后置**：M0 不建表，复习事件可从 Submission + ReviewItem 重建；M1 接入参数优化时再加。
+
+## 3. 关系一览
+
+```
+User ──1:N── Submission ──N:1── Task ──N:1── Skill（primary）
+  │                │  N:N→ ErrorPattern          │
+  │                └─ source_submission_id ←─────┼── ReviewItem ──N:1── Skill
+  └──1:N── UserSkillState ──N:1── Skill          └── ErrorPattern ──N:N── Skill（mapped_skill_ids）
+```
+
+一次闭环的数据流：提交 → Submission（trace+分数+检出模式）→ detected_patterns ∘ mapped_skill_ids 定位技能缺口 → 初始化/更新 UserSkillState 卡片（fsrs_rating）→ 生成 ReviewItem（due）→ 排程层读 due 集合产出建议排期。
+
+## 4. 开放决策记录
+
+1. **运行时实体扩编**：✅ 已裁决（2026-11-06）——采纳扩到 7（+Submission、+UserSkillState）。
+2. **fsrs_rating 映射**（断言通过率 → FSRS 1–4）：草案假设 ≥0.9→4 / ≥0.7→3 / ≥0.4→2 / <0.4→1。**标为假设**，dogfooding 后校准；学长若认为应纳入 judge 软分权重，在此改。
+3. **prerequisites 先决关系**：MVP 只存不推（推荐层是规则表，用不到图遍历）；留字段是为 pyBKT 升级免迁移。
