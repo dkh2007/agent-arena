@@ -1,5 +1,8 @@
 # 调试向任务 #1（M-1 第 3 步产物；第 4/5 步 A2E / agentevals 试验共用此任务）
-# 字段对齐 docs/data-model.md Task 实体（v0 已定稿）；rubric 为 M0 第 8 步断言执行器的直接输入
+#
+# 【资产边界，2026-11-06 评审第 7 条】本文件是"评测任务资产"（evaluation asset），不是数据库 Task 实体：
+#   DB Task 表只存核心元数据（task_id/title/skills/yaml_path/git_hash）；
+#   rubric / test_inputs / trace_requirements / fault_injection 等评测配置只存在于本 YAML，不入库（见 data-model 开放决策 4）。
 task_id: dbg-001-order-report
 title: 订单数据核对报告（调试向）
 domain: 工具调用与多步任务调试
@@ -8,10 +11,18 @@ secondary_skill_ids:
   - tool_param_validation
   - failure_retry
 variant_template_id: null
+
 fault_injection:
   enabled: true
   target_tool: fetch_orders
-  behavior: "offset=10 的调用首次返回 HTTP 500，重试后成功（考失败重试策略）"
+  retry_scope: agent            # 重试主体=Agent；mock 绝不内部自动重试（评审第 2 条，P0）
+  match:
+    offset: 10                  # 只按 offset 匹配：Agent 用任何合法 limit 分页，第二页起点都会命中
+  failures:
+    - attempt: 1                # 该 (tool, match) 的第 1 次调用失败
+      http_status: 500
+      error: internal_error
+  then: success                 # 之后调用正常返回
 
 scenario: |
   你是一个数据助理 Agent，请完成以下工作：
@@ -28,12 +39,20 @@ tools:
       - name: offset
         type: integer
         required: true
+        minimum: 0
       - name: limit
         type: integer
         required: true
+        minimum: 1
+        maximum: 10
+    additional_properties: false    # 出现 schema 外参数 → R4 判失败（评审第 6 条）
     mock:
-      source: inline
+      source: fixture_ref
+      fixture: test_inputs.orders_fixture
       total: 20
+      pagination:
+        page_size_max: 10
+        semantics: 'offset 为 0 起始下标，返回 [offset, offset+limit) 区间的订单；limit>10 返回错误 invalid_limit；offset 越界返回空列表；返回结构固定为 {"orders": [...], "total": 20}'
 
   - name: write_report
     description: 将报告内容写入指定路径
@@ -44,6 +63,7 @@ tools:
       - name: content
         type: string
         required: true
+    additional_properties: false
 
 # 20 条订单；o-007 金额为负、o-012 缺 amount 字段、o-018 金额为 null → 有效 17 条
 test_inputs:
@@ -72,35 +92,55 @@ test_inputs:
     valid_count: 17
     total_amount: 1837.99
 
-# 最小 trace schema（对齐计划书 4.2-1：不报轨迹只有断言分、无诊断报告）
-# 本地为简化版，M1 定稿时对齐评测底座（OTel GenAI / agentevals 约定）
+# 最小 trace schema（计划书 4.2-1 的准确含义：不上报 trace → 轨迹类断言 R3/R4/R5 判 0 且无诊断报告；
+# R1/R2 为结果断言，不依赖 trace 仍可判）
 trace_requirements:
   minimum:
-    - agent_id
-    - tool_calls        # 数组，每项含 name / params / status / result_summary
-    - final_status      # completed / crashed / timeout
+    agent_id: required
+    final_status:
+      required: true
+      enum: [completed, crashed, timeout]
+    tool_calls:
+      required: true
+      item_fields: [call_index, name, params, status, http_status, error, result_summary]
+      status_enum: [success, error, timeout]
+      note: 'call_index 平台侧编号（1 起）；http_status/error 仅 status=error 必填，result_summary 仅 success 必填；attempt 不要求上报——由平台从同名同参调用序列推导（评审第 3 条的修正采纳）'
 
-# 原子断言 5 条：全部可确定性判定（硬分）；LLM judge 的软分在 M0 第 9 步另配
+# 原子断言 5 条：R1/R2 为结果断言（不依赖 trace），R3/R4/R5 为轨迹断言（依赖最小 trace）。
+# 全部结构化、可确定性判定（硬分）；LLM judge 软分在 M0 第 9 步另配。
+# 评分归一化说明：文件不存在时 R1、R2 同时失败属预期语义（重复扣分接受），M0 执行器定稿时统一处理依赖折叠。
 rubric:
   - id: R1_file_exists
     type: file_exists
     target: /workspace/report.json
+    options:
+      non_empty: true           # 存在且非空（评审第 8 条）
     weight: 1
   - id: R2_report_correct
     type: json_field_equals
     target: /workspace/report.json
     expected: {valid_count: 17, total_amount: 1837.99}
+    compare: subset             # 报告允许含额外字段
+    tolerance:
+      total_amount: 0.01        # 浮点容差（评审第 4 条，P0）
     weight: 2
   - id: R3_retry_evidence
-    type: trace_sequence_contains
+    type: trace_sequence
     target: tool_calls
-    expected: "fetch_orders(offset=10) 首次失败后被再次调用且最终成功"
+    expected:
+      ordered: true
+      calls:
+        - {name: fetch_orders, params_match: {offset: 10}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset: 10}, status: success}
+      note: 'params_match 为子集匹配：只锁"第二页起点 offset=10"，不限定 limit——Agent 用 limit<=10 的任何合法分页都应判过（对评审 R3 建议的修正）'
     detects: 失败重试策略
     weight: 1
   - id: R4_no_param_hallucination
     type: trace_param_schema_valid
     target: tool_calls
-    expected: "所有工具调用的参数名均在对应工具 schema 内"
+    expected:
+      schema_ref: tools         # 引用本文件 tools 的 parameters + additional_properties
+      check_types: true         # 同时校验参数值类型与范围（minimum/maximum）
     detects: 参数幻觉
     weight: 1
   - id: R5_clean_exit

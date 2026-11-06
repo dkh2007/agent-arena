@@ -1,6 +1,6 @@
-# 数据模型 v0 草案（M-1 第 2 步）
+# 数据模型 v0.1（M-1 第 2 步）
 
-> 状态：**v0 定稿（2026-11-06 小D 拍板：骨架 5 实体扩编至 7 实体）**。此后任何字段变更视为破坏性变更，走单独一步并更新本文件。
+> 状态：**v0.1（2026-11-06 小D 拍板扩编至 7 实体；同日按外部评审第 7 条增补 Task.yaml_path 与资产边界，见开放决策 4）**。此后任何字段变更视为破坏性变更，走单独一步并更新本文件。
 > 约定：字段名 snake_case（Python/SQLite）；实体名 PascalCase；字段变更视为破坏性变更，走单独一步并更新本文件。
 
 ## 0. 设计原则
@@ -27,6 +27,7 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | task_id | TEXT PK | 与 YAML 文件名一致 |
+| yaml_path | TEXT | 评测任务资产路径（tasks/<task_id>.yaml）——rubric/测试输入/故障注入等评测配置**只存 YAML，不入库**（资产边界见开放决策 4） |
 | title | TEXT | |
 | primary_skill_id | TEXT FK→Skill | 主考察技能 |
 | secondary_skill_ids | JSON（FK 数组，可空） | 次要技能 |
@@ -120,3 +121,4 @@ User ──1:N── Submission ──N:1── Task ──N:1── Skill（pri
 1. **运行时实体扩编**：✅ 已裁决（2026-11-06）——采纳扩到 7（+Submission、+UserSkillState）。
 2. **fsrs_rating 映射**（断言通过率 → FSRS 1–4）：草案假设 ≥0.9→4 / ≥0.7→3 / ≥0.4→2 / <0.4→1。**标为假设**，dogfooding 后校准；学长若认为应纳入 judge 软分权重，在此改。
 3. **prerequisites 先决关系**：MVP 只存不推（推荐层是规则表，用不到图遍历）；留字段是为 pyBKT 升级免迁移。
+4. **评测资产 vs DB 实体边界**（2026-11-06 外部评审第 7 条采纳）：`tasks/<task_id>.yaml` 是**评测任务资产**（rubric/测试输入/故障注入/trace 要求/分页 mock 语义），只走 Git 版本控制；Task 表只存核心元数据 + `yaml_path` + `git_hash` 指向资产。`secondary_skill_ids` 等多对多关系 v0 用 JSON 数组存（SQLite 现实约束），M1 出现按技能反查任务的需求时再建关联表——届时为破坏性变更，单独一步。
