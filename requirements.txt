@@ -1,0 +1,6 @@
+# 版本全部 pin 死（协作规范 3.3）；引入新库前先核 license 并记入计划书开源边界表
+# M-1 spike 后按评测底座二选一追加：
+# agentevals==x.y.z   # 若选 agentevals（Apache-2.0）
+# a2e 相关依赖         # 若选 A2E（license 核实通过后）
+fsrs==5.2.4            # py-fsrs，FSRS 官方 Python 实现
+pytest==8.4.2
