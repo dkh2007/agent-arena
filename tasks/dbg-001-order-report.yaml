@@ -17,7 +17,7 @@ fault_injection:
   target_tool: fetch_orders
   retry_scope: agent            # 重试主体=Agent；mock 绝不内部自动重试（评审第 2 条，P0）
   match:
-    offset: 10                  # 只按 offset 匹配：Agent 用任何合法 limit 分页，第二页起点都会命中
+    offset: 10                  # 匹配范围由 target_tool 限定；offset=10 是分页游标位置，无论 Agent 用何种合法子页大小都命中（评审第 5 条措辞修正）
   failures:
     - attempt: 1                # 该 (tool, match) 的第 1 次调用失败
       http_status: 500
@@ -26,7 +26,7 @@ fault_injection:
 
 scenario: |
   你是一个数据助理 Agent，请完成以下工作：
-  1. 使用工具 fetch_orders 分页拉取全部订单（服务端每页最多 10 条，共 20 条）
+  1. 使用工具 fetch_orders 分页拉取全部订单（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 20 条订单）
   2. 剔除无效订单：amount 字段缺失、为 null 或为负数
   3. 统计有效订单数量与总金额
   4. 调用 write_report 将结果写入 /workspace/report.json，
@@ -50,9 +50,14 @@ tools:
       source: fixture_ref
       fixture: test_inputs.orders_fixture
       total: 20
-      pagination:
+      pagination:                     # 结构化语义（评审第 4 条），执行器可直接驱动 mock
         page_size_max: 10
-        semantics: 'offset 为 0 起始下标，返回 [offset, offset+limit) 区间的订单；limit>10 返回错误 invalid_limit；offset 越界返回空列表；返回结构固定为 {"orders": [...], "total": 20}'
+        offset_base: 0
+        range: half_open              # 返回 [offset, offset+limit) 区间
+        on_limit_exceed: error
+        error_code: invalid_limit
+        on_offset_out_of_range: empty_list
+        response_shape: {orders: [], total: 20}
 
   - name: write_report
     description: 将报告内容写入指定路径
@@ -96,10 +101,8 @@ test_inputs:
 # R1/R2 为结果断言，不依赖 trace 仍可判）
 trace_requirements:
   minimum:
-    agent_id: required
-    final_status:
-      required: true
-      enum: [completed, crashed, timeout]
+    agent_id: {required: true}                          # 字段风格统一为对象式（评审第 6 条）
+    final_status: {required: true, enum: [completed, crashed, timeout]}
     tool_calls:
       required: true
       item_fields: [call_index, name, params, status, http_status, error, result_summary]
@@ -129,6 +132,7 @@ rubric:
     target: tool_calls
     expected:
       ordered: true
+      allow_interleaved: true   # 两次 offset=10 调用之间允许穿插其他工具调用（评审第 2 条）——匹配器按子序列判定，不要求严格相邻
       calls:
         - {name: fetch_orders, params_match: {offset: 10}, status: error, http_status: 500}
         - {name: fetch_orders, params_match: {offset: 10}, status: success}
@@ -141,6 +145,7 @@ rubric:
     expected:
       schema_ref: tools         # 引用本文件 tools 的 parameters + additional_properties
       check_types: true         # 同时校验参数值类型与范围（minimum/maximum）
+      mode: all_calls_must_be_valid   # 判定模式（评审第 1 条）：任一次调用违规即失败——参数幻觉考"有没有编出界外参数"，试探 limit=20 本身即违规
     detects: 参数幻觉
     weight: 1
   - id: R5_clean_exit

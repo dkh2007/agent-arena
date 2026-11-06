@@ -1,4 +1,4 @@
-# 任务 YAML 结构校验（M-1 第 3 步验证沉淀；2026-11-06 按外部评审 P0 修订同步更新）
+# 任务 YAML 结构校验（M-1 第 3 步验证沉淀；2026-11-06 按外部评审 P0/P1 修订同步更新）
 # 这些用例同时是后续变体模板生成器与断言执行器的约束来源
 import math
 from pathlib import Path
@@ -77,12 +77,23 @@ def test_r3_structured_no_natural_language():
     # 修正点：params_match 子集匹配，不限定 limit（合法分页方式不误伤）
     assert calls[0]["params_match"] == {"offset": 10}
     assert "limit" not in calls[0]["params_match"]
+    # P1 第 2 条：允许穿插其他调用，匹配器按子序列判定
+    assert r3["expected"]["allow_interleaved"] is True
 
 
-def test_r4_schema_ref_structured():
+def test_r4_mode_and_schema_ref():
     r4 = _rubric_by_id()["R4_no_param_hallucination"]
     assert r4["expected"]["schema_ref"] == "tools"
     assert r4["expected"]["check_types"] is True
+    # P1 第 1 条：判定模式必须显式——任一次违规即失败（参数幻觉的严格语义）
+    assert r4["expected"]["mode"] == "all_calls_must_be_valid"
+
+
+def test_scenario_states_limit_error():
+    """P1 第 3 条：scenario 必须明说 limit>10 会报错，不能诱导 Agent 合理试探后踩 R4。"""
+    scenario = _task()["scenario"]
+    assert "invalid_limit" in scenario
+    assert "1 到 10" in scenario
 
 
 def test_retry_scope_is_agent():
@@ -107,8 +118,15 @@ def test_mock_fixture_and_pagination_semantics():
     mock = _task()["tools"][0]["mock"]
     assert mock["source"] == "fixture_ref"
     assert mock["fixture"] == "test_inputs.orders_fixture"
-    assert mock["pagination"]["page_size_max"] == 10
-    assert "invalid_limit" in mock["pagination"]["semantics"]  # limit>10 行为已定义
+    # P1 第 4 条：分页语义已结构化，执行器可直接驱动
+    pg = mock["pagination"]
+    assert pg["page_size_max"] == 10
+    assert pg["offset_base"] == 0
+    assert pg["range"] == "half_open"
+    assert pg["on_limit_exceed"] == "error"
+    assert pg["error_code"] == "invalid_limit"
+    assert pg["on_offset_out_of_range"] == "empty_list"
+    assert pg["response_shape"] == {"orders": [], "total": 20}
 
 
 def test_tool_schema_bounds_for_r4():
