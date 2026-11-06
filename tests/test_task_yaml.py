@@ -84,7 +84,10 @@ def test_r3_structured_no_natural_language():
 def test_r4_mode_and_schema_ref():
     r4 = _rubric_by_id()["R4_no_param_hallucination"]
     assert r4["expected"]["schema_ref"] == "tools"
-    assert r4["expected"]["check_types"] is True
+    # 第 5 轮 P2-1：check_schema 语义覆盖 required/type/range/additional_properties，
+    # 旧名 check_types 不得残留（漏传必填参数必须可判）
+    assert r4["expected"]["check_schema"] is True
+    assert "check_types" not in r4["expected"]
     # P1 第 1 条：判定模式必须显式——任一次违规即失败（参数幻觉的严格语义）
     assert r4["expected"]["mode"] == "all_calls_must_be_valid"
 
@@ -126,7 +129,11 @@ def test_mock_fixture_and_pagination_semantics():
     assert pg["on_limit_exceed"] == "error"
     assert pg["error_code"] == "invalid_limit"
     assert pg["on_offset_out_of_range"] == "empty_list"
-    assert pg["response_shape"] == {"orders": [], "total": 20}
+    assert pg["response_shape"] == {"orders": []}
+    assert pg["total_source"] == "fixture_length"
+    # 第 5 轮 P2-2：total 单一真相源 = fixture 条数，任何硬编码 total 都不得残留
+    assert "total" not in mock
+    assert "total" not in pg["response_shape"]
 
 
 def test_tool_schema_bounds_for_r4():

@@ -49,7 +49,6 @@ tools:
     mock:
       source: fixture_ref
       fixture: test_inputs.orders_fixture
-      total: 20
       pagination:                     # 结构化语义（评审第 4 条），执行器可直接驱动 mock
         page_size_max: 10
         offset_base: 0
@@ -57,7 +56,8 @@ tools:
         on_limit_exceed: error
         error_code: invalid_limit
         on_offset_out_of_range: empty_list
-        response_shape: {orders: [], total: 20}
+        response_shape: {orders: []}
+        total_source: fixture_length  # 第 5 轮 P2-2：total 一律从 fixture 条数推导，不硬编码——fixture 改条数无需同步改这里
 
   - name: write_report
     description: 将报告内容写入指定路径
@@ -144,7 +144,7 @@ rubric:
     target: tool_calls
     expected:
       schema_ref: tools         # 引用本文件 tools 的 parameters + additional_properties
-      check_types: true         # 同时校验参数值类型与范围（minimum/maximum）
+      check_schema: true        # 语义覆盖 required/type/range/additional_properties 四项（第 5 轮 P2-1：原名 check_types 未覆盖"漏传必填参数"）
       mode: all_calls_must_be_valid   # 判定模式（评审第 1 条）：任一次调用违规即失败——参数幻觉考"有没有编出界外参数"，试探 limit=20 本身即违规
     detects: 参数幻觉
     weight: 1
