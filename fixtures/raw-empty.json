@@ -1,0 +1,71 @@
+{
+  "name": "empty",
+  "description": "地板分哨兵：什么都没做（0 次工具调用）就正常退出。R4 的 mode=all_calls_must_be_valid 对空集合平凡为真 → pass；R5 completed → pass。实测得 2/6 = 0.333，用来量出「不干活也有三成」这层地板，是 P6（分数分辨率不足）的最硬证据。注意它与 raw-no-file 的对比：本文件 skill_gaps 非空（R3 的 no_retry 有归属），而做了活却没交产物的 raw-no-file 反而是空的——做得更多、诊断更少，即 P5。",
+  "submission": {
+    "submission_id": "sub-demo-empty",
+    "task_id": "dbg-001-order-report",
+    "task_git_hash": "ac23954",
+    "agent_id": "demo-agent-empty",
+    "evaluated_at": "2026-11-07T06:40:00Z",
+    "invoke": { "duration_ms": 1200, "timeout_seconds": 60, "platform_retries": 0 }
+  },
+  "trace_audit": {
+    "reported": true,
+    "schema_valid": true,
+    "invalid_reasons": [],
+    "call_count": 0,
+    "final_status": "completed"
+  },
+  "assertion_results": [
+    {
+      "id": "R1_file_exists",
+      "state": "fail",
+      "error_patterns": ["no_output_file"],
+      "evidence": {
+        "observed": { "exists": false, "size_bytes": 0 },
+        "expected": { "exists": true, "non_empty": true }
+      },
+      "note": "全程 0 次调用，既没拉数据也没写文件"
+    },
+    {
+      "id": "R2_report_correct",
+      "state": "blocked",
+      "reason_code": "dependency_blocked",
+      "evidence": {
+        "observed": null,
+        "expected": { "valid_count": 17, "total_amount": 1837.99 },
+        "extra": { "blocked_by": ["R1_file_exists"], "would_be": "无产物，内容无从判定" }
+      }
+    },
+    {
+      "id": "R3_retry_evidence",
+      "state": "fail",
+      "error_patterns": ["no_retry"],
+      "evidence": {
+        "observed": { "offsets": [], "statuses": [] },
+        "expected": {
+          "ordered": true,
+          "calls": [
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "error", "http_status": 500 },
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "success" }
+          ]
+        },
+        "extra": { "probe": "calls[?name=='fetch_orders'].params.offset", "matched_pairs": 0 }
+      }
+    },
+    {
+      "id": "R4_no_param_hallucination",
+      "state": "pass",
+      "evidence": {
+        "observed": { "violations": [], "checked_calls": 0 },
+        "expected": { "mode": "all_calls_must_be_valid" },
+        "extra": { "note": "零调用：全称命题平凡为真，这是设计缺陷而非实现错误" }
+      }
+    },
+    {
+      "id": "R5_clean_exit",
+      "state": "pass",
+      "evidence": { "observed": "completed", "expected": "completed" }
+    }
+  ]
+}
