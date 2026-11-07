@@ -35,7 +35,7 @@ if exist "%A2EPY%" (
 
 echo.
 echo ==================================================
-echo [3/4] diagnosis report DTO - fixtures -> JSON Schema
+echo [3/4] diagnosis report DTO - fixtures checked against JSON Schema
 echo ==================================================
 rem Each fixture is a fake dbg-001 submission; a non-zero exit means the report
 rem violated an invariant (not just "ugly output"), see docs/diagnosis-report-schema.md
