@@ -129,14 +129,25 @@ trace_requirements:
 # ============================================================================
 scoring:
   score:
-    formula: weighted_pass_ratio
-    denominator: fixed_at_total_weight   # 恒为全部断言权重之和（本任务 6），不因断言缺失而缩小
-    total_weight: 6
-    contribution:                        # 各状态对分子（得分）的贡献
-      pass: weight                       # 通过：计满权重
-      fail: 0                            # 有证据的失败：0
-      blocked: 0                         # 前置未通过、无法判定：0（若从分母剔除会让"缺产物"反而虚高）
-      unscored: 0                        # 依赖数据缺失（trace 未上报）：0（堵住"不报 trace 稳拿分"）
+    formula: gated_weighted_pass_ratio   # 两段式：先过门禁，再算积分
+    # ── 第一段 gate（门禁）：不计分，只决定"这份提交有没有资格被评分" ──
+    gate:
+      source: rubric_gate                # 断言从 rubric_gate 取
+      disqualified_if: any_gate_failed   # 任一门禁 fail ⇒ disqualified（ratio 记 0）
+      disqualify_ratio: 0                # 不合格时的总分。不用"封顶 0.3"之类魔数：封顶值无依据，评委会问为什么是 0.3
+      on_unscored: do_not_disqualify     # 门禁本身无法判定（如 trace 缺失致 R5 无据）时不拦，只把该门禁记 unscored
+    # ── 第二段 credit（积分）：这一层的分母才是分数的分母 ──
+    credit:
+      source: rubric_credit
+      denominator: fixed_at_credit_total_weight  # 恒为 credit 权重之和（本任务 4），不因断言缺失而缩小（P4 修正）
+      total_weight: 4                    # = R2(2) + R3(1) + R4(1)
+      contribution:                      # 各状态对分子（得分）的贡献
+        pass: weight                     # 通过：计满权重
+        fail: 0                          # 有证据的失败：0
+        blocked: 0                       # 前置未通过、无法判定：0（若从分母剔除会让"缺产物"反而虚高）
+        unscored: 0                      # 依赖数据缺失（trace 未上报）：0（堵住"不报 trace 稳拿分"）
+    # 口径：ratio = gate 通过 ? credit_pass_weight / 4 : 0
+    #       门禁失败时**照常判定并记录 credit 断言**（诊断信息不因 0 分而丢弃），只是不计入分数。
   attribution:                           # 是否参与掌握度更新 / 是否产出错误模式
     pass: {counts_toward_mastery: true, emit_error_patterns: false}
     fail: {counts_toward_mastery: true, emit_error_patterns: true}
@@ -146,12 +157,18 @@ scoring:
                reason: trace 类依赖数据缺失；诊断报告写"未评分"，不写"0 分"}
   # P4 待拍板：分母是否恒定为 total_weight（当前取"固定"）；P2 一旦改口径需同步此处
 
-# 原子断言 5 条：R1/R2 为结果断言（不依赖 trace），R3/R4/R5 为轨迹断言（依赖最小 trace）。
-# 全部结构化、可确定性判定（硬分）；LLM judge 软分在 M0 第 9 步另配。
-# 第 6 轮新增每条的 skill_id / error_patterns / depends_on：
+# 原子断言 5 条，按 P6 拍板结果分为两层（不是靠注释区分，是两个数组，执行器先跑 gate 再跑 credit）：
+#   rubric_gate   R1 交产物 / R5 正常退出 —— 门禁：不计分，未过则整份提交 ratio=0
+#   rubric_credit R2 结果正确 / R3 重试证据 / R4 无参数幻觉 —— 积分：分母恒为 4
+# 为什么要分：旧版把两类混在一个数组按权重加，导致"什么都不做"也拿 2/6=33%（R4 的全称命题对空集
+# 平凡为真 + R5 只要没崩就是 completed），且空提交/无文件/假重试/无 trace 四份质量递进的提交
+# 全落在 0.5 附近，分数序塌陷。详见 docs/review-response-v1.md §6。
+#
+# 每条的 skill_id / error_patterns / depends_on：
 #   归因以 skill_id + error_patterns 为准，detects 仅供诊断报告展示（避免两处真相源漂移）。
-#   skill_id 为 null 表示"该断言只计分不归因"——当前三技能分类学里没有对应节点（P5 待拍板）。
-rubric:
+#   skill_id 为 null 表示"该断言只计分不归因"——当前三技能分类学里没有对应节点（P5 拍板：走 gate
+#   通道，不加第 4 技能；门禁失败的归因走 report.score.disqualifying_assertions + unattributed_patterns）。
+rubric_gate:
   - id: R1_file_exists
     type: file_exists
     target: /workspace/report.json
@@ -165,7 +182,25 @@ rubric:
       cases:
         - {match: {exists: false}, pattern: no_output_file}
         - {match: {exists: true, non_empty: false}, pattern: empty_output_file}
-    weight: 1
+    on_fail: disqualify         # 门禁：不看权重，未过即整份不合格（没有产物，任务就没完成）
+  - id: R5_clean_exit
+    type: trace_final_status
+    target: final_status
+    expected: completed
+    depends_on: []
+    skill_id: null              # 任务完成度：三技能分类学无对应节点 → 走 gate 通道（P5）
+    error_patterns: [task_crashed, task_timeout]
+    error_pattern_detection:
+      probe: final_status
+      cases:
+        - {match: {final_status: crashed}, pattern: task_crashed}
+        - {match: {final_status: timeout}, pattern: task_timeout}
+    on_fail: disqualify
+    # 注意：本条的 type 是 trace_*，trace 未上报时会被强制改写为 unscored。门禁 unscored 不拦
+    # （无法证明不合格就不判不合格），此时 credit 层的 R3/R4 同样 unscored，学生拿不到分，绕不过去。
+
+# ── 积分层：分母恒为 4（R2=2 + R3=1 + R4=1）────────────────────────────────
+rubric_credit:
   - id: R2_report_correct
     type: json_field_equals
     target: /workspace/report.json
@@ -226,17 +261,4 @@ rubric:
         - {match: {missing_required_against: tools}, pattern: param_missing_required}
         - {match: {type_mismatch_against: tools}, pattern: param_type_mismatch}
         - {match: {out_of_range_against: tools}, pattern: param_out_of_range}
-    weight: 1
-  - id: R5_clean_exit
-    type: trace_final_status
-    target: final_status
-    expected: completed
-    depends_on: []
-    skill_id: null              # 任务完成度：三技能分类学无对应节点 → 只计分不归因（P5）
-    error_patterns: [task_crashed, task_timeout]
-    error_pattern_detection:
-      probe: final_status
-      cases:
-        - {match: {final_status: crashed}, pattern: task_crashed}
-        - {match: {final_status: timeout}, pattern: task_timeout}
     weight: 1

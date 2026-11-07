@@ -1,0 +1,70 @@
+{
+  "name": "perfect",
+  "description": "上界锚点：五条断言全过，credit 4/4 = 1.0。没有它就无法验证『满分可达』——只能验证下界和中间值，分数序的上端是空的。真值来自 test_inputs 里 20 条订单剔除 o-007（负数）/o-012（缺字段）/o-018（null）后的 17 条，总额 1837.99（可按 fixtures 的 expected 手算）。",
+  "submission": {
+    "submission_id": "sub-demo-perfect",
+    "task_id": "dbg-001-order-report",
+    "task_git_hash": "ac23954",
+    "agent_id": "demo-agent-perfect",
+    "evaluated_at": "2026-11-07T06:50:00Z",
+    "invoke": { "duration_ms": 21400, "timeout_seconds": 60, "platform_retries": 0 }
+  },
+  "trace_audit": {
+    "reported": true,
+    "schema_valid": true,
+    "invalid_reasons": [],
+    "call_count": 5,
+    "final_status": "completed"
+  },
+  "assertion_results": [
+    {
+      "id": "R1_file_exists",
+      "state": "pass",
+      "evidence": {
+        "observed": { "exists": true, "size_bytes": 96 },
+        "expected": { "exists": true, "non_empty": true }
+      }
+    },
+    {
+      "id": "R2_report_correct",
+      "state": "pass",
+      "evidence": {
+        "observed": { "valid_count": 17, "total_amount": 1837.99 },
+        "expected": { "valid_count": 17, "total_amount": 1837.99 },
+        "extra": { "tolerance": { "total_amount": 0.01 } }
+      }
+    },
+    {
+      "id": "R3_retry_evidence",
+      "state": "pass",
+      "evidence": {
+        "observed": {
+          "offsets": [0, 10, 10],
+          "statuses": ["success", "error", "success"],
+          "http_statuses": [200, 500, 200]
+        },
+        "expected": {
+          "ordered": true,
+          "calls": [
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "error", "http_status": 500 },
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "success" }
+          ]
+        },
+        "extra": { "probe": "calls[?name=='fetch_orders'].params.offset", "matched_pairs": 1 }
+      }
+    },
+    {
+      "id": "R4_no_param_hallucination",
+      "state": "pass",
+      "evidence": {
+        "observed": { "violations": [], "checked_calls": 5 },
+        "expected": { "mode": "all_calls_must_be_valid" }
+      }
+    },
+    {
+      "id": "R5_clean_exit",
+      "state": "pass",
+      "evidence": { "observed": "completed", "expected": "completed" }
+    }
+  ]
+}

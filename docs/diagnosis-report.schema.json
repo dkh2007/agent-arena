@@ -1,13 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-arena.local/schemas/diagnosis-report-v1.json",
-  "title": "诊断报告 DTO v1（评测层 -> 状态层 的唯一接口）",
-  "description": "只装评测层能判定的事实：每条断言的观测、四态、命中的错误模式；以及派生出来的分数与技能缺口聚合。不含推断（复习建议、掌握度均在状态层产生）。",
+  "$id": "https://agent-arena.local/schemas/diagnosis-report-v2.json",
+  "title": "诊断报告 DTO v2（评测层 -> 状态层 的唯一接口）",
+  "description": "只装评测层能判定的事实：每条断言的观测、四态、命中的错误模式；以及派生出来的两段式分数（gate / credit）与技能缺口聚合。不含推断（复习建议、掌握度均在状态层产生）。v2 相对 v1 的破坏性变更：rubric 拆成 gate/credit 两层，分母改为 credit 权重之和，新增 disqualified 与 unattributed_patterns。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["report_version", "submission", "trace_audit", "score", "attribution_policy", "assertions", "skill_gaps"],
+  "required": [
+    "report_version",
+    "submission",
+    "trace_audit",
+    "score",
+    "attribution_policy",
+    "assertions",
+    "skill_gaps",
+    "unattributed_patterns"
+  ],
   "properties": {
-    "report_version": { "const": "v1" },
+    "report_version": { "const": "v2" },
     "submission": {
       "type": "object",
       "additionalProperties": false,
@@ -73,19 +82,53 @@
     "score": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["weighted_sum", "total_weight", "ratio", "denominator_policy", "by_state"],
+      "required": [
+        "weighted_sum",
+        "credit_pass_weight",
+        "total_weight",
+        "ratio",
+        "denominator_policy",
+        "disqualified",
+        "disqualifying_assertions",
+        "by_state"
+      ],
+      "description": "两段式分数。gate 决定『有没有资格被评分』，credit 决定『评多少分』。两者分开是为了让分数单调：不做事 < 做错 < 只对一半 < 全对。",
       "properties": {
-        "weighted_sum": { "type": "number", "minimum": 0 },
-        "total_weight": { "type": "number", "exclusiveMinimum": 0 },
+        "weighted_sum": {
+          "type": "number",
+          "minimum": 0,
+          "description": "最终得分分子。disqualified 时恒为 0，否则等于 credit_pass_weight"
+        },
+        "credit_pass_weight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "credit 层通过的权重之和。门禁未过时仍照算——它只用于诊断，不参与 ratio。这个值与 assertions 里 pass 的 credit 断言始终自洽"
+        },
+        "total_weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "credit 层权重之和（本任务 4）。门禁不计权重，所以这不是全部断言的权重和"
+        },
         "ratio": { "type": "number", "minimum": 0, "maximum": 1 },
         "denominator_policy": {
-          "const": "fixed_at_total_weight",
-          "description": "分母恒为任务全部断言权重之和，不因断言缺失而缩小（P4）"
+          "const": "fixed_at_credit_total_weight",
+          "description": "分母恒为 credit 层权重之和，不因断言缺失而缩小（P4）。gate 不在分母里——它没有权重"
+        },
+        "disqualified": {
+          "type": "boolean",
+          "description": "是否有门禁断言 fail。true 表示本次提交无资格评分，ratio 记 0"
+        },
+        "disqualifying_assertions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "哪一个门禁拦下了这次提交。状态层据此知道『未交产物』而不是面对空的 skill_gaps 猜（P5）"
         },
         "by_state": {
           "type": "object",
           "additionalProperties": false,
           "required": ["pass", "fail", "blocked", "unscored"],
+          "description": "全部断言（gate + credit）的状态计数，用于快速核对报告完整性",
           "properties": {
             "pass": { "type": "integer", "minimum": 0 },
             "fail": { "type": "integer", "minimum": 0 },
@@ -93,7 +136,23 @@
             "unscored": { "type": "integer", "minimum": 0 }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "disqualified": { "const": true } }, "required": ["disqualified"] },
+          "then": {
+            "properties": {
+              "disqualifying_assertions": { "minItems": 1 },
+              "weighted_sum": { "const": 0 },
+              "ratio": { "const": 0 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "disqualified": { "const": false } }, "required": ["disqualified"] },
+          "then": { "properties": { "disqualifying_assertions": { "maxItems": 0 } } }
+        }
+      ]
     },
     "attribution_policy": {
       "type": "object",
@@ -110,19 +169,27 @@
     "assertions": {
       "type": "array",
       "minItems": 1,
-      "description": "必须与任务 rubric 一一对应：不多、不少、不重复（由 builder 保证，schema 只能保证结构）",
+      "description": "必须与任务的两个 rubric 数组一一对应：不多、不少、不重复，顺序为先 gate 后 credit（由 builder 保证，schema 只能保证结构）",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "type", "weight", "state", "skill_id", "error_patterns", "evidence"],
+        "required": ["id", "layer", "type", "weight", "state", "skill_id", "error_patterns", "evidence"],
         "properties": {
           "id": { "type": "string", "pattern": "^R[0-9]+_[a-z0-9_]+$" },
+          "layer": {
+            "enum": ["gate", "credit"],
+            "description": "gate = 门禁（不计分，fail 即整份不合格）；credit = 积分（计入分母）"
+          },
           "type": { "type": "string", "minLength": 1 },
-          "weight": { "type": "number", "exclusiveMinimum": 0 },
+          "weight": {
+            "type": "number",
+            "minimum": 0,
+            "description": "gate 层恒为 0（列表里保留该字段是为了断言结构统一，不是权重）"
+          },
           "state": { "enum": ["pass", "fail", "blocked", "unscored"] },
           "skill_id": {
             "type": ["string", "null"],
-            "description": "null = 只计分不归因（R1/R5 在当前三技能分类学里无归属，P5）"
+            "description": "null = 只计分不归因（R1/R5 在当前三技能分类学里无归属，P5 拍板走 gate 通道）"
           },
           "error_patterns": {
             "type": "array",
@@ -152,6 +219,14 @@
         },
         "allOf": [
           {
+            "if": { "properties": { "layer": { "const": "gate" } }, "required": ["layer"] },
+            "then": { "properties": { "weight": { "const": 0 } } }
+          },
+          {
+            "if": { "properties": { "layer": { "const": "credit" } }, "required": ["layer"] },
+            "then": { "properties": { "weight": { "exclusiveMinimum": 0 } } }
+          },
+          {
             "if": { "properties": { "state": { "const": "fail" } }, "required": ["state"] },
             "then": { "properties": { "error_patterns": { "minItems": 1 } } }
           },
@@ -168,7 +243,7 @@
     },
     "skill_gaps": {
       "type": "array",
-      "description": "只做聚合，不做推断：失败的断言按 YAML 已声明的 skill_id 归类，weight_lost 是这些断言的权重之和。skill_id 为 null 的断言不进本数组。",
+      "description": "只做聚合，不做推断：失败的断言按 YAML 已声明的 skill_id 归类，weight_lost 是这些断言的权重之和。skill_id 为 null 的断言不进本数组（改由 unattributed_patterns 留痕）。",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -177,7 +252,21 @@
           "skill_id": { "type": "string", "minLength": 1 },
           "failed_assertions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
           "patterns": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-          "weight_lost": { "type": "number", "exclusiveMinimum": 0 }
+          "weight_lost": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "unattributed_patterns": {
+      "type": "array",
+      "description": "有错误模式但没有技能归属的失败（R1/R5 这类门禁断言）。它们不进 skill_gaps——塞进任何技能都会让该技能的错误模式统计失真——但也不能静默丢弃：P5 的教训是『没交产物』在报告里曾完全不留痕。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["assertion_id", "layer", "patterns"],
+        "properties": {
+          "assertion_id": { "type": "string" },
+          "layer": { "enum": ["gate", "credit"] },
+          "patterns": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true }
         }
       }
     },

@@ -3,7 +3,7 @@ rem verify.bat - one-click verification for agent-arena
 rem Usage: double-click, or run from cmd.
 rem   [1] pytest tests\        - product code behavior matches claims
 rem   [2] pytest spike\        - upstream A2E defect sentinel (skips if A2E source absent)
-rem   [3] diagnosis report DTO - 3 fixtures -> JSON Schema
+rem   [3] diagnosis report DTO - 5 fixtures checked against JSON Schema (v2 gate/credit)
 rem   [4] git                  - commits and working tree state
 rem Path note: uses the isolated venv (pytest/fsrs/pyyaml/jsonschema live only there), never the system Python.
 

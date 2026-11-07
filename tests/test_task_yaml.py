@@ -23,8 +23,20 @@ def _task() -> dict:
     return _load(TASKS / "dbg-001-order-report.yaml")
 
 
+def _rubric() -> list[dict]:
+    """两层合并成一个列表，每条打上 layer 标记。
+
+    v2 起 rubric 拆成 rubric_gate / rubric_credit（P6）：门禁不计分、只决定有没有资格评分，
+    积分层的分母才是分数的分母。合并只为复用「每条断言都要满足」这类检查。
+    """
+    task = _task()
+    return [{**r, "layer": "gate"} for r in task["rubric_gate"]] + [
+        {**r, "layer": "credit"} for r in task["rubric_credit"]
+    ]
+
+
 def _rubric_by_id() -> dict:
-    return {r["id"]: r for r in _task()["rubric"]}
+    return {r["id"]: r for r in _rubric()}
 
 
 def test_task_yaml_parses():
@@ -34,7 +46,7 @@ def test_task_yaml_parses():
 
 
 def test_rubric_atomic_and_unique():
-    rubric = _task()["rubric"]
+    rubric = _rubric()
     assert 3 <= len(rubric) <= 5
     ids = [r["id"] for r in rubric]
     assert len(ids) == len(set(ids))
@@ -187,16 +199,42 @@ def test_stale_zero_score_comment_is_gone():
     assert "unscored 且不计入掌握度" in text
 
 
-def test_scoring_score_uses_fixed_denominator():
-    """依赖缺失时不得缩小分母，否则"缺产物"反而分数虚高（A2E 满分教训的同构问题）。"""
+def test_scoring_gate_and_credit_are_declared():
+    """两段式口径（P6）：门禁不计分；积分层分母恒为 4，不因断言缺失而缩小（P4 修正）。
+
+    旧版写的是「分母恒为 6」——那种写法下"什么都不做"也能拿 2/6 = 33%，
+    因为 R4 的全称命题对空调用平凡为真、R5 只要没崩就是 completed。
+    """
     score = _task()["scoring"]["score"]
-    assert score["denominator"] == "fixed_at_total_weight"
-    assert score["total_weight"] == sum(r["weight"] for r in _task()["rubric"]) == 6
-    contrib = score["contribution"]
+    assert score["formula"] == "gated_weighted_pass_ratio"
+
+    gate = score["gate"]
+    assert gate["source"] == "rubric_gate"
+    assert gate["disqualified_if"] == "any_gate_failed"
+    assert gate["disqualify_ratio"] == 0, "不合格必须是 0：封顶 0.3 之类没有依据，评委会问为什么是 0.3"
+    assert gate["on_unscored"] == "do_not_disqualify", "门禁本身无法判定时不拦——无法证明不合格就不判不合格"
+
+    credit = score["credit"]
+    assert credit["source"] == "rubric_credit"
+    assert credit["denominator"] == "fixed_at_credit_total_weight"
+    assert credit["total_weight"] == sum(r["weight"] for r in _task()["rubric_credit"]) == 4
+    contrib = credit["contribution"]
     assert set(contrib) == STATES
     assert contrib["pass"] == "weight"           # 通过计满权重
     for s in ("fail", "blocked", "unscored"):
         assert contrib[s] == 0, f"{s} 对分数贡献必须为 0"
+
+
+def test_every_gate_declares_disqualify_and_no_weight():
+    """门禁的两条硬约束：必须写 on_fail，且不许有 weight。
+
+    有 weight 的门禁等于偷偷计分，会把两段式退回一段式（0.33 地板分就是这么来的）。
+    """
+    for r in _task()["rubric_gate"]:
+        assert r.get("on_fail") == "disqualify", f"{r['id']} 未声明 on_fail: disqualify"
+        assert "weight" not in r, f"{r['id']} 是门禁，不应带 weight 字段"
+    for r in _task()["rubric_credit"]:
+        assert r.get("weight", 0) > 0, f"{r['id']} 在积分层，权重必须为正"
 
 
 def test_unscored_and_blocked_do_not_touch_mastery():
@@ -216,7 +254,7 @@ def test_every_assertion_declares_skill_id():
     """断言级技能绑定：缺 skill_id 键即失败；为 null 表示"只计分不归因"，须显式写出来。"""
     skills = {s["skill_id"] for s in _load(TAXONOMY)["skills"]}
     patterns = _patterns()
-    for r in _task()["rubric"]:
+    for r in _rubric():
         assert "skill_id" in r, f"{r['id']} 未声明 skill_id（无归属也要写 null）"
         sid = r["skill_id"]
         if sid is not None:
@@ -232,7 +270,7 @@ def test_error_patterns_registered_in_vocabulary():
     """词表先行（data-model.md §ErrorPattern）：rubric 只能引用已登记 pattern_id。"""
     patterns = _patterns()
     skills = {s["skill_id"] for s in _load(TAXONOMY)["skills"]}
-    for r in _task()["rubric"]:
+    for r in _rubric():
         assert r["error_patterns"], f"{r['id']} 未声明任何错误模式"
         assert len(set(r["error_patterns"])) == len(r["error_patterns"])
         for code in r["error_patterns"]:

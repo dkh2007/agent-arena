@@ -1,10 +1,16 @@
 """诊断报告 DTO 的组装器（评测层出口，见 docs/diagnosis-report-schema.md）。
 
-设计原则（三条，都是踩过的坑换来的）：
+设计原则（四条，都是踩过的坑换来的）：
 1. **只装可判定的观测，不装推断**：复习建议、掌握度都在状态层产生，进了报告就是两套口径。
-2. **契约自解释**：报告自带 attribute_policy 与 denominator_policy，状态层不必回读 YAML 才知道怎么算。
+2. **契约自解释**：报告自带 attribution_policy 与 denominator_policy，状态层不必回读 YAML 才知道怎么算。
 3. **宁可报错也不静默降级**：A2E 的教训是「读不到 trace 就静默给满分」，所以 trace 不可用时强制
    把轨迹断言改写成 unscored，reasons 写进 trace_audit；任何不自洽直接抛 ReportError，不产出报告。
+4. **门禁只管分数，不管观测**：gate 失败时 credit 断言照常判定并记录（诊断信息不因 0 分而丢弃），
+   只是不计入分数。反过来，若 gate 失败就把 credit 全标 blocked，等于用评分逻辑吞掉诊断数据。
+
+两段式计分（P6 拍板）：
+    rubric_gate    R1 交产物 / R5 正常退出    —— 不计分，任一门禁 fail ⇒ disqualified，ratio=0
+    rubric_credit  R2 / R3 / R4              —— 分母恒为 credit 权重之和（本任务 4）
 
 调用关系：执行器（S3）逐条跑断言拿到 assertion_results -> build_report() 组装 -> validate_report() 过 schema。
 """
@@ -21,8 +27,10 @@ import jsonschema
 import yaml
 
 STATES = ("pass", "fail", "blocked", "unscored")
+GATE, CREDIT = "gate", "credit"
 TRACE_TYPE_PREFIX = "trace_"
-REPORT_VERSION = "v1"
+REPORT_VERSION = "v2"
+DENOMINATOR_POLICY = "fixed_at_credit_total_weight"
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "docs" / "diagnosis-report.schema.json"
@@ -54,6 +62,43 @@ def validate_report(report: dict, schema: dict | None = None) -> None:
         raise ReportError(f"报告不符合 schema：{exc.message}（路径 {'/'.join(map(str, exc.path))}）") from exc
 
 
+# ---------------------------------------------------------------------------
+# rubric 分层
+# ---------------------------------------------------------------------------
+
+
+def rubric_layers(task: dict) -> tuple[list[dict], list[dict]]:
+    """取出 (gate, credit) 两个断言数组，并校验分层本身成立。
+
+    分层校验放在这里而不是测试里：任何调用方（执行器、脚本、未来的 API）都过这道门，
+    不会出现"测试过了但线上用了旧结构"。
+    """
+    if "rubric" in task:
+        raise ReportError("任务仍用单数组 rubric：已改为 rubric_gate + rubric_credit（见 review-response-v1.md §6）")
+
+    gate = list(task.get("rubric_gate") or [])
+    credit = list(task.get("rubric_credit") or [])
+    if not gate:
+        raise ReportError("rubric_gate 为空：没有门禁的提交无从判断任务是否完成")
+    if not credit:
+        raise ReportError("rubric_credit 为空：没有积分断言的分数恒为 0，评分无意义")
+
+    gate_ids = [r["id"] for r in gate]
+    credit_ids = [r["id"] for r in credit]
+    dup = set(gate_ids) & set(credit_ids)
+    if dup:
+        raise ReportError(f"断言同时出现在 gate 与 credit：{sorted(dup)}（一条断言只能属于一层）")
+    for r in gate:
+        if r.get("weight", 0) != 0:
+            raise ReportError(f"{r['id']} 是门禁，不允许带权重 {r.get('weight')!r}——门禁不计分")
+        if r.get("on_fail") != "disqualify":
+            raise ReportError(f"{r['id']} 是门禁但 on_fail 不是 disqualify：门禁失败必须给出明确后果")
+    for r in credit:
+        if not isinstance(r.get("weight"), (int, float)) or r["weight"] <= 0:
+            raise ReportError(f"{r['id']} 在 credit 层，权重必须为正数（当前 {r.get('weight')!r}）")
+    return gate, credit
+
+
 def _check_result_consistency(rid: str, spec: dict, result: dict, vocab: set[str]) -> None:
     """单条断言的语义校验：状态与错误模式必须自洽，模式必须在 YAML 声明 + 词表登记范围内。"""
     state = result["state"]
@@ -79,15 +124,63 @@ def _check_result_consistency(rid: str, spec: dict, result: dict, vocab: set[str
         raise ReportError(f"{rid}: state={state} 必须给 reason_code，否则下游只能猜")
 
 
+def _assertion_item(
+    rid: str,
+    spec: dict,
+    layer: str,
+    result: dict,
+    trace_ok: bool,
+    trace_audit: dict,
+    results: dict,
+    vocab: set[str],
+) -> dict:
+    """单条断言 -> 报告条目。trace 强制改写与依赖折叠都发生在这里。"""
+    state = result["state"]
+    error_patterns = list(result.get("error_patterns") or [])
+    reason_code = result.get("reason_code")
+
+    # 强制改写：trace 不可用时，轨迹类断言一律 unscored——不管调用方填了什么
+    if not trace_ok and str(spec["type"]).startswith(TRACE_TYPE_PREFIX):
+        state = "unscored"
+        error_patterns = []
+        reason_code = "trace_not_reported" if not trace_audit["reported"] else "trace_invalid"
+
+    # 依赖折叠：前置断言未通过时，本断言只能是 blocked 或 pass
+    if state == "blocked":
+        deps = spec.get("depends_on") or []
+        unsatisfied = [d for d in deps if results[d]["state"] != "pass"]
+        if not unsatisfied:
+            raise ReportError(f"{rid}: 标了 blocked，但前置 {deps} 全部通过——blocked 无依据")
+
+    item = {
+        "id": rid,
+        "layer": layer,
+        "type": spec["type"],
+        "weight": spec.get("weight", 0) if layer == CREDIT else 0,
+        "state": state,
+        "skill_id": spec.get("skill_id"),
+        "error_patterns": error_patterns,
+        "evidence": result.get("evidence") or {"observed": None, "expected": None},
+    }
+    if reason_code:
+        item["reason_code"] = reason_code
+    if result.get("note"):
+        item["note"] = result["note"]
+    _check_result_consistency(rid, spec, item, vocab)
+    return item
+
+
 def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
     """把「逐条断言结果 + trace 校验结果」组装成符合 schema 的诊断报告。
 
     raw 结构见 docs/diagnosis-report-schema.md 第 4 节（fixtures/ 下有真实例子）。
     """
     vocab = vocab if vocab is not None else load_vocabulary()
-    rubric = {r["id"]: r for r in task["rubric"]}
-    raw_results = raw.get("assertion_results") or []
+    gate_specs, credit_specs = rubric_layers(task)
+    specs = [("gate", s) for s in gate_specs] + [("credit", s) for s in credit_specs]
+    by_id_spec = {s["id"]: s for _, s in specs}
 
+    raw_results = raw.get("assertion_results") or []
     results: dict[str, dict] = {}
     for item in raw_results:
         rid = item.get("id")
@@ -95,7 +188,7 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
             raise ReportError(f"断言结果重复：{rid}")
         results[rid] = item
 
-    missing, extra = set(rubric) - set(results), set(results) - set(rubric)
+    missing, extra = set(by_id_spec) - set(results), set(results) - set(by_id_spec)
     if missing or extra:
         raise ReportError(f"断言结果与 rubric 不一致：缺 {sorted(missing)}，多 {sorted(extra)}")
 
@@ -103,49 +196,37 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
     trace_ok = bool(trace_audit["reported"]) and bool(trace_audit["schema_valid"])
     notes: list[str] = []
 
-    assertions: list[dict] = []
-    for rid, spec in rubric.items():
-        result = results[rid]
-        state = result["state"]
-        error_patterns = list(result.get("error_patterns") or [])
-        reason_code = result.get("reason_code")
+    assertions = [
+        _assertion_item(spec["id"], spec, layer, results[spec["id"]], trace_ok, trace_audit, results, vocab)
+        for layer, spec in specs
+    ]
 
-        # 强制改写：trace 不可用时，轨迹类断言一律 unscored——不管调用方填了什么
-        if not trace_ok and str(spec["type"]).startswith(TRACE_TYPE_PREFIX):
-            state = "unscored"
-            error_patterns = []
-            reason_code = "trace_not_reported" if not trace_audit["reported"] else "trace_invalid"
+    # ── 第一段：门禁 ──────────────────────────────────────────────────────
+    gate_assertions = [a for a in assertions if a["layer"] == GATE]
+    disqualifying = [a["id"] for a in gate_assertions if a["state"] == "fail"]
+    gate_unscored = [a["id"] for a in gate_assertions if a["state"] == "unscored"]
+    disqualified = bool(disqualifying)
+    if gate_unscored:
+        notes.append(
+            "门禁 " + ", ".join(gate_unscored) + " 无法判定（数据缺失）：按 on_unscored=do_not_disqualify 不拦，"
+            "但它同时意味着对应的 credit 断言也不可判，分数不会因此变高"
+        )
 
-        # 依赖折叠：前置断言未通过时，本断言只能是 blocked 或 pass（pass 说明产物的另一面确实可判）
-        if state == "blocked":
-            deps = spec.get("depends_on") or []
-            satisfied = [d for d in deps if results[d]["state"] != "pass"]
-            if not satisfied:
-                raise ReportError(f"{rid}: 标了 blocked，但前置 {deps} 全部通过——blocked 无依据")
+    # ── 第二段：积分 ──────────────────────────────────────────────────────
+    credit_total = sum(s["weight"] for layer, s in specs if layer == CREDIT)
+    declared_total = ((task.get("scoring") or {}).get("score") or {}).get("credit", {}).get("total_weight")
+    if declared_total is not None and declared_total != credit_total:
+        raise ReportError(f"YAML 声明的 credit.total_weight={declared_total}，但 credit 断言权重之和={credit_total}")
 
-        item = {
-            "id": rid,
-            "type": spec["type"],
-            "weight": spec["weight"],
-            "state": state,
-            "skill_id": spec.get("skill_id"),
-            "error_patterns": error_patterns,
-            "evidence": result.get("evidence") or {"observed": None, "expected": None},
-        }
-        if reason_code:
-            item["reason_code"] = reason_code
-        if result.get("note"):
-            item["note"] = result["note"]
-        _check_result_consistency(rid, spec, item, vocab)
-        assertions.append(item)
-
-    total_weight = sum(r["weight"] for r in task["rubric"])
-    declared_total = (task.get("scoring") or {}).get("score", {}).get("total_weight")
-    if declared_total is not None and declared_total != total_weight:
-        raise ReportError(f"YAML 声明的 total_weight={declared_total}，但断言权重之和={total_weight}")
-
-    weighted_sum = sum(a["weight"] for a in assertions if a["state"] == "pass")
+    credit_pass_weight = sum(a["weight"] for a in assertions if a["layer"] == CREDIT and a["state"] == "pass")
+    weighted_sum = 0 if disqualified else credit_pass_weight
+    ratio = 0.0 if disqualified else round(credit_pass_weight / credit_total, 6)
     by_state = {s: sum(1 for a in assertions if a["state"] == s) for s in STATES}
+    if disqualified:
+        notes.append(
+            "门禁未通过（" + ", ".join(disqualifying) + "）：本次提交无资格评分，ratio 记 0。"
+            f"credit 层断言仍照常判定（若算分可得 {credit_pass_weight}/{credit_total}），该值仅用于诊断，不计入分数"
+        )
 
     attr_src = (task.get("scoring") or {}).get("attribution") or {}
     attribution_policy = {
@@ -171,6 +252,14 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
             if code not in gap["patterns"]:
                 gap["patterns"].append(code)
 
+    # 有错误模式却没有技能归属的失败（R1/R5 属此类）——不进 skill_gaps，但绝不静默丢弃。
+    # P5 的教训：无文件时 skill_gaps 曾是空数组，"没交产物"这件事在报告里完全不留痕。
+    unattributed = [
+        {"assertion_id": a["id"], "layer": a["layer"], "patterns": a["error_patterns"]}
+        for a in assertions
+        if a["state"] == "fail" and not a["skill_id"]
+    ]
+
     if not trace_audit["reported"]:
         notes.append("未上报 trace：轨迹类断言记 unscored（分数贡献 0，但不计入掌握度），不判 0")
     elif not trace_audit["schema_valid"]:
@@ -184,14 +273,18 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
         "trace_audit": trace_audit,
         "score": {
             "weighted_sum": weighted_sum,
-            "total_weight": total_weight,
-            "ratio": round(weighted_sum / total_weight, 6),
-            "denominator_policy": "fixed_at_total_weight",
+            "credit_pass_weight": credit_pass_weight,
+            "total_weight": credit_total,
+            "ratio": ratio,
+            "denominator_policy": DENOMINATOR_POLICY,
+            "disqualified": disqualified,
+            "disqualifying_assertions": disqualifying,
             "by_state": by_state,
         },
         "attribution_policy": attribution_policy,
         "assertions": assertions,
         "skill_gaps": sorted(gaps.values(), key=lambda g: (-g["weight_lost"], g["skill_id"])),
+        "unattributed_patterns": unattributed,
     }
     if notes:
         report["notes"] = notes
@@ -211,7 +304,11 @@ def _run_all_fixtures(task_path: str) -> int:
             continue
         score = report["score"]
         states = " ".join(f"{k}={v}" for k, v in score["by_state"].items())
-        print(f"OK   {path.stem:<16} ratio={score['ratio']:.4f} ({score['weighted_sum']}/{score['total_weight']}) {states}")
+        flag = "DQ" if score["disqualified"] else "  "
+        print(
+            f"OK {flag} {path.stem:<16} ratio={score['ratio']:.4f} "
+            f"({score['weighted_sum']}/{score['total_weight']}) credit_pass={score['credit_pass_weight']} {states}"
+        )
     return 0 if ok else 1
 
 
