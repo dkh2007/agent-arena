@@ -59,6 +59,11 @@
 | mapped_skill_ids | JSON（FK 数组） | **错误模式 → 技能缺口映射表（自研核心）**，一个模式可映射多个缺口 |
 | created_at | DATETIME | |
 
+> **词表已落文件**：`docs/error-patterns-v0.yaml`（round-4 新增，14 个模式）。此前"label 全局唯一、先入词表"
+> 只是一句约定，没有可校验的载体。现在 `tasks/*.yaml` 的 `rubric[].error_patterns` 只能引用该文件的
+> `pattern_id`，且每个模式的 `detection_rule.assertion_id` 必须回指所在断言——由 `tests/test_task_yaml.py`
+> 强制执行，词表与任务定义不会各自漂移。`mapped_skill_ids` 为空表示「只诊断不归因」（计分，不驱动掌握度/复习）。
+
 ### ReviewItem（复习项 = 可执行任务实例）
 
 | 字段 | 类型 | 说明 |
@@ -85,13 +90,19 @@
 | task_git_hash | TEXT | 提交时锁定的任务版本 |
 | agent_endpoint_url | TEXT | 本次评测实际调用的端点快照 |
 | trace | JSON | OTel GenAI 标准轨迹（最小 trace schema 为提交格式一部分） |
-| assert_score | REAL | 硬分 = 原子 rubric 通过率 |
+| assert_score | REAL | 硬分 = 加权通过率，**分母恒为任务全部断言权重之和**（见下方口径） |
 | judge_scores | JSON | 双评软分数组 |
 | judge_agreement | REAL, 可空 | 双评一致率（4.2-4 机制） |
 | detected_patterns | JSON（FK 数组） | 轨迹分析检出的错误模式 |
 | diagnosis | JSON | 错误诊断报告（含按断言/judge 归类的混合呈现） |
 | fsrs_rating | INTEGER 1–4 | 本次表现映射成的 FSRS 评分，用于更新卡片 |
 | created_at | DATETIME | |
+
+> **断言四态与计分口径（round-4 定，权威定义在 `tasks/*.yaml` 的 `scoring` 块）**：
+> `pass`（计满权重，计入掌握度）/ `fail`（0 分，计入掌握度并产出错误模式）/
+> `blocked`（前置断言未通过，无法判定：0 分，**不计入掌握度**）/ `unscored`（依赖数据缺失，如 trace 未上报：0 分，**不计入掌握度**）。
+> 分母恒为任务全部断言权重之和，**不因断言缺失而缩小**——否则"缺产物/不报 trace"反而分数虚高。
+> 一句话：**分数惩罚"没交东西"，归因不把"没数据"当成"不会"**；两者混写是 A2E 那类满分的根源（见 `spike/README.md` 2.2）。
 
 ### 5.2 UserSkillState（用户×技能的 FSRS 卡片宿主）
 
@@ -103,6 +114,7 @@
 | updated_at | DATETIME | |
 
 > FSRS 卡片粒度 = **(用户, 技能)** 二元组：同一技能每用户一张卡。首次提交产生检出错误模式后初始化卡片；此后每次 Submission 的 `fsrs_rating` 驱动 `review_card(card, rating)` 更新。技能掌握度 = 本表 R 值（可提取性），无第二口径。
+> **P1 待拍板**：本行「掌握度 = R 值」与 `review-response-v1.md` §2 E2 的替代方案（掌握度 P = 断言通过率的 EWMA，时间衰减参数取 FSRS 的 S，R 只表示"现在复习收益多大"）冲突。拍板前两种口径都在文档里，**不得同时写进计划书**。
 > ReviewLog（py-fsrs 的复习日志）**后置**：M0 不建表，复习事件可从 Submission + ReviewItem 重建；M1 接入参数优化时再加。
 
 ## 3. 关系一览

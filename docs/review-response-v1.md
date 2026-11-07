@@ -168,3 +168,59 @@ FSRS 的 R      =  只回答"现在复习的收益有多大"，不回答"会不�
 | S4 | `docs/scoring-model.md`：掌握度 P 的定义 + unscored 规则 + 权重 | 三处口径（数据模型 / 计划书 / 排程公式）文字一致 |
 | S5 | 计划书 v0.5：架构图加反馈箭头、弱化 FSRS、强化评测层、加 R6 | 外部评审再读一遍，状态层提问数下降 |
 | S6 | 变体继承（base_task + 深合并） | 造 1 个变体只写差异字段，加载后与完整 YAML 等价 |
+
+---
+
+## 5. 追加评审（round-4，专看 `trace_requirements` 一节）处置
+
+> 本轮评审只覆盖 YAML 的 trace 契约与断言层。结论：**1 条真错（P0）+ 2 条采纳 + 1 条修正采纳**，
+> 修正的那条正是它自己没想深的地方。落仓：`tasks/dbg-001-order-report.yaml`、
+> `docs/error-patterns-v0.yaml`（新增）、`tests/test_task_yaml.py`（+8 用例）。
+
+| # | 建议 | 处置 | 说明 |
+|---|---|---|---|
+| 5.1 | 注释写「不上报 trace → R3/R4/R5 判 0 且无诊断报告」，与既定「判 unscored 不计入掌握度」冲突 | **采纳（P0，确实是遗留错误）** | 旧句已删，并加回归用例 `test_stale_zero_score_comment_is_gone` 按字面锁死。**但它的框架要修正**：见 5.5 |
+| 4.1 | 断言级补 `skill_id` | **采纳** | R3→`failure_retry`、R4→`tool_param_validation`、R2→`multi_step_planning`、R1/R5→`null`（分类学无节点，见 P5）。`detects` 降为展示用中文，机器归因只认 `skill_id` |
+| 4.2 | 断言级补 `error_patterns` | **采纳并扩展** | 只加字段不够：`data-model.md` 要求"词表先行"却无词表可校验。新增 `docs/error-patterns-v0.yaml`（14 个模式），测试强制「rubric 只能引用已登记 pattern_id，且 detection_rule 必须回指本断言」。另按 JMESPath 实测，R3 必须**第二探针**才分得开 `no_retry` 与 `retry_wrong_params` |
+| 4.3 | 加 `depends_on` 固化 R1→R2 依赖 | **修正采纳** | 方向对，理由是错的。它说"避免重复扣分的争议"——**扣分不是问题，归因才是问题**。若照它隐含的"前置失败就不算这条"，分母会缩小，反而造出"不交文件也能拿高分"的新漏洞。改为四态 `pass/fail/blocked/unscored` + **固定分母** |
+
+### 5.5 关键澄清：分数口径与归因口径必须分开（这是它没说清的那一层）
+
+它把"判 0 → 判 unscored"讲成一次**分数**修改。实际上：
+
+```
+分数贡献：fail = blocked = unscored = 0     ← 三者对分数完全一样
+真正不同的：是否计入掌握度 / 是否产出错误模式
+```
+
+也就是说，**改成 unscored 后，分数一分不差**；改的是"这次提交能说明用户什么能力"。
+两个口径混在一起写，就会得到两种都错的实现：
+
+| 错误实现 | 后果 |
+|---|---|
+| 沿用「判 0」 | 缺 trace 的学生被记为"失败重试能力为 0"，FSRS 的 D/S 被污染 → 复习排程错乱（这就是 A2E 的坑） |
+| 「unscored 就从分母里去掉」 | 只报 R1/R2 的学生拿 3/3 = 100% → 不报 trace 稳拿满分（P2 想堵的漏洞被这个改法重新打开） |
+
+正确写法（已落 YAML 的 `scoring` 块）：
+- `score.denominator: fixed_at_total_weight`（恒为 6，永不缩小）
+- `score.contribution`：pass=weight，其余三态一律 0
+- `attribution`：pass / fail 计入掌握度；fail 才产出错误模式；blocked / unscored 均不计入、不产出，且必须写明 `reason`
+
+### 5.6 新增待拍板（接第 3 节）
+
+| # | 判断题 | 我的建议 | 不拍板的后果 |
+|---|---|---|---|
+| **P4** | 分数分母是否恒定为 `total_weight`（即"缺 trace 只能拿 50%"） | **恒定**。不恒定就有"缺数据反而占便宜"的博弈空间 | 防作弊（P3）会被同一个漏洞绕过 |
+| **P5** | R1（交付物存在）/ R5（正常退出）在三技能分类学里无归属，怎么办 | 暂记 `skill_id: null`（只计分不归因），M2 视数据决定是否扩到 5 技能 | 硬塞进 `multi_step_planning` 会让该技能的错误模式失真 |
+
+### 5.7 本轮的自我验证（不只跑绿）
+
+新增的 8 条用例先跑绿，再做**4 组变异测试**确认它们真会红：
+
+| 变异 | 预期 | 实测 |
+|---|---|---|
+| `blocked` 的分贡献改成满权重 | 分数口径用例红 | `1 failed, 19 passed` ✅ |
+| R3 引用未登记模式 `retry_wrong_offset` | 词表用例红 | `1 failed, 19 passed` ✅ |
+| 把旧注释「判 0 且无诊断报告」贴回 | 注释回归用例红 | `1 failed, 19 passed` ✅ |
+| 清空 R2 的 `depends_on` | 依赖用例红 | `1 failed, 19 passed` ✅ |
+| 复原 | 全绿 | `20 passed`（含新增 2 条后为 22） ✅ |
