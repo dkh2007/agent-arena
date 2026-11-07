@@ -1,173 +1,212 @@
-# 诊断报告 DTO v1（层间契约：评测层 → 状态层）
+# 诊断报告 DTO v2（层间契约：评测层 → 状态层）
 
-> **状态**：已落仓并跑通（`src/arena/diagnosis_report.py` + `docs/diagnosis-report.schema.json` + `fixtures/` 三份夹具）。
-> **对应步数**：`review-response-v1.md` §4 的 **S2**。完成判据是"用 dbg-001 的假提交产出符合 schema 的 JSON"，已达成。
-> **谁写**：评测层（执行器跑完 5 条断言后调用 `build_report()`）。
+> **状态**：已落仓并跑通（`src/arena/diagnosis_report.py` + `docs/diagnosis-report.schema.json` + `fixtures/` 五份夹具）。
+> **对应步数**：`review-response-v1.md` §4 的 **S2**，v2 改造对应 §6（P5/P6 拍板）。
+> **谁写**：评测层（执行器跑完断言后调用 `build_report()`）。
 > **谁读**：状态层（拿 `assertions[].state` + `error_patterns` + `assertion.skill_id` 更新掌握度与错误模式）。
 > **不读**：计划书、前端、复习层都不该绕过状态层直接吃这份报告。
+>
+> 本文写**为什么**，schema 写**长什么样**，`src/arena/diagnosis_report.py` 写**怎么保证**。
+> 三者不一致时以 schema 为准，然后回来改本文。
+>
+> **v2 是破坏性变更**（`report_version: "v1"` → `"v2"`）：rubric 拆成 gate / credit 两层，
+> 分母从"全部断言权重和 6"改为"credit 层权重和 4"，新增 `disqualified` / `disqualifying_assertions` /
+> `unattributed_patterns` 三个字段。原因见 §3 与 §8。
 
 ---
 
-## 1. 三条设计原则（每条都是踩过的坑）
+## 1. 四条设计原则（每条都是踩过的坑）
 
-| # | 原则 | 反例（真实发生过） |
-|---|---|---|
-| 1 | **只装可判定的观测，不装推断** | 报告若带"建议复习什么"，复习层和报告就会出现两套推荐逻辑 |
-| 2 | **契约自解释** | 报告自带 `attribution_policy` / `denominator_policy`；否则状态层必须回读任务 YAML 才知道 `blocked` 算不算掌握度 |
-| 3 | **宁可报错，不静默降级** | A2E 在 trace 读不到时静默降级并给 `score=1.0`（`spike/README.md` 2.2）。本 DTO 反着做：trace 不可用 → 强制改写 + 记 `reason_code` |
+1. **只装可判定的观测，不装推断。** 复习建议、掌握度增量都在状态层产生。一旦在报告里也放一份，就有两套口径。
+2. **契约自解释。** 报告自带 `attribution_policy` 与 `denominator_policy`，状态层不用回读 YAML 才知道 `blocked` 算不算掌握度。
+3. **宁可报错，也不静默降级。** A2E 的教训是"读不到 trace 就静默给满分"。所以 trace 不可用时**强制**把轨迹断言改写为 `unscored`（调用方在 raw 里填 `pass` 也改），任何不自洽直接抛 `ReportError`，不产半成品。
+4. **门禁只管分数，不管观测。** gate 失败时 credit 断言**照常判定并记录**，只是不计入分数。反过来（门禁失败就把 credit 全标 `blocked`）等于用评分逻辑吞掉诊断数据——这是 v1 遗留的隐患，v2 明确禁止。
 
 ---
 
 ## 2. 顶层结构
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `report_version` | `"v1"` | 常量。不兼容改动必须升版本，不许原地改语义 |
-| `submission` | object | 提交标识：`submission_id` / `task_id` / `task_git_hash` / `agent_id` / `evaluated_at` / `invoke` |
-| `submission.task_git_hash` | string(7–40 hex) | 产生本报告的 YAML 版本。**没有它，报告里的断言 id 无法与任务对齐** |
-| `submission.invoke` | object | `duration_ms` / `timeout_seconds` / `platform_retries`（后者恒为 0，见下） |
-| `trace_audit` | object | trace 前置校验结果，**必填**（即使没上报也要有这一块） |
-| `score` | object | 分数聚合，见 §3 |
-| `attribution_policy` | object | 从任务 YAML 的 `scoring.attribution` 抄来（去掉人类可读的 `reason`） |
-| `assertions` | array | 与 rubric 一一对应，见 §4 |
-| `skill_gaps` | array | 技能缺口聚合（不是推断），见 §5 |
-| `notes` | array（可选） | 报告层面的显式说明，例如"未上报 trace"。**不允许用 notes 代替 `reason_code`** |
-
-`platform_retries` 恒为 0 是硬约束（schema 里是 `const: 0`）：重试本身是被测能力，平台代劳会让 R3（失败重试策略）永远测不到。
-
----
-
-## 3. `score`：分母恒为总权重
-
-```json
-{ "weighted_sum": 3, "total_weight": 6, "ratio": 0.5,
-  "denominator_policy": "fixed_at_total_weight",
-  "by_state": { "pass": 3, "fail": 2, "blocked": 0, "unscored": 0 } }
+```
+report_version       "v2"
+submission           提交元信息（含 task_git_hash：没有它，断言 id 无法与 YAML 对齐）
+trace_audit          trace 前置校验结果（A2E 反面教材的产物）
+score                两段式分数：gate 决定资格、credit 决定分数
+attribution_policy   四态 × {是否计入掌握度, 是否产出错误模式}
+assertions[]         逐条断言：layer / weight / state / skill_id / error_patterns / evidence
+skill_gaps[]         技能缺口聚合（只含 fail 且有 skill_id 的断言）
+unattributed_patterns[]  有错误模式但无技能归属的失败（R1/R5）——不进 skill_gaps，但不许丢
+notes[]              可选。报告出现"未覆盖情况"时必须在这里说明，不许静默
 ```
 
-- `total_weight` 必须等于 rubric 各条权重之和，`build_report()` 会核对 YAML 里声明的 `scoring.score.total_weight`，不一致直接抛错。
-- `ratio = weighted_sum / total_weight`，**分母永不缩小**。这一条同时堵两个漏洞：
-  - 缺产物时若从分母剔除 → "不交文件"反而分数虚高；
-  - 缺 trace 时若从分母剔除 → "不报 trace"稳拿满分（P2 想堵的那个）。
-- `blocked` / `unscored` 对 `weighted_sum` 的贡献都是 0；它们与 `fail` 的区别**只体现在 `attribution_policy`**，不体现在分数。
+顺序约定：`assertions[]` **先 gate 后 credit**，与执行顺序一致（执行器先跑门禁，不过就不必跑昂贵的 credit 判定）。`R5` 排在 `R2` 之前不是笔误。
 
 ---
 
-## 4. `assertions[]`：四态 + 证据 + 归因
+## 3. `score`：两段式（v2 核心变更）
 
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `id` / `type` / `weight` | ✓ | 从 rubric 抄来，不由执行器决定 |
-| `state` | ✓ | `pass` / `fail` / `blocked` / `unscored` |
-| `skill_id` | ✓ | 可为 `null`（=只计分不归因）。R1/R5 目前是 `null`，见 P5 |
-| `error_patterns` | ✓ | 只在 `fail` 时非空，且必须 ⊆ 该断言 YAML 声明的模式 ∩ 词表 |
-| `reason_code` | 条件必填 | `blocked` / `unscored` 必须有，枚举见 §6 |
-| `evidence` | ✓ | `{observed, expected, extra?}`，`observed`/`expected` 任意类型（可 null） |
-| `note` | 可选 | 人类可读补充，不参与任何计算 |
+```json
+{
+  "weighted_sum": 1,
+  "credit_pass_weight": 1,
+  "total_weight": 4,
+  "ratio": 0.25,
+  "denominator_policy": "fixed_at_credit_total_weight",
+  "disqualified": false,
+  "disqualifying_assertions": [],
+  "by_state": {"pass": 3, "fail": 2, "blocked": 0, "unscored": 0}
+}
+```
 
-### 4.1 `evidence` 按断言类型的约定（schema 只校验是对象，语义由执行器保证）
+### 3.1 两段的职责
 
-| type | `observed` | `expected` | `extra` 里放什么 |
+| 段 | 断言 | 权重 | 作用 |
 |---|---|---|---|
-| `file_exists` | `{exists, size_bytes}` | `{exists, non_empty}` | — |
-| `json_field_equals` | 实际读到的字段值 | YAML 的 `expected` | `diffs[]`：逐字段差异（含 tolerance） |
-| `trace_sequence` | `{offsets[], statuses[], http_statuses[]}` | YAML 的 `calls[]` | `probe`（JMESPath 表达式）、`matched_pairs`、`why` |
-| `trace_param_schema_valid` | `{violations[], checked_calls}` | `{mode}` | 每条违规的 `call_index` / 参数名 |
-| `trace_final_status` | 实际 `final_status` | `"completed"` | — |
+| **gate（门禁）** | R1 交产物、R5 正常退出 | **无**（报告里 `weight: 0`，只为结构统一） | 只决定"这份提交有没有资格被评分" |
+| **credit（积分）** | R2 结果正确(2)、R3 重试证据(1)、R4 无参数幻觉(1) | 分母 = **4** | 决定"评多少分" |
 
-把"为什么失败"写进 `extra.why` 是有意的：诊断报告会被学员看到，只给一个布尔值等于没诊断。
+```
+ratio = disqualified ? 0 : credit_pass_weight / 4
+```
+
+### 3.2 三条硬规则
+
+- `disqualified = any(gate.state == "fail")`。**门禁 `unscored` 不拦**（`on_unscored: do_not_disqualify`）：无法证明不合格就不判不合格。这不会放水——同一份提交的 credit 层 R3/R4 也因 trace 缺失而 `unscored`，分数上不去。
+- 不合格的分数是 **0**，不接受"封顶 0.3"这类做法：封顶值没有依据，评委会直接问"为什么是 0.3"。
+- `credit_pass_weight` **与 `disqualified` 无关**，永远等于"credit 层 pass 的权重和"。它只用于诊断，不参与 `ratio`。这个字段让报告保持内部自洽：断言列表里写着 `pass`，就有一个数与它对应。
+
+### 3.3 为什么不用"全部断言权重和"当分母（P4 修正）
+
+v1 的分母是 6，语义是"缺数据也不缩小分母"，方向正确。但它把**门禁型**和**否定型**断言一起算进了分母：
+
+- R4 的判定是 `all_calls_must_be_valid`，一个**全称命题**。零次调用时它平凡为真 → `pass` → 得 1 分。
+- R5 只要不崩溃就是 `completed` → 得 1 分。
+
+于是"什么都不做"自动拿 2/6 = **33%**。而"假重试"（交了产物但结果和过程都错）拿 3/6 = 50%。**3 个"没做错事"恰好等于 1 个"做对了核心事"**，分数失去分辨力。详见 §8。
 
 ---
 
-## 5. `skill_gaps[]`：只做聚合，不做推断
+## 4. `assertions[]`：四态 + 分层 + 归因
 
 ```json
-{ "skill_id": "failure_retry", "failed_assertions": ["R3_retry_evidence"],
-  "patterns": ["retry_wrong_params"], "weight_lost": 1 }
+{
+  "id": "R3_retry_evidence",
+  "layer": "credit",
+  "type": "trace_sequence",
+  "weight": 1,
+  "state": "fail",
+  "skill_id": "failure_retry",
+  "error_patterns": ["retry_wrong_params"],
+  "evidence": {
+    "observed": {"offsets": [0, 10, 0], "statuses": ["success", "error", "success"]},
+    "expected": {"ordered": true, "calls": ["..."]},
+    "extra": {"probe": "calls[?name=='fetch_orders'].params.offset"}
+  }
+}
 ```
 
-- 只收 `state=fail` 且 `skill_id != null` 的断言；`weight_lost` = 这些断言的权重之和（可核验，不是打分公式）。
-- `skill_id` 为 `null` 的断言（R1/R5）**故意不进本数组**：它们的失败仍扣分，但不在技能层留痕。
-- 掌握度、复习建议都不在这里产生——那是状态层与复习层的事。
+四态语义（与 YAML 的 `scoring.attribution` 一致）：
+
+| state | 含义 | 分数贡献 | 计入掌握度 | 产出错误模式 |
+|---|---|---|---|---|
+| `pass` | 断言成立 | 满权重（gate 为 0） | 是 | 否 |
+| `fail` | 有证据地不成立 | 0 | 是 | **是**（必须给出模式） |
+| `blocked` | 前置未通过，无法判定 | 0 | 否 | 否 |
+| `unscored` | 依赖的数据缺失（trace 未报） | 0 | 否 | 否 |
+
+`layer=gate` ⇒ `weight` 必须为 0；`layer=credit` ⇒ `weight` 必须 > 0。schema 和 builder 各拦一次。
+
+### 4.1 `evidence` 的约定
+
+schema 只校验"是对象且含 observed/expected"，语义要求写在 YAML 的 `error_pattern_detection.probe` 里。理由：同一种断言的证据形状会随任务演化，把它写死在 schema 里会让 schema 三个月后没法改。
+
+---
+
+## 5. `skill_gaps[]` 与 `unattributed_patterns[]`
+
+`skill_gaps` 只做聚合：`fail` 且 `skill_id` 非 null 的断言按技能归类，`weight_lost` 是权重和，按它降序。
+
+`unattributed_patterns` 收容另一类：`fail` 但 `skill_id` 为 null 的断言（当前是 R1/R5 这类门禁）。
+
+> **为什么必须有第二类（P5）。** v1 里"没交产物"的那个提交，`skill_gaps` 是**空数组**——R1 没有技能归属，于是这件事在技能层完全不留痕，状态层推不出任何复习项。极端对比：什么活都没干的 `raw-empty` 反而有诊断（它的 R3 记了 `no_retry`），**做得更多、诊断更少**。
+>
+> 但把它们塞进某个技能（比如 `multi_step_planning`）会让那个技能的错误模式统计失真。所以第三条路：**不进技能缺口，但独立留痕**。
+
+P5 的最终处置是**不加第 4 技能**，走 gate 通道：`score.disqualifying_assertions` 告诉状态层"这次是没交产物"，`unattributed_patterns` 给出具体错误码。若后续数据表明"交付纪律"确实是可训练目标，再加技能节点，届时只需在 `skill-taxonomy-v0.yaml` 增节点并给 R1/R5 填 `skill_id`，报告结构不用改。
 
 ---
 
 ## 6. `reason_code` 枚举（状态层按它分支，不解析中文）
 
-| code | 含义 | 谁写 |
+| code | 用于 | 含义 |
 |---|---|---|
-| `trace_not_reported` | Agent 未上报 trace | 组装器强制改写 |
-| `trace_invalid` | 上报了但没通过前置校验（call_index 不连续等） | 组装器强制改写 |
-| `dependency_blocked` | 前置断言未通过，本断言无法判定 | 执行器 |
-| `tool_no_response` | 工具无响应，无法判定该断言 | 执行器 |
-| `invoke_timeout` | 整轮调用超时 | 执行器 |
-
-`trace_audit.invalid_reasons` 是另一套枚举（`not_reported` / `call_index_not_sequential` / `timestamp_not_increasing` / `missing_required_field` / `field_type_invalid` / `status_error_without_http_status`），描述"trace 哪里坏了"。
+| `trace_not_reported` | `unscored` | Agent 完全没上报 trace |
+| `trace_invalid` | `unscored` | 报了但没通过前置校验（call_index 不连续、时间戳倒退等） |
+| `dependency_blocked` | `blocked` | 前置断言未通过，本断言无从判定 |
+| `tool_no_response` | `blocked` | 工具无响应，产物不可得 |
+| `invoke_timeout` | `blocked` | 调用超时 |
 
 ---
 
 ## 7. 由 schema 和组装器分别强制的规则
 
-**schema 管结构**（`jsonschema.Draft202012Validator`）：
+schema 管结构（能表达的），builder 管语义（schema 表达不了的）。
 
-- S1 顶层字段不多不少（`additionalProperties: false`，逐层都关）。
-- S2 `state=fail` ⇒ `error_patterns` 至少 1 条；`state∈{pass,blocked,unscored}` ⇒ 必须为空。
-- S3 `state∈{blocked,unscored}` ⇒ 必须有 `reason_code`。
-- S4 `trace_audit.reported=false` ⇒ `schema_valid=false` 且 `call_count=0` 且 `invalid_reasons` 非空。
-- S5 `denominator_policy` 只能是 `fixed_at_total_weight`。
-
-**组装器管语义**（`build_report()` 抛 `ReportError`，**不产出半成品**）：
-
-| # | 不变量 | 为什么必须在这里 |
-|---|---|---|
-| I1 | 断言 id 与 rubric 完全一致（不多、不少、不重复） | schema 无法表达"等于另一份文件的集合" |
-| I2 | trace 不可用 ⇒ 所有 `trace_*` 断言强制 `unscored` | 调用方可能"忘了"标记；A2E 的坑就是替调用方兜底太宽松 |
-| I3 | `fail` 的错误模式 ⊆ 该断言 YAML 声明 ∩ 词表 | 否则会出现"词表里没有的错误码"流进状态层 |
-| I4 | `blocked` 必须至少有一个前置断言非 `pass` | 防止用它当"看不清就不判"的逃生口 |
-| I5 | `total_weight` 与 rubric 权重之和一致 | 权重被改而没同步声明是静默错账 |
-| I6 | `weighted_sum` 只统计 `pass` | 四态里只有 pass 加分，写在代码里而不是文档里 |
-
----
-
-## 8. 三份夹具的实测结果（这是本步的证据）
-
-| 夹具 | 场景 | ratio | 关键行为 |
+| 编号 | 规则 | 由谁保证 | 为什么 schema 做不到 |
 |---|---|---|---|
-| `fixtures/raw-fake-retry.json` | 游标没推进的假重试 | **0.5**（3/6） | R2 `fail`→`wrong_total_amount`+`wrong_valid_count`；R3 `fail`→`retry_wrong_params`；两个技能缺口各记 `weight_lost` 2 和 1 |
-| `fixtures/raw-no-trace.json` | 未上报 trace，raw 里**故意把轨迹断言写成 pass** | **0.5**（3/6） | 组装器把 R3/R4/R5 强制改写为 `unscored` + `trace_not_reported`，`notes` 说明原因。**这就是 A2E 的反面** |
-| `fixtures/raw-no-file.json` | 没写 report.json | **0.5**（3/6） | R1 `fail`→`no_output_file`；R2 因 `depends_on` 记 `blocked`；`skill_gaps` **为空** |
+| S1 | 四态枚举、`weight >= 0`、`layer` 枚举 | schema | — |
+| S2 | `layer=gate ⇒ weight=0`；`layer=credit ⇒ weight>0` | schema（allOf） | — |
+| S3 | `state=fail ⇒ error_patterns` 非空；其余三态必须为空 | schema | — |
+| S4 | `state ∈ {blocked, unscored} ⇒ reason_code` 必填 | schema | — |
+| S5 | `denominator_policy` 只能是 `fixed_at_credit_total_weight` | schema | — |
+| S6 | `disqualified=true ⇒ ratio=0 且 weighted_sum=0 且 disqualifying 非空` | schema | — |
+| I1 | 断言 id 集合 = `rubric_gate ∪ rubric_credit`，不重不漏、顺序一致 | builder | schema 无法表达"等于另一份文件的集合" |
+| I2 | trace 不可用 ⇒ 所有 `type` 以 `trace_` 开头的断言强制 `unscored` | builder | 需要读外部状态 |
+| I3 | `fail` 的模式 ⊆ 本断言声明 ∩ 词表 | builder | 需要读词表文件 |
+| I4 | `blocked` 必须有真失败的前置 | builder | 需要跨条目引用 |
+| I5 | `total_weight` = credit 权重和（本任务 4），与 YAML 声明一致 | builder | 跨文件一致性 |
+| I6 | `weighted_sum = disqualified ? 0 : credit_pass_weight` | builder | 算术 |
+| I7 | `credit_pass_weight` = credit 层 pass 的权重和（与断言列表逐条自洽） | builder | 跨条目汇总 |
+| I8 | 门禁 `unscored` 不导致 `disqualified` | builder | 策略判断 |
+| I9 | R1/R5 失败时其模式进 `unattributed_patterns`，不进 `skill_gaps` | builder | 归因策略 |
 
-复现：`python src/arena/diagnosis_report.py --fixture fixtures/raw-fake-retry.json`
+---
 
-### 8.1 这一步暴露的问题（必须记下来，不许当没看见）
+## 8. 五份夹具的实测结果（本步的证据）
 
-**三种质量完全不同的提交拿到同一个 0.5 分。** 这是 DTO 忠实实现后的必然结果，不是 bug：
+| 夹具 | 提交形态 | v1 ratio | **v2 ratio** | 关键判定 |
+|---|---|---|---|---|
+| `raw-empty` | 0 次工具调用就正常退出 | **0.333** | **0（DQ）** | R1 门禁拦下。R4 因全称命题对空集平凡为真而 `pass`——正是要堵的漏洞 |
+| `raw-no-file` | 过程全对，产物没写 | 0.500 | **0（DQ）** | R1 门禁拦下；`credit_pass_weight=2` 仍照算，`unattributed_patterns=[no_output_file]` |
+| `raw-fake-retry` | 游标退回 offset=0 的假重试 | 0.500 | **0.25** | credit 只拿 R4 的 1 分；`skill_gaps` 两个（R2 的 2 分 + R3 的 1 分） |
+| `raw-no-trace` | 结果对，但没报 trace | 0.500 | **0.500** | 门禁 R5 `unscored` 不拦；credit 只剩 R2 的 2 分 |
+| `raw-perfect` | 全对 | — | **1.000** | 上界锚点 |
 
-| 提交 | 实际质量 | 分数 |
+**分数序 `0 → 0 → 0.25 → 0.50 → 1.00`，单调。** v1 是 `0.333 → 0.500 → 0.500 → 0.500`，三档质量撞在同一个值上——这就是 P6。
+
+`test_score_is_monotonic_across_fixtures` 把这条序写成断言，`raw-perfect` 保证上端有锚点（否则只能验证下界和中间值）。
+
+### 8.1 v2 保留的两个已知取舍
+
+1. **"过程全对但忘交文件"记 0 分**，惩罚偏重。这是 `disqualified_if: any_gate_failed` 的直接后果。接受的理由：任务没完成就是没完成，给 0.5 会让"不交产物"变成可行策略。若后续认为过重，可改 `on_fail` 为 `cap` 并给出**有依据的**封顶值，而不是随手写 0.3。
+2. **门禁 `unscored` 不拦**，理论上"崩溃了但不报 trace"能绕过 R5。实际绕不过：同一份提交的 credit 层也全 `unscored`，分数不会因此变高。
+
+---
+
+## 9. 已拍板的决策（v2 关闭 v1 的三条待定项）
+
+| # | 议题 | 结论 |
 |---|---|---|
-| 假重试（拉了一半数据就交） | 差：结果错 + 过程错 | 0.5 |
-| 无 trace（结果对，但过程不可核验） | 中：结果对 | 0.5 |
-| 无文件（过程全对，产物没交） | 差：任务未完成 | 0.5 |
-
-分数分辨率不够，说明**权重与门禁需要单独设计**（S4），不能靠改 DTO 解决。见 **P6**。
-
-同时 `raw-no-file` 的 `skill_gaps` 是空数组——"没交产物"这件事在技能层完全不留痕，因为 R1 的 `skill_id` 是 `null`。这条路让 **P5** 从"措辞问题"升级成"诊断盲区"。
+| **P4** | 分数分母口径 | 分母恒为 **credit 层权重和 4**，不因断言缺失而缩小。gate 没有权重，不进分母 |
+| **P5** | R1/R5 在分类学里无归属，怎么办 | **不加第 4 技能**，走 gate 通道：`disqualifying_assertions` + `unattributed_patterns` 留痕。理由见 §5 |
+| **P6** | 分数分辨率不足（三种提交同为 0.5） | 改为 **gate / credit 两段式**，门禁未过记 0 |
+| P1 | 掌握度口径（FSRS D/S/R vs EWMA + S 作衰减） | **仍未拍板**，不影响本 DTO |
+| P2 / P3 | 全 unscored 时结果断言是否照常计分；防作弊优先项 | 已按"照常计分、不更新 S"与"优先 R6 一致性校验"实现，未写进计划书 |
 
 ---
 
-## 9. 待拍板（接 `review-response-v1.md` §3 / §5.6）
+## 10. v2 故意不做的事
 
-| # | 判断题 | 我的建议 | 不拍板的后果 |
-|---|---|---|---|
-| P4 | 分数分母恒为 6（缺 trace 最多 50%） | 恒定 | 有博弈空间 |
-| P5 | R1/R5 无技能归属 | **新增第 4 个技能"任务交付纪律"**（R1/R5 都归它）。理由见 §8.1：留 null 会让"不交产物"在技能层看不见 | 诊断有盲区，学员反复漏交却推不出复习项 |
-| **P6（新）** | 分数分辨率不足（三种提交同为 0.5） | **加完成门禁**：R1 未过 ⇒ `ratio` 记 0（断言仍逐条记录供诊断）。或把 R2 权重提到 5 | 学员会学到"过程好看就行" |
-
----
-
-## 10. v1 故意不做的事
-
-- 不做 `review_items`（复习建议）：跨层推断，属复习层。
-- 不做 `mastery_delta`：掌握度公式还没拍板（P1）。
-- 不做多语言文案：`note` 里的中文是给人看的，机器只读 `state` / `error_patterns` / `reason_code`。
-- 不做报告签名/防篡改：M1 再说。
+- **不放复习建议、不放掌握度增量**：那是状态层的事，放进来就是第二套口径。
+- **不放 variant / FSRS 字段**：DTO 只描述"这次提交怎么样"，不描述"下次该做什么"。
+- **不做分数平滑或曲线映射**：0 / 0.25 / 0.5 / 1 是四档粗粒度，够把质量序分开。更细的刻度等真实数据再定。
+- **不把 `evidence` 结构写死进 schema**：见 §4.1。

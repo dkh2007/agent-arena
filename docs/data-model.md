@@ -90,19 +90,24 @@
 | task_git_hash | TEXT | 提交时锁定的任务版本 |
 | agent_endpoint_url | TEXT | 本次评测实际调用的端点快照 |
 | trace | JSON | OTel GenAI 标准轨迹（最小 trace schema 为提交格式一部分） |
-| assert_score | REAL | 硬分 = 加权通过率，**分母恒为任务全部断言权重之和**（见下方口径） |
+| assert_score | REAL | 硬分 = **两段式**：门禁未过记 0，否则 credit 层加权通过率（分母恒为 credit 权重和 4），见下方口径 |
 | judge_scores | JSON | 双评软分数组 |
 | judge_agreement | REAL, 可空 | 双评一致率（4.2-4 机制） |
 | detected_patterns | JSON（FK 数组） | 轨迹分析检出的错误模式 |
-| diagnosis | JSON | 诊断报告 DTO v1，结构见 `docs/diagnosis-report-schema.md` + `docs/diagnosis-report.schema.json`；由 `src/arena/diagnosis_report.py` 组装并过 schema 校验 |
+| diagnosis | JSON | 诊断报告 DTO **v2**，结构见 `docs/diagnosis-report-schema.md` + `docs/diagnosis-report.schema.json`；由 `src/arena/diagnosis_report.py` 组装并过 schema 校验 |
 | fsrs_rating | INTEGER 1–4 | 本次表现映射成的 FSRS 评分，用于更新卡片 |
 | created_at | DATETIME | |
 
-> **断言四态与计分口径（round-4 定，权威定义在 `tasks/*.yaml` 的 `scoring` 块）**：
-> `pass`（计满权重，计入掌握度）/ `fail`（0 分，计入掌握度并产出错误模式）/
+> **断言四态与计分口径（round-5 改为两段式，权威定义在 `tasks/*.yaml` 的 `scoring` 块）**：
+> 断言分两层——`rubric_gate`（R1 交产物 / R5 正常退出，**不计重**，fail 即 `disqualified`、ratio 记 0）
+> 与 `rubric_credit`（R2 / R3 / R4，分母恒为 4）。
+> 四态：`pass`（计满权重，计入掌握度）/ `fail`（0 分，计入掌握度并产出错误模式）/
 > `blocked`（前置断言未通过，无法判定：0 分，**不计入掌握度**）/ `unscored`（依赖数据缺失，如 trace 未上报：0 分，**不计入掌握度**）。
-> 分母恒为任务全部断言权重之和，**不因断言缺失而缩小**——否则"缺产物/不报 trace"反而分数虚高。
+> 分母恒为 **credit 层权重之和**，**不因断言缺失而缩小**——否则"缺产物/不报 trace"反而分数虚高。
+> 为什么门禁要独立成层：R4 是全称命题（零次调用平凡为真）、R5 只要不崩就过，两者混进同一个分母时
+> "什么都不做"自动拿 2/6 = 33%，四份质量递进的提交全撞在 0.5。改造后为 0 / 0 / 0.25 / 0.50 / 1.00。
 > 一句话：**分数惩罚"没交东西"，归因不把"没数据"当成"不会"**；两者混写是 A2E 那类满分的根源（见 `spike/README.md` 2.2）。
+> 另一条：**门禁只管分数，不管观测**——门禁失败时 credit 断言照常判定并记录，只不计分（见 DTO §1 第 4 条）。
 
 ### 5.2 UserSkillState（用户×技能的 FSRS 卡片宿主）
 
