@@ -13,9 +13,10 @@ rem A2E lives one level up from this repo (repo itself stays free of the 80MB up
 set A2EPY=..\tools\A2E-main\server\.venv\Scripts\python.exe
 
 echo ==================================================
-echo [1/3] pytest tests\ - code behavior matches claims?
+echo [1/3] pytest tests\ + jmespath expressiveness
 echo ==================================================
-%PY% -m pytest tests\ -v
+rem jmespath test belongs here: it needs only our own venv, no upstream A2E
+%PY% -m pytest tests\ spike\test_jmespath_expressiveness.py -v
 set PYEXIT=%ERRORLEVEL%
 
 echo.
