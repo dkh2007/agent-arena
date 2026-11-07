@@ -1,0 +1,105 @@
+# 错误模式词表 v0（第 6 轮评审新增）
+#
+# 为什么单独成文件：data-model.md §ErrorPattern 规定「label 全局唯一，新增标签先入词表再使用」，
+# 但词表一直只存在于文档的举例行里，无法被测试约束。本文件把它变成可校验资产：
+#   tasks/*.yaml 的 rubric[].error_patterns 只能引用本文件里的 pattern_id，
+#   docs/skill-taxonomy-v0.yaml 的 skill_id 只能引用本文件的 mapped_skill_ids。
+#
+# 字段对齐 data-model.md §ErrorPattern（pattern_id / label / description / detection_rule / mapped_skill_ids）；
+# 「严重度」等用户维度权重不入词表（那是 UserSkillState 侧的事，词表只描述"是什么错"）。
+#
+# 约定：
+#   - pattern_id：机器码，小写下划线，稳定不改（诊断报告与复习推荐按它索引）
+#   - label：中文展示名，可改
+#   - detection_rule.assertion_id：唯一检出该模式的原子断言（多检出源时用数组）
+#   - mapped_skill_ids 为空表示「只诊断不归因」：会计分，但不驱动技能掌握度与复习推荐
+
+patterns:
+  # ---- R1 交付物存在性（交付纪律，不属于当前三技能）----
+  - pattern_id: no_output_file
+    label: 未产出文件
+    description: 任务要求写入 /workspace/report.json，但该文件不存在
+    detection_rule: {assertion_id: R1_file_exists, when: {exists: false}}
+    mapped_skill_ids: []
+
+  - pattern_id: empty_output_file
+    label: 产出空文件
+    description: 文件存在但内容为空，等价于未交付
+    detection_rule: {assertion_id: R1_file_exists, when: {non_empty: false}}
+    mapped_skill_ids: []
+
+  # ---- R2 结果正确性（多步执行完整性）----
+  - pattern_id: wrong_valid_count
+    label: 有效数算错
+    description: valid_count 与依据 fixture 剔除规则算出的 17 不符（漏剔或多剔）
+    detection_rule: {assertion_id: R2_report_correct, when: {valid_count_mismatch: true}}
+    mapped_skill_ids: [multi_step_planning]
+
+  - pattern_id: wrong_total_amount
+    label: 总额算错
+    description: total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算
+    detection_rule: {assertion_id: R2_report_correct, when: {total_amount_mismatch: true}}
+    mapped_skill_ids: [multi_step_planning]
+
+  - pattern_id: report_missing_field
+    label: 报告缺字段
+    description: report.json 未包含 valid_count 或 total_amount
+    detection_rule: {assertion_id: R2_report_correct, when: {missing_fields: [valid_count, total_amount]}}
+    mapped_skill_ids: [multi_step_planning]
+
+  # ---- R3 失败重试（本任务的核心考点）----
+  - pattern_id: no_retry
+    label: 未重试
+    description: 首次 500 后没有再对 offset=10 发起调用，直接放弃或退回首页
+    detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_equals: [0, 10]}}
+    mapped_skill_ids: [failure_retry]
+
+  - pattern_id: retry_wrong_params
+    label: 重试参数错误
+    description: 确实重试了，但游标退回首页（offset 序列 0,10,0）；耗时增加且分页永不收敛
+    detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_equals: [0, 10, 0]}}
+    mapped_skill_ids: [failure_retry]
+
+  - pattern_id: retry_exhausted
+    label: 重试耗尽
+    description: 同 offset 连续重试仍失败；缺退避或重试上限设置不当
+    detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_starts_with: [0, 10, 10], last_status: error}}
+    mapped_skill_ids: [failure_retry]
+
+  # ---- R4 工具参数校验 ----
+  - pattern_id: param_out_of_schema
+    label: 参数幻觉
+    description: 调用中出现了 tools 未声明的参数名（additional_properties=false 时即违规）
+    detection_rule: {assertion_id: R4_no_param_hallucination, when: {extra_keys_against: tools}}
+    mapped_skill_ids: [tool_param_validation]
+
+  - pattern_id: param_missing_required
+    label: 漏传必填参数
+    description: required=true 的参数未出现在调用中
+    detection_rule: {assertion_id: R4_no_param_hallucination, when: {missing_required_against: tools}}
+    mapped_skill_ids: [tool_param_validation]
+
+  - pattern_id: param_type_mismatch
+    label: 参数类型错误
+    description: 参数类型与声明不符（如 limit 传成字符串 "10"）
+    detection_rule: {assertion_id: R4_no_param_hallucination, when: {type_mismatch_against: tools}}
+    mapped_skill_ids: [tool_param_validation]
+
+  - pattern_id: param_out_of_range
+    label: 参数越界
+    description: 取值超出 minimum/maximum（如试探 limit=20 触发 invalid_limit）
+    detection_rule: {assertion_id: R4_no_param_hallucination, when: {out_of_range_against: tools}}
+    mapped_skill_ids: [tool_param_validation]
+
+  # ---- R5 退出状态（任务完成度，不属于当前三技能）----
+  - pattern_id: task_crashed
+    label: 任务崩溃
+    description: final_status=crashed，Agent 未走完流程即异常终止
+    detection_rule: {assertion_id: R5_clean_exit, when: {final_status: crashed}}
+    mapped_skill_ids: []
+
+  - pattern_id: task_timeout
+    label: 任务超时
+    description: final_status=timeout，超出调用时限
+    detection_rule: {assertion_id: R5_clean_exit, when: {final_status: timeout}}
+    mapped_skill_ids: []

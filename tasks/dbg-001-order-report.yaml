@@ -16,6 +16,7 @@ fault_injection:
   enabled: true
   target_tool: fetch_orders
   retry_scope: agent            # 重试主体=Agent；mock 绝不内部自动重试（评审第 2 条，P0）
+  reset_policy: per_submission  # 每次提交评测前 mock 状态整体重置（第 3 轮评审 ①-2 的真实缺口：否则上一次用掉的故障额度会漏到下一次）
   match:
     offset: 10                  # 匹配范围由 target_tool 限定；offset=10 是分页游标位置，无论 Agent 用何种合法子页大小都命中（评审第 5 条措辞修正）
   failures:
@@ -23,6 +24,12 @@ fault_injection:
       http_status: 500
       error: internal_error
   then: success                 # 之后调用正常返回
+
+# 调用边界（第 3 轮评审 ②-1a：原 YAML 完全没有这层约定，导致"超时算不算一次提交"无处可查）
+execution:
+  invoke_timeout_seconds: 60
+  platform_retry: 0                 # 平台绝不自动重试：重试是本次被测的能力，平台代劳会让 R3 测不到
+  on_timeout: {final_status: timeout}   # 超时写入 trace.final_status=timeout → R5 判失败；R3 无证据 → unscored（不是判 0）
 
 scenario: |
   你是一个数据助理 Agent，请完成以下工作：
@@ -97,8 +104,13 @@ test_inputs:
     valid_count: 17
     total_amount: 1837.99
 
-# 最小 trace schema（计划书 4.2-1 的准确含义：不上报 trace → 轨迹类断言 R3/R4/R5 判 0 且无诊断报告；
-# R1/R2 为结果断言，不依赖 trace 仍可判）
+# ============================================================================
+# 【第 6 轮评审修正 P0】原注释写「不上报 trace → 轨迹类断言判 0，且无诊断报告」，与既定规则
+# 「判 unscored 且不计入掌握度」直接冲突，属遗留错误，已删除。
+# 澄清一处容易说错的点：「判 0」与「判 unscored」的**分数**贡献相同（见下方 scoring.score，
+# 都是 0），真正的区别在**归因**——判 0 把「数据缺失」记成「能力不足」，会污染掌握度与错误模式。
+# 所以修复点不是改分数，是把分数口径与归因口径分开写死。
+# ============================================================================
 trace_requirements:
   minimum:
     agent_id: {required: true}                          # 字段风格统一为对象式（评审第 6 条）
@@ -109,15 +121,50 @@ trace_requirements:
       status_enum: [success, error, timeout]
       note: 'call_index 平台侧编号（1 起）；http_status/error 仅 status=error 必填，result_summary 仅 success 必填；attempt 不要求上报——由平台从同名同参调用序列推导（评审第 3 条的修正采纳）'
 
+# ============================================================================
+# 计分与归因口径（第 6 轮评审：把「判 0」和「判 unscored」拆成两件事写死）
+#   分数 = 给这次提交打多少（反映任务成败）
+#   归因 = 这次提交能说明用户什么能力（喂掌握度 + 错误模式）
+# 两者解耦才有解：分数要惩罚"没交东西"，归因不能把"没数据"当成"不会"。
+# ============================================================================
+scoring:
+  score:
+    formula: weighted_pass_ratio
+    denominator: fixed_at_total_weight   # 恒为全部断言权重之和（本任务 6），不因断言缺失而缩小
+    total_weight: 6
+    contribution:                        # 各状态对分子（得分）的贡献
+      pass: weight                       # 通过：计满权重
+      fail: 0                            # 有证据的失败：0
+      blocked: 0                         # 前置未通过、无法判定：0（若从分母剔除会让"缺产物"反而虚高）
+      unscored: 0                        # 依赖数据缺失（trace 未上报）：0（堵住"不报 trace 稳拿分"）
+  attribution:                           # 是否参与掌握度更新 / 是否产出错误模式
+    pass: {counts_toward_mastery: true, emit_error_patterns: false}
+    fail: {counts_toward_mastery: true, emit_error_patterns: true}
+    blocked: {counts_toward_mastery: false, emit_error_patterns: false,
+              reason: 前置断言失败导致无法判定，属证据缺失而非能力不足}
+    unscored: {counts_toward_mastery: false, emit_error_patterns: false,
+               reason: trace 类依赖数据缺失；诊断报告写"未评分"，不写"0 分"}
+  # P4 待拍板：分母是否恒定为 total_weight（当前取"固定"）；P2 一旦改口径需同步此处
+
 # 原子断言 5 条：R1/R2 为结果断言（不依赖 trace），R3/R4/R5 为轨迹断言（依赖最小 trace）。
 # 全部结构化、可确定性判定（硬分）；LLM judge 软分在 M0 第 9 步另配。
-# 评分归一化说明：文件不存在时 R1、R2 同时失败属预期语义（重复扣分接受），M0 执行器定稿时统一处理依赖折叠。
+# 第 6 轮新增每条的 skill_id / error_patterns / depends_on：
+#   归因以 skill_id + error_patterns 为准，detects 仅供诊断报告展示（避免两处真相源漂移）。
+#   skill_id 为 null 表示"该断言只计分不归因"——当前三技能分类学里没有对应节点（P5 待拍板）。
 rubric:
   - id: R1_file_exists
     type: file_exists
     target: /workspace/report.json
     options:
       non_empty: true           # 存在且非空（评审第 8 条）
+    depends_on: []              # 无前置：根断言
+    skill_id: null              # 交付纪律：三技能分类学无对应节点 → 只计分不归因（P5）
+    error_patterns: [no_output_file, empty_output_file]
+    error_pattern_detection:
+      probe: file_exists(/workspace/report.json)
+      cases:
+        - {match: {exists: false}, pattern: no_output_file}
+        - {match: {exists: true, non_empty: false}, pattern: empty_output_file}
     weight: 1
   - id: R2_report_correct
     type: json_field_equals
@@ -126,6 +173,16 @@ rubric:
     compare: subset             # 报告允许含额外字段
     tolerance:
       total_amount: 0.01        # 浮点容差（评审第 4 条，P0）
+    depends_on: [R1_file_exists]   # 文件不存在 → 本断言记 blocked：计 0 分，但不计入掌握度
+    skill_id: multi_step_planning  # 拉全 20 条 → 剔除 3 条无效 → 汇总，检验多步执行的完整性
+    error_patterns: [wrong_valid_count, wrong_total_amount, report_missing_field]
+    error_pattern_detection:
+      probe: json_field_equals(/workspace/report.json vs expected)
+      cases:
+        - {match: {missing_fields: [valid_count]}, pattern: report_missing_field}
+        - {match: {missing_fields: [total_amount]}, pattern: report_missing_field}
+        - {match: {valid_count_mismatch: true}, pattern: wrong_valid_count}
+        - {match: {total_amount_mismatch: true}, pattern: wrong_total_amount}
     weight: 2
   - id: R3_retry_evidence
     type: trace_sequence
@@ -137,7 +194,19 @@ rubric:
         - {name: fetch_orders, params_match: {offset: 10}, status: error, http_status: 500}
         - {name: fetch_orders, params_match: {offset: 10}, status: success}
       note: 'params_match 为子集匹配：只锁"第二页起点 offset=10"，不限定 limit——Agent 用 limit<=10 的任何合法分页都应判过（对评审 R3 建议的修正）'
-    detects: 失败重试策略
+    depends_on: []
+    skill_id: failure_retry
+    detects: 失败重试策略          # 仅供诊断报告展示，归因以上面的 skill_id 为准
+    error_patterns: [no_retry, retry_wrong_params, retry_exhausted]
+    error_pattern_detection:
+      # 第 6 轮实测结论：判定（PASS/FAIL）一个表达式就够，分类必须另取序列——
+      # 假重试与无重试的过滤后状态序列完全相同（都是 ["error"]），单靠 R3.expected 分不开。
+      probe: "calls[?name=='fetch_orders'].params.offset"
+      cases:                     # 顺序匹配，首命中即止
+        - {match: {offsets_equals: [0, 10]}, pattern: no_retry}
+        - {match: {offsets_equals: [0, 10, 0]}, pattern: retry_wrong_params}
+        - {match: {offsets_starts_with: [0, 10, 10], last_status: error}, pattern: retry_exhausted}
+      default: retry_wrong_params
     weight: 1
   - id: R4_no_param_hallucination
     type: trace_param_schema_valid
@@ -146,10 +215,28 @@ rubric:
       schema_ref: tools         # 引用本文件 tools 的 parameters + additional_properties
       check_schema: true        # 语义覆盖 required/type/range/additional_properties 四项（第 5 轮 P2-1：原名 check_types 未覆盖"漏传必填参数"）
       mode: all_calls_must_be_valid   # 判定模式（评审第 1 条）：任一次调用违规即失败——参数幻觉考"有没有编出界外参数"，试探 limit=20 本身即违规
+    depends_on: []
+    skill_id: tool_param_validation
     detects: 参数幻觉
+    error_patterns: [param_out_of_schema, param_missing_required, param_type_mismatch, param_out_of_range]
+    error_pattern_detection:
+      probe: "calls[*].{name: name, params: params}"
+      cases:                     # 顺序匹配，首命中即止；against 指本文件 tools
+        - {match: {extra_keys_against: tools}, pattern: param_out_of_schema}
+        - {match: {missing_required_against: tools}, pattern: param_missing_required}
+        - {match: {type_mismatch_against: tools}, pattern: param_type_mismatch}
+        - {match: {out_of_range_against: tools}, pattern: param_out_of_range}
     weight: 1
   - id: R5_clean_exit
     type: trace_final_status
     target: final_status
     expected: completed
+    depends_on: []
+    skill_id: null              # 任务完成度：三技能分类学无对应节点 → 只计分不归因（P5）
+    error_patterns: [task_crashed, task_timeout]
+    error_pattern_detection:
+      probe: final_status
+      cases:
+        - {match: {final_status: crashed}, pattern: task_crashed}
+        - {match: {final_status: timeout}, pattern: task_timeout}
     weight: 1
