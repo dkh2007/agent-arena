@@ -94,7 +94,7 @@
 | judge_scores | JSON | 双评软分数组 |
 | judge_agreement | REAL, 可空 | 双评一致率（4.2-4 机制） |
 | detected_patterns | JSON（FK 数组） | 轨迹分析检出的错误模式 |
-| diagnosis | JSON | 错误诊断报告（含按断言/judge 归类的混合呈现） |
+| diagnosis | JSON | 诊断报告 DTO v1，结构见 `docs/diagnosis-report-schema.md` + `docs/diagnosis-report.schema.json`；由 `src/arena/diagnosis_report.py` 组装并过 schema 校验 |
 | fsrs_rating | INTEGER 1–4 | 本次表现映射成的 FSRS 评分，用于更新卡片 |
 | created_at | DATETIME | |
 

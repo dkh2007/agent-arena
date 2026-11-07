@@ -1,0 +1,61 @@
+{
+  "name": "no-trace",
+  "description": "刻意让 raw 结果把轨迹断言标成 pass，但 trace_audit 说没有上报。组装器必须强制改写成 unscored——这正是 A2E『读不到 trace 却给满分』的反面。",
+  "submission": {
+    "submission_id": "sub-demo-no-trace",
+    "task_id": "dbg-001-order-report",
+    "task_git_hash": "ac23954",
+    "agent_id": "demo-agent-no-trace",
+    "evaluated_at": "2026-11-07T06:20:00Z",
+    "invoke": { "duration_ms": 8100, "timeout_seconds": 60, "platform_retries": 0 }
+  },
+  "trace_audit": {
+    "reported": false,
+    "schema_valid": false,
+    "invalid_reasons": ["not_reported"],
+    "call_count": 0
+  },
+  "assertion_results": [
+    {
+      "id": "R1_file_exists",
+      "state": "pass",
+      "evidence": {
+        "observed": { "exists": true, "size_bytes": 58 },
+        "expected": { "exists": true, "non_empty": true }
+      }
+    },
+    {
+      "id": "R2_report_correct",
+      "state": "pass",
+      "evidence": {
+        "observed": { "valid_count": 17, "total_amount": 1837.99 },
+        "expected": { "valid_count": 17, "total_amount": 1837.99 }
+      }
+    },
+    {
+      "id": "R3_retry_evidence",
+      "state": "pass",
+      "note": "调用方错误地当作通过——没有 trace 根本无从判定，组装器会改写为 unscored",
+      "evidence": {
+        "observed": null,
+        "expected": {
+          "ordered": true,
+          "calls": [
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "error", "http_status": 500 },
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "success" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "R4_no_param_hallucination",
+      "state": "pass",
+      "evidence": { "observed": null, "expected": { "mode": "all_calls_must_be_valid" } }
+    },
+    {
+      "id": "R5_clean_exit",
+      "state": "pass",
+      "evidence": { "observed": null, "expected": "completed" }
+    }
+  ]
+}

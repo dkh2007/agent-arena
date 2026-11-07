@@ -1,0 +1,82 @@
+{
+  "name": "fake-retry",
+  "description": "游标未推进的假重试：offset=10 报 500 后退回 offset=0 重拉首页，第二页始终没拿到。用来验证 R3 能锁参数而不是只锁状态。",
+  "submission": {
+    "submission_id": "sub-demo-fake-retry",
+    "task_id": "dbg-001-order-report",
+    "task_git_hash": "ac23954",
+    "agent_id": "demo-agent-fake-retry",
+    "evaluated_at": "2026-11-07T06:10:00Z",
+    "invoke": { "duration_ms": 12400, "timeout_seconds": 60, "platform_retries": 0 }
+  },
+  "trace_audit": {
+    "reported": true,
+    "schema_valid": true,
+    "invalid_reasons": [],
+    "call_count": 4,
+    "final_status": "completed"
+  },
+  "assertion_results": [
+    {
+      "id": "R1_file_exists",
+      "state": "pass",
+      "evidence": {
+        "observed": { "exists": true, "size_bytes": 58 },
+        "expected": { "exists": true, "non_empty": true }
+      }
+    },
+    {
+      "id": "R2_report_correct",
+      "state": "fail",
+      "error_patterns": ["wrong_total_amount", "wrong_valid_count"],
+      "evidence": {
+        "observed": { "valid_count": 9, "total_amount": 861.24 },
+        "expected": { "valid_count": 17, "total_amount": 1837.99 },
+        "extra": {
+          "diffs": [
+            { "field": "valid_count", "expected": 17, "actual": 9 },
+            { "field": "total_amount", "expected": 1837.99, "actual": 861.24, "tolerance": 0.01 }
+          ]
+        }
+      },
+      "note": "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取"
+    },
+    {
+      "id": "R3_retry_evidence",
+      "state": "fail",
+      "error_patterns": ["retry_wrong_params"],
+      "evidence": {
+        "observed": {
+          "offsets": [0, 10, 0, 0],
+          "statuses": ["success", "error", "success", "success"],
+          "http_statuses": [200, 500, 200, 200]
+        },
+        "expected": {
+          "ordered": true,
+          "calls": [
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "error", "http_status": 500 },
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "success" }
+          ]
+        },
+        "extra": {
+          "probe": "calls[?name=='fetch_orders'].params.offset",
+          "matched_pairs": 0,
+          "why": "offset=10 失败后所有重试都退回 offset=0，游标没有向前推进"
+        }
+      }
+    },
+    {
+      "id": "R4_no_param_hallucination",
+      "state": "pass",
+      "evidence": {
+        "observed": { "violations": [], "checked_calls": 4 },
+        "expected": { "mode": "all_calls_must_be_valid" }
+      }
+    },
+    {
+      "id": "R5_clean_exit",
+      "state": "pass",
+      "evidence": { "observed": "completed", "expected": "completed" }
+    }
+  ]
+}

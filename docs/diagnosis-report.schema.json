@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-arena.local/schemas/diagnosis-report-v1.json",
+  "title": "诊断报告 DTO v1（评测层 -> 状态层 的唯一接口）",
+  "description": "只装评测层能判定的事实：每条断言的观测、四态、命中的错误模式；以及派生出来的分数与技能缺口聚合。不含推断（复习建议、掌握度均在状态层产生）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["report_version", "submission", "trace_audit", "score", "attribution_policy", "assertions", "skill_gaps"],
+  "properties": {
+    "report_version": { "const": "v1" },
+    "submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["submission_id", "task_id", "task_git_hash", "agent_id", "evaluated_at"],
+      "properties": {
+        "submission_id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "task_git_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$",
+          "description": "产生本报告的 YAML 版本；没有它，报告里的断言 id 无法与任务对齐"
+        },
+        "agent_id": { "type": "string", "minLength": 1 },
+        "evaluated_at": { "type": "string", "format": "date-time" },
+        "invoke": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["duration_ms", "timeout_seconds", "platform_retries"],
+          "properties": {
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "timeout_seconds": { "type": "integer", "minimum": 1 },
+            "platform_retries": {
+              "const": 0,
+              "description": "平台绝不代劳重试：重试是被测能力，平台重试会让 R3 失效"
+            }
+          }
+        }
+      }
+    },
+    "trace_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reported", "schema_valid", "invalid_reasons", "call_count"],
+      "description": "trace 前置校验结果。A2E 的教训是『读不到 trace 时静默降级并给满分』，所以这里必须显式记录，不许静默。",
+      "properties": {
+        "reported": { "type": "boolean" },
+        "schema_valid": { "type": "boolean" },
+        "invalid_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/traceInvalidReason" },
+          "uniqueItems": true
+        },
+        "call_count": { "type": "integer", "minimum": 0 },
+        "final_status": { "enum": ["completed", "crashed", "timeout"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "reported": { "const": false } }, "required": ["reported"] },
+          "then": {
+            "properties": {
+              "schema_valid": { "const": false },
+              "call_count": { "const": 0 },
+              "invalid_reasons": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "schema_valid": { "const": true } }, "required": ["schema_valid"] },
+          "then": { "properties": { "invalid_reasons": { "maxItems": 0 } } }
+        }
+      ]
+    },
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["weighted_sum", "total_weight", "ratio", "denominator_policy", "by_state"],
+      "properties": {
+        "weighted_sum": { "type": "number", "minimum": 0 },
+        "total_weight": { "type": "number", "exclusiveMinimum": 0 },
+        "ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "denominator_policy": {
+          "const": "fixed_at_total_weight",
+          "description": "分母恒为任务全部断言权重之和，不因断言缺失而缩小（P4）"
+        },
+        "by_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pass", "fail", "blocked", "unscored"],
+          "properties": {
+            "pass": { "type": "integer", "minimum": 0 },
+            "fail": { "type": "integer", "minimum": 0 },
+            "blocked": { "type": "integer", "minimum": 0 },
+            "unscored": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "attribution_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "fail", "blocked", "unscored"],
+      "description": "从任务 YAML 的 scoring.attribution 抄来（去掉人类可读的 reason），让报告自解释：状态层不需要再回头读 YAML 才知道哪些状态算掌握度。",
+      "properties": {
+        "pass": { "$ref": "#/$defs/attribution" },
+        "fail": { "$ref": "#/$defs/attribution" },
+        "blocked": { "$ref": "#/$defs/attribution" },
+        "unscored": { "$ref": "#/$defs/attribution" }
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "必须与任务 rubric 一一对应：不多、不少、不重复（由 builder 保证，schema 只能保证结构）",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "weight", "state", "skill_id", "error_patterns", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^R[0-9]+_[a-z0-9_]+$" },
+          "type": { "type": "string", "minLength": 1 },
+          "weight": { "type": "number", "exclusiveMinimum": 0 },
+          "state": { "enum": ["pass", "fail", "blocked", "unscored"] },
+          "skill_id": {
+            "type": ["string", "null"],
+            "description": "null = 只计分不归因（R1/R5 在当前三技能分类学里无归属，P5）"
+          },
+          "error_patterns": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "uniqueItems": true
+          },
+          "reason_code": {
+            "enum": [
+              "trace_not_reported",
+              "trace_invalid",
+              "dependency_blocked",
+              "tool_no_response",
+              "invoke_timeout"
+            ]
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["observed", "expected"],
+            "properties": {
+              "observed": { "description": "实际观测到的值（任意类型，可 null）" },
+              "expected": { "description": "任务 YAML 声明的期望值（任意类型，可 null）" },
+              "extra": { "type": "object" }
+            }
+          },
+          "note": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "state": { "const": "fail" } }, "required": ["state"] },
+            "then": { "properties": { "error_patterns": { "minItems": 1 } } }
+          },
+          {
+            "if": { "properties": { "state": { "enum": ["pass", "blocked", "unscored"] } }, "required": ["state"] },
+            "then": { "properties": { "error_patterns": { "maxItems": 0 } } }
+          },
+          {
+            "if": { "properties": { "state": { "enum": ["blocked", "unscored"] } }, "required": ["state"] },
+            "then": { "required": ["reason_code"] }
+          }
+        ]
+      }
+    },
+    "skill_gaps": {
+      "type": "array",
+      "description": "只做聚合，不做推断：失败的断言按 YAML 已声明的 skill_id 归类，weight_lost 是这些断言的权重之和。skill_id 为 null 的断言不进本数组。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["skill_id", "failed_assertions", "patterns", "weight_lost"],
+        "properties": {
+          "skill_id": { "type": "string", "minLength": 1 },
+          "failed_assertions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "patterns": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "weight_lost": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "报告不自洽或有未覆盖情况时的显式说明（例如『两态同时成立』不允许静默）"
+    }
+  },
+  "$defs": {
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["counts_toward_mastery", "emit_error_patterns"],
+      "properties": {
+        "counts_toward_mastery": { "type": "boolean" },
+        "emit_error_patterns": { "type": "boolean" }
+      }
+    },
+    "traceInvalidReason": {
+      "enum": [
+        "not_reported",
+        "call_index_not_sequential",
+        "timestamp_not_increasing",
+        "missing_required_field",
+        "field_type_invalid",
+        "status_error_without_http_status"
+      ]
+    }
+  }
+}

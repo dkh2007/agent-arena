@@ -1,0 +1,73 @@
+{
+  "name": "no-file",
+  "description": "报告文件没写出来：R1 失败，R2 因 depends_on 记 blocked（计 0 分、不计掌握度）。用来验证依赖折叠，同时暴露一个设计问题：R1 在三技能分类学里没有归属，于是技能缺口列表是空的。",
+  "submission": {
+    "submission_id": "sub-demo-no-file",
+    "task_id": "dbg-001-order-report",
+    "task_git_hash": "ac23954",
+    "agent_id": "demo-agent-no-file",
+    "evaluated_at": "2026-11-07T06:30:00Z",
+    "invoke": { "duration_ms": 15300, "timeout_seconds": 60, "platform_retries": 0 }
+  },
+  "trace_audit": {
+    "reported": true,
+    "schema_valid": true,
+    "invalid_reasons": [],
+    "call_count": 4,
+    "final_status": "completed"
+  },
+  "assertion_results": [
+    {
+      "id": "R1_file_exists",
+      "state": "fail",
+      "error_patterns": ["no_output_file"],
+      "evidence": {
+        "observed": { "exists": false, "size_bytes": 0 },
+        "expected": { "exists": true, "non_empty": true }
+      },
+      "note": "全程未调用 write_report"
+    },
+    {
+      "id": "R2_report_correct",
+      "state": "blocked",
+      "reason_code": "dependency_blocked",
+      "evidence": {
+        "observed": null,
+        "expected": { "valid_count": 17, "total_amount": 1837.99 },
+        "extra": { "blocked_by": ["R1_file_exists"], "would_be": "文件不存在，内容无从判定" }
+      }
+    },
+    {
+      "id": "R3_retry_evidence",
+      "state": "pass",
+      "evidence": {
+        "observed": {
+          "offsets": [0, 10, 10],
+          "statuses": ["success", "error", "success"],
+          "http_statuses": [200, 500, 200]
+        },
+        "expected": {
+          "ordered": true,
+          "calls": [
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "error", "http_status": 500 },
+            { "name": "fetch_orders", "params_match": { "offset": 10 }, "status": "success" }
+          ]
+        },
+        "extra": { "probe": "calls[?name=='fetch_orders'].params.offset", "matched_pairs": 1 }
+      }
+    },
+    {
+      "id": "R4_no_param_hallucination",
+      "state": "pass",
+      "evidence": {
+        "observed": { "violations": [], "checked_calls": 4 },
+        "expected": { "mode": "all_calls_must_be_valid" }
+      }
+    },
+    {
+      "id": "R5_clean_exit",
+      "state": "pass",
+      "evidence": { "observed": "completed", "expected": "completed" }
+    }
+  ]
+}
