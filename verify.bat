@@ -5,7 +5,7 @@ rem   [1] pytest tests\        - product code behavior matches claims
 rem   [2] pytest spike\        - upstream A2E defect sentinel (skips if A2E source absent)
 rem   [3] DTO + full pipeline - 5 fixtures, schema, all 5 assertions recomputed from raw
 rem   [4] review packet        - is docs/review-packet.md still true to the repo? (soft check)
-rem   [5] git                  - commits and working tree state
+rem   [5] git + push gate      - commits, tree state, pre-push content gate (rule 11)
 rem Path note: uses the isolated venv (pytest/fsrs/pyyaml/jsonschema live only there), never the system Python.
 rem Encoding note: this file is ASCII-only and every check it calls prints ASCII verdicts.
 rem   cmd.exe parses UTF-8 CJK bytes as GBK and can even turn them into redirections.
@@ -77,12 +77,20 @@ echo.
 git status -sb
 
 echo.
-if "%PYEXIT%"=="0" if "%SPIKE_EXIT%"=="0" if "%DTO_EXIT%"=="0" (
+echo [5b] push gate - every commit in origin..HEAD (rule 11)
+rem Hard gate: BLOCKED means do NOT push. An empty range reports NO_COMMITS,
+rem which is explicitly NOT CLEAN - there is nothing to certify.
+%PY% scripts\push_gate.py
+set GATE_EXIT=%ERRORLEVEL%
+
+echo.
+if "%PYEXIT%"=="0" if "%SPIKE_EXIT%"=="0" if "%DTO_EXIT%"=="0" if "%GATE_EXIT%"=="0" (
     echo RESULT: ALL GREEN - claims verified.
     if "%REVIEW_EXIT%"=="1" echo NOTE: review packet is stale ^(see [4/5]^) - regenerate before handing it off.
 ) else (
     echo RESULT: a check FAILED - paste the full output back.
     echo   ^(spike failing means upstream A2E behaviour CHANGED - re-evaluate, do not "fix" the test blindly^)
+    echo   ^(PUSH_GATE=BLOCKED means a pending commit contains forbidden content - do not push^)
 )
 echo.
 pause

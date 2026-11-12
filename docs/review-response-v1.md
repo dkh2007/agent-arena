@@ -5080,3 +5080,97 @@ GitHub Docs《Removing sensitive data from a repository》另明确：仅重写�
 - 推送实测结果按 §49.6「不写回仓内正文」，记维护者侧日志与本轮答复。
 - 不提外评：依据全在仓内 + 官方手册章节，未定项是产品意向，外评替代不了人拍板。
 
+## 51. round-51：push 闸门仓内脚本化（§50.4 后续小步）
+
+人回「继续按照你的原有想法走」。路线里 §49.2 的 D5/D6 与 §50.4 的脚本化各是一项待办，
+本轮**只做 §50.4 登记的后续小步**（脚本化 + 接入 `verify.bat`），不启动 D5/D6：
+按 §28.6，D6 须同时解决 TD-024 并接受 B1 `0.75 → 0.5` 的分数变化，属判定语义 / 分数
+变更；按「一步 = 一个可独立验证的最小单元」必须单独拆步，不与工具链改动混在一轮。
+这是取舍说明，不是替人改排期。
+
+### 51.1 交付物
+
+| 文件 | 改动 |
+|---|---|
+| `scripts/push_gate.py`（新增，307 行纯 LF / 全 ASCII） | 闸门实现 + 内置反证 + 诊断入口 |
+| `verify.bat` | 顶部说明改 `[5] git + push gate`；新增 `[5b]` 段调用闸门并把 `GATE_EXIT` 纳入**硬判定**；失败提示补一行 `PUSH_GATE=BLOCKED` 处置 |
+
+生成器 / 模板 / 评审包 / 任务 YAML / `tests/` / `src/` / 夹具 / `requirements.txt` 一字未改。
+
+### 51.2 两条硬约束（决定实现形态）
+
+1. **不能往 `tests/` 加用例**：`review_packet._snapshot()` 的 `_pytest_count()` 用
+   `pytest tests/ --collect-only` 收集数写进快照；新增测试会改变现算量使 `--check` 变
+   `STALE`，而「不为对齐 HEAD 重生成评审包」是既定纪律，两条不能同时满足。故本轮外部
+   裁判走脚本自带 `--self-test` + 一次性命令，**不用 pytest 承载闸门测试**。这是取舍，不是省事。
+2. **闸门不能自我命中**：提交后脚本自身也在待扫的整树 blob 里；若源码含任一 needle 的
+   连续字面量，闸门会永远 `BLOCKED` 自己的提交。解法：禁词从
+   `src/arena/review_packet.py` 的 `FORBIDDEN` 运行期解析（单一真相源）；本机绝对路径 /
+   用户名由 `USERPROFILE` 推导；凭据前缀写成**相邻字符串字面量**（Python 会拼接，源码不连续）。
+   `--self-test` 内含 `SELF_AUDIT_HITS` 断言，另有一份**独立于脚本自评**的外部扫描。
+
+### 51.3 口径
+
+| 项 | 口径 |
+|---|---|
+| 默认范围 | `<upstream>..HEAD`（`git rev-parse @{u}`）；无 upstream 报 `ERROR`，不静默 `CLEAN` |
+| 每个提交扫三类 | 整树 blob（`ls-tree -r -z`）+ diff 新增行（`git show`，对根提交也成立）+ commit message |
+| 命中集合 | 禁词 / 本机绝对路径（三种表示）/ 用户名 / 凭据前缀 |
+| 空范围 | `PUSH_GATE=NO_COMMITS`，**明确不是 `CLEAN`**；「没有待推送提交」不等于「已核证可推送」 |
+| 退出码 | `0`=CLEAN 或 NO_COMMITS、`1`=BLOCKED、`2`=ERROR、`3`=TIMEOUT |
+| 诊断参数 | `--commit <sha>`（单提交十分钟对照）、`--range <spec>`（**仅诊断**，正式闸门永远用默认 upstream 范围）、`--self-test --dirty <已知脏 sha>` |
+| 输出 | 全 ASCII（`cmd.exe` 走 GBK，CJK 会乱码）；中文 commit subject 降级为 `?` |
+
+`--range` 是诊断入口，存在「人为缩小范围」的滥用面；它不是安全边界，正式放行判据只认
+默认 `origin/<branch>..HEAD`（§50.4）。
+
+### 51.4 十分钟验证（可粘贴，本轮已在 PowerShell 5.1 下原样跑通）
+
+```powershell
+Set-Location <仓库根>
+$py = "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+& $py 'scripts\push_gate.py' --self-test --dirty 'c830b1b'
+& $py 'scripts\push_gate.py'
+& $py 'scripts\push_gate.py' --commit 'c830b1b'
+& $py 'scripts\push_gate.py' --commit 'HEAD'
+& $py 'scripts\push_gate.py' --range 'HEAD~2..HEAD'
+& $py 'src\arena\review_packet.py' --check
+```
+
+预期依次：`SELF_TEST_PASS=True`（RC=0）/ `PUSH_GATE=NO_COMMITS`（当前 HEAD=origin，RC=0）/
+`BLOCKED`（RC=1）/ `CLEAN`（RC=0）/ 2 提交 `CLEAN` / `OK (7974ca6f877d3e6a)`。
+**负对照 `c830b1b` 报 `BLOCKED`、当前 HEAD 报 `CLEAN`，两者缺一不可**，符合 §50.4 反证条件。
+
+### 51.5 实测结果
+
+| 裁判 | 结果 |
+|---|---|
+| 编译 / 行尾 / ASCII | `py_compile` RC=0；脚本 307 行纯 LF、源码与 stdout 全 ASCII；`verify.bat` 96 行纯 LF、ASCII-only |
+| `--self-test --dirty c830b1b` | `SELF_AUDIT_HITS=0` / `POSITIVE_CURRENT_HEAD=CLEAN hits=0` / `NEGATIVE_KNOWN_DIRTY=BLOCKED hits=2` / `EMPTY_RANGE_NOT_CLEAN=True` / `SELF_TEST_PASS=True` |
+| 默认范围 | `origin/main..HEAD`、`COMMITS_IN_RANGE=0`、`PUSH_GATE=NO_COMMITS`（不假绿） |
+| 单提交对照 | `c830b1b` → `TOTAL_HITS=2 / BLOCKED / RC=1`；`HEAD` → `0 / CLEAN / RC=0` |
+| 多提交循环 | `HEAD~2..HEAD` → 2 提交 `CLEAN`；`c830b1b^..HEAD` → 22 提交 `TOTAL_HITS=65 / BLOCKED`，证明逐提交扫而非只看最后一个 |
+| 独立外部自扫 | 一次性命令从 git 对象取 `FORBIDDEN` + 环境构造 needle 扫脚本源码：`EXTERNAL_SELF_AUDIT_HITS=0 / CLEAN`（不依赖脚本自评） |
+| 全量裁判 | **652 passed**（46.94s）；`--check OK (7974ca6f877d3e6a)` |
+| 评审包 | 字节 sha `839eb4b66a954ba7` **未变**（证明没重生成；新增脚本与 `verify.bat` 不在快照读取范围） |
+| 匿名 | 新脚本 / `verify.bat` / 10 行 diff 新增：禁词 / 绝对路径 / 凭据 / 用户名 **0 命中 CLEAN** |
+| Windows shell | §51.4 六条命令在 PowerShell 5.1 下原样跑通，RC 依次 `0/0/1/0/0/0` |
+
+### 51.6 边界与留痕
+
+- **`verify.bat` 整体仍未实跑**：末尾 `pause` 需交互，且 A2E 上游 venv 存在、`[2/5]` 会跑
+  上游测试；本轮只实跑新增 `[5b]` 段那一行（按等价命令在 PowerShell 下执行）。沿用
+  §23 / §26 / §28 的既有声明，不冒充整包已验收。
+- 一次从 Bash 调 `cmd.exe` 的诊断命令被工具安全策略拦下（**权限拦截**，不是 `FAILED` /
+  `ERROR` / `TIMEOUT`）；未绕路重试，改用 PowerShell 原生调用完成同一验证。
+- 闸门只覆盖**待推送**提交；21 个已推送提交里的旧文本仍在（§50.1），本轮不改变
+  「不重写历史」结论。
+- 本轮**零 git 写操作**：`git status --porcelain` = ` M verify.bat` / `?? scripts/`，
+  HEAD 与 `origin/main` 仍 `efa9ff6`；提交 / push 归人拍板。
+- 不提外评：依据全在仓内，未定项是排期与产品意向，外评替代不了人拍板。
+
+### 51.7 下一步
+
+D5/D6 → Q4(d) 不变；`builder` 引用评分策略常量仍建议暂不做（§40.6）。
+D5/D6 开工前先按 §28.6 出**只读决策包**（尤其 D6 的 TD-024 与分数变化），不与工具链改动混步。
+
