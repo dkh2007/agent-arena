@@ -8,7 +8,7 @@
   Q3 哪些 R3 变体 JMESPath 表达不了（决定薄封装到底有多薄）
 
 运行：
-    C:/Users/18985/.workbuddy/binaries/python/envs/default/Scripts/python.exe spike/jmespath_probe.py
+    python spike/jmespath_probe.py
 """
 
 from __future__ import annotations

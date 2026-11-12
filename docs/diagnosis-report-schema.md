@@ -29,7 +29,7 @@
 ```
 report_version       "v2"
 submission           提交元信息（含 task_git_hash：没有它，断言 id 无法与 YAML 对齐）
-trace_audit          trace 前置校验结果（A2E 反面教材的产物）
+trace_audit          trace 前置校验结果（**trace 的派生值**，见 §2.1；A2E 反面教材的产物）
 score                两段式分数：gate 决定资格、credit 决定分数
 attribution_policy   四态 × {是否计入掌握度, 是否产出错误模式}
 assertions[]         逐条断言：layer / weight / state / skill_id / error_patterns / evidence
@@ -39,6 +39,60 @@ notes[]              可选。报告出现"未覆盖情况"时必须在这里说
 ```
 
 顺序约定：`assertions[]` **先 gate 后 credit**，与执行顺序一致（执行器先跑门禁，不过就不必跑昂贵的 credit 判定）。`R5` 排在 `R2` 之前不是笔误。
+
+**加载期硬约束（round-46 / TD-035 ② 案 A）**：`depends_on` 的被依赖项，必须在上面这个
+**全局 `gate + credit` 序列**里排在引用方之前；引用后置断言由
+`src/arena/diagnosis_report.py::rubric_layers()` 在加载期直接拒绝（`ReportError`，
+消息点名引用方、被依赖项与双方序号）。跨层引用合法：现役
+`R2_report_correct → R1_file_exists` 是 credit 引用 gate，必须保留。
+
+**本条是契约声明，不是对未来实现的预测**。依据是**当前可核证的事实**：执行器按 rubric
+数组顺序累积 `dependency_results`（`trace_pipeline.py`「gate 在前，R1 一定先于 R2 算出」），
+后置断言尚未算出 ⇒ 报告层 `ratio=1.0` 与执行器 `blocked` 结论相反。若日后把执行器改为
+拓扑排序或允许乱序声明，即构成**契约变更**：必须同时反转本条与
+`docs/review-response-v1.md` §46 的加载期顺序校验及其测试锁，否则会误拒合法配置。
+环检查仍由 `tests/test_task_yaml.py::test_dependencies_declared_and_acyclic` 静态负责，
+不在加载期重复实现（§45.4 同源口径）。
+
+### 2.1 `trace_audit`：trace 的派生物（round-24 拍板，F1 / TD-016）
+
+**它不是平台侧独立声明**。五个字段全部由 `src/arena/trace_pipeline.py::recompute_all()`
+从 `raw.trace` + `tasks/dbg-001-order-report.yaml::trace_requirements.minimum` 算出：
+
+| 字段 | 派生规则 |
+|---|---|
+| `reported` | `trace is not None` |
+| `call_count` | `len(trace.tool_calls)`（非数组时为 0） |
+| `schema_valid` | 结构校验无违规 |
+| `invalid_reasons` | 结构违规原因码（`traceInvalidReason` 枚举内，集合比较） |
+| `final_status` | `trace.final_status`，仅当值在 `final_status.enum` 内才写入；`trace=None` 时整项缺失 |
+
+**结构校验**只覆盖 YAML 已声明的规则：`tool_calls` 是数组、每条 `call_index` 从 1 连续、
+`status` 在 `status_enum` 内、`params` 是对象、`final_status` 必填且在枚举内。
+执行器的**语义** `trace_invalid`（未知工具、probe 投影丢失、工具参数 schema 违规）
+**不算结构损坏**，否则会推翻已拍板的 P-B 口径；分界见 `docs/executor-semantics.md` §4。
+
+`agent_id` 有意不在上表内（TD-020 ③ 拍板 b）：它只是可选元数据，agent 身份以报告层
+`submission.agent_id` 为准（DTO 必填）。`trace.agent_id` 缺失或与 `submission.agent_id`
+不一致都不改变 `schema_valid` / 分数；任务 YAML 也不再声明 `agent_id.required`。
+
+**冲突即拒绝（R1）**：手写 `raw.trace_audit` 逐字段与派生值对账，任一不一致抛
+`PipelineError`，不改写、不产出半真报告。五份夹具的手写值实测与派生值逐字相等，
+因此落地不改夹具、不改分数序。这是 T11「真相源冲突即拒绝组装」的同一纪律。
+
+**schema 侧四条 `allOf`（报告出口的第二道防线）**：
+
+| 编号 | 规则 | 关闭的缺口 |
+|---|---|---|
+| A1 | `reported=false ⇒ schema_valid=false / call_count=0 / invalid_reasons≥1` | 未上报却声称有效 |
+| A2 | `schema_valid=true ⇒ invalid_reasons` 为空 | 有效却列理由 |
+| **A3** | `schema_valid=false ⇒ invalid_reasons≥1` | P1「说坏却给不出理由」 |
+| **A4** | `reported=false ⇒` 不允许 `final_status` | TD-023 / P4「无 trace 却声称退出状态」 |
+
+A3 / A4 为 round-24 新增（拍板 P-F1-4）。即使将来出现绕过 `recompute_all()` 的
+组装路径，报告也不会带上自相矛盾的 audit。**已知旁路**：兼容入口 `recompute_r3()`
+不经过 F1 对账（TD-024，本步不收敛）；派生器与 `_validate_calls()` 是两处独立实现，
+未来须收敛以免规则漂移（同属 TD-024）。
 
 ---
 
@@ -144,6 +198,7 @@ P5 的最终处置是**不加第 4 技能**，走 gate 通道：`score.disqualif
 | `dependency_blocked` | `blocked` | 前置断言未通过，本断言无从判定 |
 | `tool_no_response` | `blocked` | 工具无响应，产物不可得 |
 | `invoke_timeout` | `blocked` | 调用超时 |
+| `artifact_invalid` | `unscored` | 产物本体（Q13(a) 的 `raw.artifacts`）缺失或结构非法：**平台采集故障**，不判成「学生没交」、不归因；S3-3-6 按 §20.2 第 1 项扩入 |
 
 ---
 
@@ -159,6 +214,8 @@ schema 管结构（能表达的），builder 管语义（schema 表达不了的�
 | S4 | `state ∈ {blocked, unscored} ⇒ reason_code` 必填 | schema | — |
 | S5 | `denominator_policy` 只能是 `fixed_at_credit_total_weight` | schema | — |
 | S6 | `disqualified=true ⇒ ratio=0 且 weighted_sum=0 且 disqualifying 非空` | schema | — |
+| S7 | `schema_valid=false ⇒ invalid_reasons≥1`（round-24 / §2.1 A3） | schema（allOf） | — |
+| S8 | `reported=false ⇒` 不允许 `final_status`（round-24 / §2.1 A4，TD-023） | schema（allOf） | — |
 | I1 | 断言 id 集合 = `rubric_gate ∪ rubric_credit`，不重不漏、顺序一致 | builder | schema 无法表达"等于另一份文件的集合" |
 | I2 | trace 不可用 ⇒ 所有 `type` 以 `trace_` 开头的断言强制 `unscored` | builder | 需要读外部状态 |
 | I3 | `fail` 的模式 ⊆ 本断言声明 ∩ 词表 | builder | 需要读词表文件 |
@@ -175,7 +232,7 @@ schema 管结构（能表达的），builder 管语义（schema 表达不了的�
 
 | 夹具 | 提交形态 | v1 ratio | **v2 ratio** | 关键判定 |
 |---|---|---|---|---|
-| `raw-empty` | 0 次工具调用就正常退出 | **0.333** | **0（DQ）** | R1 门禁拦下。R4 因全称命题对空集平凡为真而 `pass`——正是要堵的漏洞 |
+| `raw-empty` | 0 次工具调用就正常退出 | **0.333** | **0（DQ）** | R1 门禁拦下。R4 空集平凡 pass 的漏洞已堵（round-32 F5）：无目标工具受检调用 → `unscored`，不再计掌握度；ratio 仍 0 全靠 gate 拦 |
 | `raw-no-file` | 过程全对，产物没写 | 0.500 | **0（DQ）** | R1 门禁拦下；`credit_pass_weight=2` 仍照算，`unattributed_patterns=[no_output_file]` |
 | `raw-fake-retry` | 游标退回 offset=0 的假重试 | 0.500 | **0.25** | credit 只拿 R4 的 1 分；`skill_gaps` 两个（R2 的 2 分 + R3 的 1 分） |
 | `raw-no-trace` | 结果对，但没报 trace | 0.500 | **0.500** | 门禁 R5 `unscored` 不拦；credit 只剩 R2 的 2 分 |

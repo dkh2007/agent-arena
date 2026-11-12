@@ -31,6 +31,12 @@ GATE, CREDIT = "gate", "credit"
 TRACE_TYPE_PREFIX = "trace_"
 REPORT_VERSION = "v2"
 DENOMINATOR_POLICY = "fixed_at_credit_total_weight"
+# TD-034 (C)：评分策略声明必须与 builder 硬编码一致，见 _check_scoring_policy()。
+# 只锁影响分数的 5 组；score.formula 与 gate.source / credit.source 是纯说明字段，不参与判定。
+GATE_DISQUALIFIED_IF = "any_gate_failed"
+GATE_DISQUALIFY_RATIO = 0
+GATE_ON_UNSCORED = "do_not_disqualify"
+CREDIT_CONTRIBUTION = {"pass": "weight", "fail": 0, "blocked": 0, "unscored": 0}
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "docs" / "diagnosis-report.schema.json"
@@ -67,6 +73,92 @@ def validate_report(report: dict, schema: dict | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _policy_value_matches(value: Any, want: Any) -> bool:
+    """严格比较：0 与 False 不能混过对账（bool 是 int 子类，== 会漏）。"""
+    if isinstance(want, dict):
+        return (
+            isinstance(value, dict)
+            and set(value) == set(want)
+            and all(_policy_value_matches(value[k], want[k]) for k in want)
+        )
+    return type(value) is type(want) and value == want
+
+
+def _check_scoring_policy(task: dict) -> None:
+    """TD-034 (C)：YAML 评分策略声明 vs builder 硬编码，逐项对账，不一致即拒绝。
+
+    放在 rubric_layers 这道公共门：执行器、CLI、未来的 API 都必经，改了 YAML 不改
+    builder 会立刻得到可读错误，不会悄悄漂移。builder 对应实现见 build_report()：
+    disqualified = bool(disqualifying)、不合格 ratio 固定 0、gate unscored 不拦、
+    credit_total = sum(weight)、分子只累加 state == "pass"。
+    本函数不改任何分数；不读 formula 与两个 source（纯说明字段，锁了误报高，见 §38.5）。
+    """
+    score = (task.get("scoring") or {}).get("score") or {}
+    gate_cfg = score.get("gate") or {}
+    credit_cfg = score.get("credit") or {}
+    expected = (
+        ("scoring.score.gate.disqualified_if", gate_cfg.get("disqualified_if"), GATE_DISQUALIFIED_IF),
+        ("scoring.score.gate.disqualify_ratio", gate_cfg.get("disqualify_ratio"), GATE_DISQUALIFY_RATIO),
+        ("scoring.score.gate.on_unscored", gate_cfg.get("on_unscored"), GATE_ON_UNSCORED),
+        ("scoring.score.credit.denominator", credit_cfg.get("denominator"), DENOMINATOR_POLICY),
+        ("scoring.score.credit.contribution", credit_cfg.get("contribution"), CREDIT_CONTRIBUTION),
+    )
+    drift = [
+        f"{path}={value!r}（builder 固定为 {want!r}）"
+        for path, value, want in expected
+        if not _policy_value_matches(value, want)
+    ]
+    if drift:
+        raise ReportError(
+            "YAML 评分策略与 builder 硬编码不一致：" + "；".join(drift)
+            + "——改评分规则须同步改 builder 与本节常量（见 review-response-v1.md §38）"
+        )
+
+
+def _check_rubric_item_shapes(task: dict) -> None:
+    """TD-033 第 4 子项：rubric 条目必须是映射，坏条目在加载期给可读错误。
+
+    抽成公共函数：执行路径与后续可能接入的生成路径共用同一份判据，
+    避免把形状规则复制成第二真相源（round-39 / §41 同源口径）。
+    """
+    for layer in (GATE, CREDIT):
+        rows = list(task.get(f"rubric_{layer}") or [])
+        for idx, row in enumerate(rows, 1):
+            if not isinstance(row, dict):
+                raise ReportError(
+                    f"rubric_{layer} 第 {idx} 条断言不是映射"
+                    f"（实际 {type(row).__name__}: {row!r}）：条目必须是含 id / type / depends_on 的对象"
+                )
+
+
+def _check_dependency_order(gate: list[dict], credit: list[dict]) -> None:
+    """TD-035 ② 案 A：被依赖项必须在全局 gate+credit 序列里排在引用方之前。
+
+    契约依据（仓内）：docs/diagnosis-report-schema.md「先 gate 后 credit，与执行顺序一致」、
+    trace_pipeline.py「gate 在前，R1 一定先于 R2 算出」、review-response-v1.md §6.2
+    「断言数组顺序 = 执行顺序」。执行器按数组顺序累积 dependency_results，后置断言
+    尚未算出，会出现报告层 ratio=1.0 与执行器 blocked 结论相反；本校验在唯一配置入口
+    挡住非法配置（见 review-response-v1.md §44 / §46）。
+
+    边界：① 引用不存在 / 自依赖 / 类型不支持由 Step1 先报，未知 dep 在此跳过，
+    不抢错误优先级；② 只做 index 比较，环检查由 tests/test_task_yaml.py 静态负责，
+    不在此重复实现（§45.4 同源口径）。
+    """
+    order = [r["id"] for r in gate + credit]
+    position = {rid: i for i, rid in enumerate(order, 1)}
+    for idx, r in enumerate(gate + credit, 1):
+        for dep in r["depends_on"]:
+            at = position.get(dep)
+            if at is None:
+                continue  # Step1 已报「引用不存在」
+            if at >= idx:
+                raise ReportError(
+                    f"{r['id']}: depends_on 引用了后置断言 {dep!r}"
+                    f"（全局 gate+credit 顺序：{r['id']} 第 {idx} 条，{dep} 第 {at} 条）"
+                    "——执行器按数组顺序执行，被依赖项必须先算出"
+                )
+
+
 def rubric_layers(task: dict) -> tuple[list[dict], list[dict]]:
     """取出 (gate, credit) 两个断言数组，并校验分层本身成立。
 
@@ -83,11 +175,35 @@ def rubric_layers(task: dict) -> tuple[list[dict], list[dict]]:
     if not credit:
         raise ReportError("rubric_credit 为空：没有积分断言的分数恒为 0，评分无意义")
 
+    _check_rubric_item_shapes(task)
     gate_ids = [r["id"] for r in gate]
     credit_ids = [r["id"] for r in credit]
     dup = set(gate_ids) & set(credit_ids)
     if dup:
         raise ReportError(f"断言同时出现在 gate 与 credit：{sorted(dup)}（一条断言只能属于一层）")
+    for layer, ids in ((GATE, gate_ids), (CREDIT, credit_ids)):
+        repeated = sorted({i for i in ids if ids.count(i) > 1})
+        if repeated:
+            raise ReportError(f"{layer} 层断言 id 重复：{repeated}（同一层内 id 必须唯一）")
+
+    known = set(gate_ids) | set(credit_ids)
+    for r in gate + credit:
+        if "depends_on" not in r:
+            raise ReportError(f"{r['id']}: 缺 depends_on（无依赖也要写 []）")
+        deps = r["depends_on"]
+        if not isinstance(deps, list) or any(not isinstance(d, str) or not d for d in deps):
+            raise ReportError(f"{r['id']}: depends_on 必须是非空字符串数组（当前 {deps!r}）")
+        for dep in deps:
+            if dep == r["id"]:
+                raise ReportError(f"{r['id']}: depends_on 自依赖")
+            if dep not in known:
+                raise ReportError(f"{r['id']}: depends_on 引用不存在的断言 {dep!r}")
+        if deps and r["type"] != "json_field_equals":
+            raise ReportError(
+                f"{r['id']}: type={r['type']!r} 不支持 depends_on"
+                "（当前只有 json_field_equals 执行依赖折叠）"
+            )
+    _check_dependency_order(gate, credit)
     for r in gate:
         if r.get("weight", 0) != 0:
             raise ReportError(f"{r['id']} 是门禁，不允许带权重 {r.get('weight')!r}——门禁不计分")
@@ -96,6 +212,7 @@ def rubric_layers(task: dict) -> tuple[list[dict], list[dict]]:
     for r in credit:
         if not isinstance(r.get("weight"), (int, float)) or r["weight"] <= 0:
             raise ReportError(f"{r['id']} 在 credit 层，权重必须为正数（当前 {r.get('weight')!r}）")
+    _check_scoring_policy(task)
     return gate, credit
 
 
@@ -207,9 +324,11 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
     gate_unscored = [a["id"] for a in gate_assertions if a["state"] == "unscored"]
     disqualified = bool(disqualifying)
     if gate_unscored:
+        # TD-021 / F6②：原文「分数不会因此变高」与实测 ratio=0.5 相反，按 S3-3-6 订正。
         notes.append(
             "门禁 " + ", ".join(gate_unscored) + " 无法判定（数据缺失）：按 on_unscored=do_not_disqualify 不拦，"
-            "但它同时意味着对应的 credit 断言也不可判，分数不会因此变高"
+            "本次不判不合格；门禁本身不计分，依赖它的 credit 断言记 blocked 也不计分，"
+            "但其余 credit 断言仍照常计分——可能出现 0 < ratio < 1，不写成「分数不会变高」"
         )
 
     # ── 第二段：积分 ──────────────────────────────────────────────────────

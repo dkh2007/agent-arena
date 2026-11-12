@@ -17,3 +17,6 @@ Thumbs.db
 *.log
 *.sqlite3
 .pytest_cache/
+
+# 外部红队测试的隔离运行目录（未核证前不进 tests/，也不该被提交）
+.redteam-tmp/

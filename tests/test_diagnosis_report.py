@@ -330,3 +330,219 @@ def test_schema_rejects_disqualified_with_nonzero_ratio():
     bad["score"]["ratio"] = 0.5
     with pytest.raises(ReportError, match="schema"):
         validate_report(bad, SCHEMA)
+
+
+# ---------------------------------------------------------------------------
+# TD-034 (C)：评分策略声明的加载期对账（见 review-response-v1.md §38 / §40）
+# ---------------------------------------------------------------------------
+
+
+def _task_with_policy(path: str, value) -> dict:
+    """按点分路径改一份任务副本，用来造「声明漂移」（不落盘）。"""
+    task = copy.deepcopy(TASK)
+    keys = path.split(".")
+    node = task
+    for key in keys[:-1]:
+        node = node[key]
+    node[keys[-1]] = value
+    return task
+
+
+def test_td034_declared_policy_matches_builder():
+    """正向：磁盘上这份 YAML 的 5 组声明与 builder 常量逐项一致。"""
+    gate, credit = rubric_layers(TASK)
+    assert [r["id"] for r in gate] == GATE_IDS
+    assert [r["id"] for r in credit] == CREDIT_IDS
+    assert build_report(TASK, _raw("raw-perfect"), VOCAB)["score"]["ratio"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "path,value,keyword",
+    [
+        ("scoring.score.gate.disqualified_if", "never", "disqualified_if"),
+        ("scoring.score.gate.disqualify_ratio", 0.3, "disqualify_ratio"),
+        ("scoring.score.gate.on_unscored", "disqualify", "on_unscored"),
+        ("scoring.score.credit.denominator", "variable", "denominator"),
+        ("scoring.score.credit.contribution",
+         {"pass": 0, "fail": 0, "blocked": 0, "unscored": 0}, "contribution"),
+    ],
+)
+def test_td034_rejects_drifted_policy(path, value, keyword):
+    """5 组影响分数的声明任一漂移，build_report 必须给出可读 ReportError。"""
+    with pytest.raises(ReportError, match=keyword):
+        build_report(_task_with_policy(path, value), _raw("raw-perfect"), VOCAB)
+
+
+def test_td034_rejects_bool_as_zero():
+    """类型边界：False == 0 但布尔不是整数，不能混过对账。"""
+    task = _task_with_policy("scoring.score.gate.disqualify_ratio", False)
+    with pytest.raises(ReportError, match="disqualify_ratio"):
+        build_report(task, _raw("raw-perfect"), VOCAB)
+
+
+def test_td034_rejects_partial_contribution():
+    """contribution 少一个状态也算漂移，不能靠少写一行绕过对账。"""
+    task = copy.deepcopy(TASK)
+    task["scoring"]["score"]["credit"]["contribution"].pop("unscored")
+    with pytest.raises(ReportError, match="contribution"):
+        build_report(task, _raw("raw-perfect"), VOCAB)
+
+
+def test_td034_does_not_lock_explanatory_fields():
+    """口径锁：formula 与两个 source 是纯说明字段，改值不该被拒（D-TD034-2 = 只锁 5 组）。"""
+    task = copy.deepcopy(TASK)
+    task["scoring"]["score"]["formula"] = "plain_ratio"
+    task["scoring"]["score"]["gate"]["source"] = "rubric_credit"
+    task["scoring"]["score"]["credit"]["source"] = "rubric_gate"
+    assert build_report(task, _raw("raw-perfect"), VOCAB)["score"]["ratio"] == 1.0
+
+
+# --- TD-033 第 4 子项：rubric 条目形状（review-response-v1.md §42） ---
+
+def _task_with_bad_item(layer: str, value):
+    task = copy.deepcopy(TASK)
+    task[f"rubric_{layer}"][0] = value
+    return task
+
+
+@pytest.mark.parametrize(
+    "layer,value,typename",
+    [("gate", "not-a-dict", "str"), ("credit", 42, "int")],
+    ids=["T1-gate-string", "T2-credit-int"],
+)
+def test_td033_shape_rejects_non_mapping_item(layer, value, typename):
+    """§38.3 T1/T2：坏条目必须在加载期给可读 ReportError，而不是裸 TypeError。"""
+    with pytest.raises(ReportError, match=f"rubric_{layer} 第 1 条") as exc:
+        rubric_layers(_task_with_bad_item(layer, value))
+    assert typename in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "layer,value",
+    [("gate", "not-a-dict"), ("credit", 42)],
+    ids=["T1-gate-string", "T2-credit-int"],
+)
+def test_td033_shape_build_report_rejects_non_mapping_item(layer, value):
+    """§38.3 的 T2 走的是 build_report() 复现，全链路入口也必须给可读错误。"""
+    with pytest.raises(ReportError, match=f"rubric_{layer} 第 1 条"):
+        build_report(_task_with_bad_item(layer, value), _raw("raw-perfect"), VOCAB)
+
+
+def test_td033_shape_current_task_passes():
+    """正向锁：现役 YAML 两层条目全是映射，不该被新校验挡住。"""
+    gate, credit = rubric_layers(copy.deepcopy(TASK))
+    assert gate and credit
+
+
+def test_td033_shape_rejects_bad_item_at_any_position():
+    """不是只查第 1 条：任意位置的坏条目都要点名序号。"""
+    task = copy.deepcopy(TASK)
+    idx = len(task["rubric_credit"])
+    task["rubric_credit"][-1] = None
+    with pytest.raises(ReportError, match=f"rubric_credit 第 {idx} 条"):
+        rubric_layers(task)
+
+
+# --- TD-035 ② 案 A：depends_on 后置依赖（review-response-v1.md §46） ---
+# 口径：全局 gate+credit 序列 = 执行顺序；被依赖项必须排在引用方之前。
+# 环检查仍由 tests/test_task_yaml.py::test_dependencies_declared_and_acyclic
+# 静态负责，这里不重复实现（§45.4），由本地裁判 -k acyclic 验证仍绿。
+
+def _task_with_deps(rid, deps, gate_type=None):
+    """造一份内存副本：改指定断言的 depends_on（不落盘）。"""
+    task = copy.deepcopy(TASK)
+    row = next(r for r in task["rubric_gate"] + task["rubric_credit"] if r["id"] == rid)
+    row["depends_on"] = deps
+    if gate_type:
+        row["type"] = gate_type
+    return task
+
+
+def test_td035_order_current_task_passes_with_global_index():
+    """现役合法配置必须通过：全局顺序 R1,R5,R2,R3,R4，R2→R1 是 gate 被 credit 引用。"""
+    gate, credit = rubric_layers(copy.deepcopy(TASK))
+    order = [r["id"] for r in gate + credit]
+    assert order == [
+        "R1_file_exists", "R5_clean_exit", "R2_report_correct",
+        "R3_retry_evidence", "R4_no_param_hallucination",
+    ]
+    assert credit[0]["depends_on"] == ["R1_file_exists"]
+    assert order.index("R1_file_exists") < order.index("R2_report_correct")
+
+
+def test_td035_order_accepts_cross_layer_forward_reference():
+    """跨层前置合法：R2 也可以引用 gate 第二条 R5，不是只认第一条。"""
+    task = _task_with_deps("R2_report_correct", ["R5_clean_exit"])
+    gate, credit = rubric_layers(task)
+    assert credit[0]["depends_on"] == ["R5_clean_exit"]
+
+
+@pytest.mark.parametrize(
+    "dep",
+    ["R3_retry_evidence", "R4_no_param_hallucination"],
+    ids=["T4-R3", "T4b-R4"],
+)
+def test_td035_order_rejects_backward_dependency(dep):
+    """§38.3 T4：后置依赖在加载期拒绝，而不是让报告层通过、执行器 blocked。"""
+    with pytest.raises(ReportError, match="后置断言") as exc:
+        rubric_layers(_task_with_deps("R2_report_correct", [dep]))
+    assert dep in str(exc.value) and "R2_report_correct" in str(exc.value)
+
+
+def test_td035_order_build_report_rejects_backward_dependency():
+    """全链路入口也要拒：非法配置不能在 build_report() 里重新算出 ratio=1.0。"""
+    with pytest.raises(ReportError, match="后置断言"):
+        build_report(
+            _task_with_deps("R2_report_correct", ["R3_retry_evidence"]),
+            _raw("raw-perfect"), VOCAB,
+        )
+
+
+def test_td035_order_error_is_readable():
+    """错误信息点名 item / 依赖 / 双方全局序号，不是一句泛泛的「顺序不合法」。"""
+    with pytest.raises(ReportError) as exc:
+        rubric_layers(_task_with_deps("R2_report_correct", ["R3_retry_evidence"]))
+    msg = str(exc.value)
+    assert "R2_report_correct" in msg and "R3_retry_evidence" in msg
+    assert "第 3 条" in msg and "第 4 条" in msg and "后置" in msg
+
+
+def test_td035_order_prioritizes_missing_reference():
+    """§45.4：既拼错又后置时先报「引用不存在」，不把拼错误报成顺序问题。"""
+    task = _task_with_deps("R2_report_correct", ["R3_retry_evidence", "R_typo"])
+    with pytest.raises(ReportError) as exc:
+        rubric_layers(task)
+    assert "引用不存在" in str(exc.value)
+    assert "后置" not in str(exc.value)
+
+
+def test_td035_order_rejects_gate_referencing_credit():
+    """反向依赖：gate 引用 credit（R1→R2）按全局 index 也应拒。
+
+    现役被 Step1「非空 dep 只允许 json_field_equals」挡住；这里显式把 gate 改成
+    该类型，防未来新增 gate 侧 json_field_equals 时出现意外（§45.4）。
+    """
+    task = _task_with_deps("R1_file_exists", ["R2_report_correct"], gate_type="json_field_equals")
+    with pytest.raises(ReportError, match="后置断言") as exc:
+        rubric_layers(task)
+    assert "R1_file_exists" in str(exc.value) and "第 1 条" in str(exc.value)
+
+
+def test_td035_order_checks_every_dependency():
+    """不是只查 deps 第一个：合法前置 + 后置混排也要被抓出来。"""
+    task = _task_with_deps("R2_report_correct", ["R1_file_exists", "R3_retry_evidence"])
+    with pytest.raises(ReportError, match="后置断言"):
+        rubric_layers(task)
+
+
+def test_td035_order_self_dependency_still_reported_by_step1():
+    """边界：自依赖仍由 Step1 报「自依赖」，新校验不抢错误优先级。"""
+    with pytest.raises(ReportError, match="自依赖") as exc:
+        rubric_layers(_task_with_deps("R2_report_correct", ["R2_report_correct"]))
+    assert "后置" not in str(exc.value)
+
+
+def test_td035_order_does_not_change_score():
+    """正向锁：加载期硬约束只挡非法配置，现役五夹具分数一字不变。"""
+    report = build_report(copy.deepcopy(TASK), _raw("raw-perfect"), VOCAB)
+    assert report["score"]["ratio"] == 1.0

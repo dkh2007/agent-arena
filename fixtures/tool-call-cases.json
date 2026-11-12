@@ -1,0 +1,131 @@
+{
+  "_comment": "S3-2 边界 trace 用例集。这是执行器的测试底座，不是诊断报告夹具：逐条喂 assertion_evaluator.evaluate()，期望值由本文件给出。Q10-A（round-10）已把 4 个原先走 default 的 case 改为明写规则命中；TD-004（round-12）把 source 从 case/default 归并值升级为精确 classification_source 字符串，防止「改坏判据仍全绿」的盲区。expect.source 取值：完整来源字符串（如 case:no_tool_calls）、default 或 null；null 表示该状态不产出分类来源。expect.observed_offsets 为 probe 期望序列；null 表示 unscored 分支不产出 offsets。新增分类规则时仍先在这里补 case，再改 YAML。",
+  "cases": [
+    {
+      "name": "true_retry",
+      "note": "标准真重试：500 后同参再拉一次成功",
+      "expect": {"state": "pass", "pattern": null, "source": null, "reason_code": null, "observed_offsets": [0, 10, 10]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+        {"call_index": 3, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "success", "result_summary": "page 2"}
+      ]
+    },
+    {
+      "name": "interleaved",
+      "note": "两次 offset=10 之间穿插 write_report；allow_interleaved=true 应判过",
+      "expect": {"state": "pass", "pattern": null, "source": null, "reason_code": null, "observed_offsets": [0, 10, 10]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+        {"call_index": 3, "name": "write_report", "params": {"path": "/workspace/report.json", "content": "{}"}, "status": "success", "result_summary": "written"},
+        {"call_index": 4, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "success", "result_summary": "page 2"}
+      ]
+    },
+    {
+      "name": "fake_retry",
+      "note": "失败后退回首页：offset 0,10,0",
+      "expect": {"state": "fail", "pattern": "retry_wrong_params", "source": "case:offsets_equals", "reason_code": null, "observed_offsets": [0, 10, 0]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+        {"call_index": 3, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1 again"}
+      ]
+    },
+    {
+      "name": "no_retry",
+      "note": "失败后完全没有后续同工具调用",
+      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:offsets_equals", "reason_code": null, "observed_offsets": [0, 10]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"}
+      ]
+    },
+    {
+      "name": "retry_exhausted",
+      "note": "同参连续重试仍失败",
+      "expect": {"state": "fail", "pattern": "retry_exhausted", "source": "case:last_status,offsets_starts_with", "reason_code": null, "observed_offsets": [0, 10, 10]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+        {"call_index": 3, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"}
+      ]
+    },
+    {
+      "name": "zero_calls",
+      "note": "Q10-A：零调用，命中 no_tool_calls 明写规则（归 no_retry）",
+      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:no_tool_calls", "reason_code": null, "observed_offsets": []},
+      "tool_calls": []
+    },
+    {
+      "name": "only_first_page",
+      "note": "Q10-A：只拉首页，故障点未触达 → fault_point_not_reached。TD-004：这条是变异 C/D 的核心回归锁，source 必须精确",
+      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:fault_point_not_reached", "reason_code": null, "observed_offsets": [0]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"}
+      ]
+    },
+    {
+      "name": "skips_page_10",
+      "note": "Q10-A：分页步长跳过 10，故障点未触达 → fault_point_not_reached",
+      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:fault_point_not_reached", "reason_code": null, "observed_offsets": [0, 20]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 20, "limit": 10}, "status": "success", "result_summary": "empty page"}
+      ]
+    },
+    {
+      "name": "other_tool_after_failure",
+      "note": "失败后只调了别的工具，probe 过滤后 offsets 仍是 [0,10]",
+      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:offsets_equals", "reason_code": null, "observed_offsets": [0, 10]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+        {"call_index": 3, "name": "write_report", "params": {"path": "/workspace/report.json", "content": "{}"}, "status": "success", "result_summary": "written"}
+      ]
+    },
+    {
+      "name": "wrong_offset_after_failure",
+      "note": "Q10-A：故障点只命中一次、后续 offset 跳到 20 → fault_point_not_repeated",
+      "expect": {"state": "fail", "pattern": "retry_wrong_params", "source": "case:fault_point_not_repeated", "reason_code": null, "observed_offsets": [0, 10, 20]},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+        {"call_index": 3, "name": "fetch_orders", "params": {"offset": 20, "limit": 10}, "status": "success", "result_summary": "empty page"}
+      ]
+    },
+    {
+      "name": "shuffled_call_index",
+      "note": "round-8 ① 反例：数组顺序与 call_index 相反，改造前会误判 pass",
+      "expect": {"state": "unscored", "pattern": null, "source": null, "reason_code": "trace_invalid", "observed_offsets": null},
+      "tool_calls": [
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "success", "result_summary": "page 2"}
+      ]
+    },
+    {
+      "name": "missing_call_index",
+      "note": "契约必填字段缺失：判数据不可信，不判能力不足",
+      "expect": {"state": "unscored", "pattern": null, "source": null, "reason_code": "trace_invalid", "observed_offsets": null},
+      "tool_calls": [
+        {"name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "success", "result_summary": "page 2"}
+      ]
+    },
+    {
+      "name": "bad_status_enum",
+      "note": "Q12(a)：status 拼错成 sucess，红队实测改造前会被判 fail（能力不足），契约要求 unscored/trace_invalid",
+      "expect": {"state": "unscored", "pattern": null, "source": null, "reason_code": "trace_invalid", "observed_offsets": null},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "sucess", "result_summary": "page 1"}
+      ]
+    },
+    {
+      "name": "params_not_object",
+      "note": "Q12(a)：params=null 会被 JMESPath 投影静默丢弃，必须在前置校验拦住，不能判 fail",
+      "expect": {"state": "unscored", "pattern": null, "source": null, "reason_code": "trace_invalid", "observed_offsets": null},
+      "tool_calls": [
+        {"call_index": 1, "name": "fetch_orders", "params": null, "status": "success", "result_summary": "page 1"}
+      ]
+    }
+  ]
+}

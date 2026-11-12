@@ -9,11 +9,15 @@
     "evaluated_at": "2026-11-07T06:20:00Z",
     "invoke": { "duration_ms": 8100, "timeout_seconds": 60, "platform_retries": 0 }
   },
+  "trace": null,
   "trace_audit": {
     "reported": false,
     "schema_valid": false,
     "invalid_reasons": ["not_reported"],
     "call_count": 0
+  },
+  "artifacts": {
+    "/workspace/report.json": "{\"valid_count\": 17, \"total_amount\": 1837.99}"
   },
   "assertion_results": [
     {

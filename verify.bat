@@ -3,9 +3,12 @@ rem verify.bat - one-click verification for agent-arena
 rem Usage: double-click, or run from cmd.
 rem   [1] pytest tests\        - product code behavior matches claims
 rem   [2] pytest spike\        - upstream A2E defect sentinel (skips if A2E source absent)
-rem   [3] diagnosis report DTO - 5 fixtures checked against JSON Schema (v2 gate/credit)
-rem   [4] git                  - commits and working tree state
+rem   [3] DTO + full pipeline - 5 fixtures, schema, all 5 assertions recomputed from raw
+rem   [4] review packet        - is docs/review-packet.md still true to the repo? (soft check)
+rem   [5] git                  - commits and working tree state
 rem Path note: uses the isolated venv (pytest/fsrs/pyyaml/jsonschema live only there), never the system Python.
+rem Encoding note: this file is ASCII-only and every check it calls prints ASCII verdicts.
+rem   cmd.exe parses UTF-8 CJK bytes as GBK and can even turn them into redirections.
 
 cd /d "%~dp0"
 
@@ -14,7 +17,7 @@ rem A2E lives one level up from this repo (repo itself stays free of the 80MB up
 set A2EPY=..\tools\A2E-main\server\.venv\Scripts\python.exe
 
 echo ==================================================
-echo [1/4] pytest tests\ + jmespath expressiveness
+echo [1/5] pytest tests\ + jmespath expressiveness
 echo ==================================================
 rem jmespath test belongs here: it needs only our own venv, no upstream A2E
 %PY% -m pytest tests\ spike\test_jmespath_expressiveness.py -v
@@ -22,7 +25,7 @@ set PYEXIT=%ERRORLEVEL%
 
 echo.
 echo ==================================================
-echo [2/4] pytest spike\ - upstream A2E defect still present?
+echo [2/5] pytest spike\ - upstream A2E defect still present?
 echo ==================================================
 if exist "%A2EPY%" (
     rem -p no:postgresql is required: upstream venv ships pytest-postgresql but libpq is missing
@@ -35,16 +38,39 @@ if exist "%A2EPY%" (
 
 echo.
 echo ==================================================
-echo [3/4] diagnosis report DTO - fixtures checked against JSON Schema
+echo [3/5] DTO + full pipeline - fixtures, schema, R3 from raw trace
 echo ==================================================
 rem Each fixture is a fake dbg-001 submission; a non-zero exit means the report
 rem violated an invariant (not just "ugly output"), see docs/diagnosis-report-schema.md
 %PY% src\arena\diagnosis_report.py --fixture all
 set DTO_EXIT=%ERRORLEVEL%
+rem S3-3-6: run the SAME five fixtures through recompute_all() -> report.
+rem If this disagrees with the line above, the wiring is broken.
+%PY% src\arena\trace_pipeline.py --fixture all
+set PIPE_EXIT=%ERRORLEVEL%
+if not "%PIPE_EXIT%"=="0" set DTO_EXIT=1
 
 echo.
 echo ==================================================
-echo [4/4] git - commits and working tree state
+echo [4/5] review packet - still true to the repo? (soft check)
+echo ==================================================
+rem Soft on purpose: a stale packet does not break the code, only the hand-off.
+rem --check replays the recorded test-result line and does NOT rerun tests:
+rem test health is what [1/5] above is for. Keep those two duties separate.
+rem Output is suppressed so only the ASCII verdict shows (the script speaks Chinese).
+%PY% src\arena\review_packet.py --check >nul 2>&1
+set REVIEW_EXIT=%ERRORLEVEL%
+if "%REVIEW_EXIT%"=="0" (
+    echo OK: docs/review-packet.md matches the repo.
+) else (
+    echo STALE: packet out of sync - run before sending it to an external reviewer:
+    echo        %PY% src\arena\review_packet.py
+    echo        (run with --check to see the exact diff)
+)
+
+echo.
+echo ==================================================
+echo [5/5] git - commits and working tree state
 echo ==================================================
 git log --oneline -5
 echo.
@@ -53,6 +79,7 @@ git status -sb
 echo.
 if "%PYEXIT%"=="0" if "%SPIKE_EXIT%"=="0" if "%DTO_EXIT%"=="0" (
     echo RESULT: ALL GREEN - claims verified.
+    if "%REVIEW_EXIT%"=="1" echo NOTE: review packet is stale ^(see [4/5]^) - regenerate before handing it off.
 ) else (
     echo RESULT: a check FAILED - paste the full output back.
     echo   ^(spike failing means upstream A2E behaviour CHANGED - re-evaluate, do not "fix" the test blindly^)

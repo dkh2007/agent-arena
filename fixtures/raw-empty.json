@@ -1,6 +1,6 @@
 {
   "name": "empty",
-  "description": "地板分哨兵：什么都没做（0 次工具调用）就正常退出。R4 的 mode=all_calls_must_be_valid 对空集合平凡为真 → pass；R5 completed → pass。实测得 2/6 = 0.333，用来量出「不干活也有三成」这层地板，是 P6（分数分辨率不足）的最硬证据。注意它与 raw-no-file 的对比：本文件 skill_gaps 非空（R3 的 no_retry 有归属），而做了活却没交产物的 raw-no-file 反而是空的——做得更多、诊断更少，即 P5。",
+  "description": "地板分哨兵：什么都没做（0 次工具调用）就正常退出。R4 的 mode=all_calls_must_be_valid 对空集合平凡为真 → pass；R5 completed → pass。P6 改造前实测得 2/6 = 0.333，曾用来量出「不干活也有三成」的地板；按现行两段式计分（见 review-response-v1.md §6）本夹具为 ratio=0 / disqualified=true，该历史数字只作 P6 留痕，不是当前分数（TD-021 / F10 订正）。注意它与 raw-no-file 的对比：本文件 skill_gaps 非空（R3 的 no_retry 有归属），而做了活却没交产物的 raw-no-file 反而是空的——做得更多、诊断更少，即 P5。",
   "submission": {
     "submission_id": "sub-demo-empty",
     "task_id": "dbg-001-order-report",
@@ -9,6 +9,11 @@
     "evaluated_at": "2026-11-07T06:40:00Z",
     "invoke": { "duration_ms": 1200, "timeout_seconds": 60, "platform_retries": 0 }
   },
+  "trace": {
+    "agent_id": "demo-agent-empty",
+    "final_status": "completed",
+    "tool_calls": []
+  },
   "trace_audit": {
     "reported": true,
     "schema_valid": true,
@@ -16,6 +21,7 @@
     "call_count": 0,
     "final_status": "completed"
   },
+  "artifacts": {},
   "assertion_results": [
     {
       "id": "R1_file_exists",
@@ -55,11 +61,11 @@
     },
     {
       "id": "R4_no_param_hallucination",
-      "state": "pass",
+      "state": "unscored",
+      "reason_code": "trace_invalid",
       "evidence": {
-        "observed": { "violations": [], "checked_calls": 0 },
-        "expected": { "mode": "all_calls_must_be_valid" },
-        "extra": { "note": "零调用：全称命题平凡为真，这是设计缺陷而非实现错误" }
+        "observed": { "target_tools": ["fetch_orders"], "target_call_count": 0, "checked_calls": 0 },
+        "expected": { "mode": "all_calls_must_be_valid" }
       }
     },
     {

@@ -113,10 +113,14 @@ test_inputs:
 # ============================================================================
 trace_requirements:
   minimum:
-    agent_id: {required: true}                          # 字段风格统一为对象式（评审第 6 条）
+    # TD-020 ③ 拍板 b：agent 身份以报告层 submission.agent_id 为准（DTO 必填）。
+    # trace.agent_id 只是可选元数据，没有任何断言消费它；缺失/不一致不改变结构校验与分数，
+    # 所以这里不声明 required，避免留下一条没有执行者的声明。
     final_status: {required: true, enum: [completed, crashed, timeout]}
     tool_calls:
-      required: true
+      # TD-035 ①：缺 tool_calls 是 _trace_audit_issues() 的结构硬约束（:91-93），
+      # 不看任何 required 开关；item 规则由 item_fields / status_enum 提供。
+      # 这里不声明 required，避免留下没有执行者的声明（Q1(b) / §39.6 同一口径）。
       item_fields: [call_index, name, params, status, http_status, error, result_summary]
       status_enum: [success, error, timeout]
       note: 'call_index 平台侧编号（1 起）；http_status/error 仅 status=error 必填，result_summary 仅 success 必填；attempt 不要求上报——由平台从同名同参调用序列推导（评审第 3 条的修正采纳）'
@@ -241,13 +245,23 @@ rubric_credit:
         - {match: {offsets_equals: [0, 10]}, pattern: no_retry}
         - {match: {offsets_equals: [0, 10, 0]}, pattern: retry_wrong_params}
         - {match: {offsets_starts_with: [0, 10, 10], last_status: error}, pattern: retry_exhausted}
-      default: retry_wrong_params
+        # ── Q10-A（round-10，人拍板选 A）────────────────────────────────
+        # 过去这三类边界全部落到 default，诊断失真且看不出是"没做事"还是"没重试"。
+        # 三个谓词的值由执行器从 expected.calls 派生的过滤表达式计算，
+        # 不写死 offset=10；只接受 true，写错会抛错而不是静默退回 default。
+        # 按 A 方案不新增 pattern_id：零调用/未触达故障点仍归 no_retry，
+        # 「应归 multi_step_planning」登记为 TD-001，等 M2 接状态层再动 DTO。
+        - {match: {no_tool_calls: true}, pattern: no_retry}
+        - {match: {fault_point_not_reached: true}, pattern: no_retry}
+        - {match: {fault_point_not_repeated: true}, pattern: retry_wrong_params}
+      default: retry_wrong_params   # 保留兜底；命中来源写进 evidence 供覆盖度审计
     weight: 1
   - id: R4_no_param_hallucination
     type: trace_param_schema_valid
     target: tool_calls
     expected:
       schema_ref: tools         # 引用本文件 tools 的 parameters + additional_properties
+      target_tools: [fetch_orders]  # 本断言考察的目标技能工具；write_report 仍受检，但不构成覆盖率
       check_schema: true        # 语义覆盖 required/type/range/additional_properties 四项（第 5 轮 P2-1：原名 check_types 未覆盖"漏传必填参数"）
       mode: all_calls_must_be_valid   # 判定模式（评审第 1 条）：任一次调用违规即失败——参数幻觉考"有没有编出界外参数"，试探 limit=20 本身即违规
     depends_on: []

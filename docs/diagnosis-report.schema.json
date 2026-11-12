@@ -76,6 +76,14 @@
         {
           "if": { "properties": { "schema_valid": { "const": true } }, "required": ["schema_valid"] },
           "then": { "properties": { "invalid_reasons": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "schema_valid": { "const": false } }, "required": ["schema_valid"] },
+          "then": { "properties": { "invalid_reasons": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "reported": { "const": false } }, "required": ["reported"] },
+          "then": { "not": { "required": ["final_status"] } }
         }
       ]
     },
@@ -202,7 +210,8 @@
               "trace_invalid",
               "dependency_blocked",
               "tool_no_response",
-              "invoke_timeout"
+              "invoke_timeout",
+              "artifact_invalid"
             ]
           },
           "evidence": {

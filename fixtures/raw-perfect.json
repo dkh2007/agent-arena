@@ -9,12 +9,26 @@
     "evaluated_at": "2026-11-07T06:50:00Z",
     "invoke": { "duration_ms": 21400, "timeout_seconds": 60, "platform_retries": 0 }
   },
+  "trace": {
+    "agent_id": "demo-agent-perfect",
+    "final_status": "completed",
+    "tool_calls": [
+      {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "10 orders"},
+      {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
+      {"call_index": 3, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "success", "result_summary": "10 orders"},
+      {"call_index": 4, "name": "fetch_orders", "params": {"offset": 20, "limit": 10}, "status": "success", "result_summary": "empty page"},
+      {"call_index": 5, "name": "write_report", "params": {"path": "/workspace/report.json", "content": "{\"valid_count\": 17, \"total_amount\": 1837.99}"}, "status": "success", "result_summary": "written"}
+    ]
+  },
   "trace_audit": {
     "reported": true,
     "schema_valid": true,
     "invalid_reasons": [],
     "call_count": 5,
     "final_status": "completed"
+  },
+  "artifacts": {
+    "/workspace/report.json": "{\"valid_count\": 17, \"total_amount\": 1837.99}"
   },
   "assertion_results": [
     {
