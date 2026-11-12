@@ -2,7 +2,7 @@
 
 > **来源**：2026-11-07 由第三方 AI 对五层架构给出的改进建议（全文未入库，要点已在此逐条转述）。
 > **机制**：遵循 `HANDOFF.md` §6.3「登记 → 核证 → 处置 → 落仓 → 人拍板」。
-> **状态**：处置已定，**第 3 节三条判断题等小D 拍板**，未拍板前不写入计划书。
+> **状态**：处置已定，**第 3 节三条判断题等维护者 拍板**，未拍板前不写入计划书。
 
 处置五类：`采纳` / `部分采纳`（写明取舍）/ `修正采纳`（写明修正点）/ `挂条件采纳`（写明放行条件）/ `不采纳`。
 
@@ -148,7 +148,7 @@ FSRS 的 R      =  只回答"现在复习的收益有多大"，不回答"会不�
 
 ---
 
-## 3. 等小D 拍板的三条（AI 无决定权）
+## 3. 等维护者 拍板的三条（AI 无决定权）
 
 | # | 判断题 | 我的建议 | 不拍板的后果 |
 |---|---|---|---|
@@ -292,3 +292,4710 @@ FSRS 的 R      =  只回答"现在复习的收益有多大"，不回答"会不�
 
 - **`unattributed_patterns` 目前只被记录，没有消费方**。状态层尚未实现，M2 接 FSRS 时要决定：门禁失败的错误码要不要进诊断展示（我的判断：要，但不进复习排程）。
 - **`raw-empty` 的存在意义要写进计划书**：它是"不做事也有三成"的实证，比一句"我们设计了门禁"有力得多。
+
+---
+
+## 7. round-6：评审包生成器「文档失真盲区」建议（2026-11-07）
+
+> **来源**：把方案 B 产物（`docs/review-packet.md` 全文 + 生成器框架描述）交给第三方 AI 后的返回意见。全文未入库，要点逐条转述。
+> **机制**：`HANDOFF.md` §6.3「登记 → 核证 → 处置 → 落仓 → 人拍板」。
+> **核证原则**：它没有仓库访问权，多条判断基于推测。先逐条核它举的**例子**是否成立，再决定它说的**类**值不值得采纳——举例错不等于类错，类对也不等于处方对。
+
+### 7.1 核证总表
+
+| # | 它的主张（缩写） | 核证 | 证据 | 处置 |
+|---|---|---|---|---|
+| ①-1 | 手写第 3/5/6 节与代码事实不一致；例：文档说门禁 `unscored` 不取消资格，代码却会 disqualify | **举例不成立，类成立** | `src/arena/diagnosis_report.py` L206-213：`disqualifying` 只收 `state=="fail"`，`unscored` 单独写 note「不拦」；`tasks/dbg-001-order-report.yaml` L138 `on_unscored: do_not_disqualify`；`tests/test_diagnosis_report.py` L211 `test_gate_unscored_does_not_disqualify` 已锁成断言 | 部分采纳（类），**驳回举例** |
+| ①-2 | 自动段只搬运不校验，评分脚本有 bug 会把错数字原样印进表格 | **类成立，处方部分已存在** | 已有 `test_score_is_monotonic_across_fixtures` 硬编码 `[0, 0, 0.25, 0.5, 1.0]`；**真缺口**是「DTO → `--fixture all` 打印 → `SCORE_RE` 解析 → Markdown 表格」这段搬运无人对拍 | 修正采纳 |
+| ①-3 | 任务资产语义没校验；例：`skill_id` 不在词表、R3 依赖的 `http_status` 不在 `trace_requirements` | **两例都不成立** | `tests/test_task_yaml.py` L253 `test_every_assertion_declares_skill_id` 已逐条比对 taxonomy；L126 `test_trace_schema_supports_failure_evidence` 已锁 `http_status`；YAML L120 的 `item_fields` 里本来就有 | 不采纳 |
+| ①-4 | 依赖版本不校验是否真实存在（举 `fsrs 5.2.4` 的坑） | **事实前提已过时** | `requirements.txt` L4 pin 的是 `fsrs==6.3.2`，且同一行就写着「勘误：5.2.4 不存在，官方 5.1.3 后直接 6.0.0」——它举的坑已修 | 不采纳（挂条件见 7.5 Q8） |
+| ②-1 | 锚点冻结会让分数表/用例数/任务结构**永远是旧版本**；OK 时锚点陈旧不告警 | **前半句事实错误，后半句成立** | `build(ref)` 只把 `ref` 传给 `_snapshot`；`_scores` / `_task_struct` / `_env` / `_pytest_count` 全取当前工作区。已新增 `test_check_detects_score_drift` 作可执行反证。但 `git rev-list --count` 原本只在 STALE 分支算，OK 时确实静默 | 修正采纳（只采纳后半句） |
+| ②-2 | 锚点提交本身的 bug 会被永久固化成评审基准 | **不成立** | 同上，锚点冻结的只有 sha 字符串与 `git log -8` 历史列表，评分数据不来自锚点 | 不采纳（并入 ②-1） |
+| ②-3 | 手工段新增内容引用新代码，锚点还是旧的 | **与 ①-1 同类** | 同一处边界：脚本不校验中文判断句 | 部分采纳（并入 7.5 Q7） |
+| ③-6 | 用 `git stash` → `checkout <锚点>` → 跑 `pytest tests/test_scoring.py` → 切回 → `stash pop` 做锚点自检 | **危险且不可行** | 当前工作区有多项未提交改动（含生成物本身），`stash` 会把它们全收走；`tests/test_scoring.py` 在仓库里不存在；在锚点代码上跑**当前工作区**的测试不是有效 oracle（测试文件来自哪一侧都没定义） | 不采纳 |
+
+### 7.2 本轮实施（2 条，各自一步、各自验证）
+
+**A. OK 分支的信息级锚点提示（修正采纳 ②-1）**
+不加它建议的 `--check-fresh` 参数，也不加「超过 72 小时」的墙钟阈值：陈旧的正确判据是**提交距离**不是时间——三天内改了 20 次的仓库不该被判新鲜，而一个只改了 README 的提交也不该逼人重发。
+复用已有的 `git rev-list --count <anchor>..HEAD`，把结果从「只在 STALE 时打印」改成「OK 时也打印 NOTE，明确写不阻塞、不要为对齐 HEAD 重新生成」。
+
+**B. 分数表端到端对拍（修正采纳 ①-2）**
+`test_score_table_matches_report_core`：逐份夹具调用 `build_report()` 直接算 `ratio` / `credit_pass_weight`，再和评审包表格对应单元格比。它守的不是评分核心（已有单调性用例），而是**搬运链路**——打印格式改了、`SCORE_RE` 列序错了，都会红。
+
+**C. 反证资产**：`test_check_detects_score_drift` 把 ②-1 的驳回写成回归锁——将来谁把 `_scores` 也冻到锚点，这条会红。
+
+### 7.3 验证（不只跑绿）
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_review_packet.py -q` | `19 passed` |
+| 变异 A：OK 分支不打印锚点提示 | `1 failed` ✅ |
+| 变异 B：跳过内容指纹比较（`if True:`） | `1 failed` ✅ |
+| 变异 C：交换表格 `credit` / `pass` 两列 | `1 failed` ✅ |
+| 复原后全量 | `65 passed`（`pytest tests/ -q`），五段验证见本轮交接记录 |
+
+> **补记：变异 A 第一次是无效变异。** 脚本里 `\n` 在命令传输时变成 `/n`，生成 `if False:/n ...` 触发 `SyntaxError`，pytest 报 `exit=4 / ERROR collecting`，看起来像「变红」其实是**根本没跑到断言**。换成语法有效的 `if behind == "999":` 重做，才得到真正的 `1 failed`。
+> 这与 §6.5 的 `[] or [...]` 是同一类坑，本轮把它升级成判据：**变异结果必须区分 `FAILED` 与 `ERROR`，后者一律不算数**。
+
+### 7.4 三条不采纳的理由（留给下一轮复核）
+
+1. **①-3 / ③-3**：把已有的 `tests/test_task_yaml.py` 检查再塞进 `_task_struct()` 会造出第二真相源；生成器应当是**采集器 + 契约守卫**，不是测试 runner。真要防，应让 `verify.bat` 第 1 段的执行结果进入评审包（待拍板 Q9）。
+2. **①-4 / ③-4**：`pip index versions` 依赖网络、国内不稳定，且「版本存在」远不等于「能装、能 import、能复现」。让离线生成流程依赖联网，是拿可用性换一个弱判据。
+3. **③-6**：见 7.1。危险的不是慢，是它会在有未提交改动的工作区上做 `stash` + `checkout`，且 oracle 未定义。
+
+### 7.5 待人拍板（AI 不替人决定）
+
+| # | 判断题 | 选项 | 我的倾向 |
+|---|---|---|---|
+| **Q7** | 手写第 3/5/6 节要不要机器校验？ | (a) 不动，靠人 review（现状）<br>(b) 把**数字 / 枚举口径**抽成 `{{AUTO_*}}` 由脚本填，判断句仍人写<br>(c) 加中文文本哨兵单测，把描述锁成断言 | **(b)**：消掉第二真相源又不碰判断；(c) 改个措辞就红，噪音大于收益 |
+| **Q8** | 要不要引入依赖可复现性校验？ | (a) 不做<br>(b) 放 CI，验 `import` + 版本号，不进生成流程<br>(c) 按建议进生成流程 | **(b)**；当前倾向 (a)，等有 CI 再说 |
+| **Q9** | 评审包要不要写「测试确实跑绿」而不只是「收集到 N 个用例」？ | (a) 保持只写收集数（现状，不撒谎但信息少）<br>(b) 生成时现场跑一遍 `pytest`，把结果写进自动段 | **(b)**，但会让生成从秒级变十秒级，且引入「生成时绿 ≠ 评审时绿」的新解释成本 |
+
+### 7.6 反馈给外部评审（可直接贴回）
+
+> 你的 ①-1 举例不成立：本仓库 `diagnosis_report.py` 里 `disqualified` 只由 `gate` 层 `state=="fail"` 触发，`unscored` 走 `on_unscored=do_not_disqualify`，且有用例 `test_gate_unscored_does_not_disqualify` 锁死，文档第 3 节与代码是一致的。
+> ①-3 的两项检查（`skill_id` ∈ taxonomy、`http_status` ∈ `trace_requirements.item_fields`）在 `tests/test_task_yaml.py` 里已存在；①-4 举的 `fsrs 5.2.4` 坑，`requirements.txt` 第 4 行已有勘误并 pin 到 6.3.2。
+> ②-1 的关键前提错了：`build(ref)` 的 `ref` 只冻结 `_snapshot`，分数表 / 用例数 / 任务结构取当前工作区；已加 `test_check_detects_score_drift` 作反证。你真正说中的是「OK 分支静默」——锚点落后提交数原本只在 STALE 时打印，现已改为 OK 时也提示（不阻塞）。
+> 请据此复答：在「生成器是采集器、测试才是裁判」这个分工下，还剩哪些**不引入第二真相源、不需要联网、不动工作区**的失真类型？每条请给一个 10 分钟内可做的验证动作。
+
+---
+
+## 8. round-7：Q7 / Q8 / Q9 拍板落地（已实现，待人工验证）
+
+三条全部按拍板方向实施，但**有三处刻意没照抄建议**，理由与证据如下。
+
+### 8.1 实现总表
+
+| 拍板 | 落地 | 文件 |
+|---|---|---|
+| Q7 只校验数字 / 枚举 | `_core_fact_tokens()` 从任务 YAML 派生三类硬事实标记（计分模式、credit 分母、非通过态枚举），`_check_core_facts()` 只扫第 3 节；判断句、措辞、问题一律不碰 | `src/arena/review_packet.py` |
+| Q8 放 CI，不进生成流程 | 生成流程零改动；新增离线冒烟测试，验「全部 pin」「pin 版本 == 已安装版本」「核心模块可 import」 | `tests/test_dependencies.py` |
+| Q9 加实测通过率 + `--fast` | `_pytest_result()` 现场跑 `pytest tests/ -q`，如实记录 `passed / failed / total`；`--fast` 跳过执行但仍 `--collect-only` 计数；`--check` 重放已记录行，不重跑 | `src/arena/review_packet.py` |
+
+### 8.2 三处偏差（都是为了防止引入新的失真）
+
+**① Q7 白名单的期望值不从建议里抄，全部从 YAML 派生。**
+建议举例「A2E 结论必须包含『不进 MVP 依赖』」——没采纳。那是判断句，仓库里没有机器可读来源，写进脚本就是**第二真相源**，正是我们要消灭的东西。锁的三项都能从 `tasks/dbg-001-order-report.yaml` 算出来；`test_core_fact_tokens_derive_from_yaml` 把 weight 改成 7 后期望标记从「分母恒为 4」变「分母恒为 9」，证明它跟着 YAML 走。
+另外把建议的「抛警告」改成**拒绝生成**：`verify.bat` / `review.bat` 都会吞输出，警告等于没有。`test_core_facts_allow_rewording` 确认只改措辞（「不再重议」→「不再讨论」）放行，`test_core_facts_reject_wrong_scoring_mode` 确认把「两段式 gate / credit」写成「单段加权评分」被拦。
+
+**② Q8 的判据不用 `pip index versions`，改用已安装环境元数据。**
+「版本在 PyPI 上存在」远弱于「能装、能 import、能复现」，而且要联网（本仓库踩过 MITM / 代理 502）。`md.version(name) == pin` 是离线且更强的判据。验证：把 `pyyaml==6.0.3` 改成 `99.99.99` → 冒烟 `1 failed, 2 passed`（真 FAILED 非 ERROR），本地生成 `exit=0` 不拦截，职责分离成立。
+**边界（诚实标注）**：目前只有可被 CI 调用的测试，**尚无 CI 配置文件 / 流水线**；「CI 自动跑」还是待办，不是已完成事实。
+
+**③ Q9 没写建议里的「锚点 03cf8c9 本地环境实测」。**
+测试跑的是**当前工作区**，不是锚点提交；写成「锚点实测」是把「存在性 / 通过性」混为一谈的另一种过度声称。实际措辞：`当前工作区本地实测 **79 passed / 79 total**` + 本地 HEAD + 生成锚点 + 「测试跑的是当前工作区而非锚点提交，仅陈述本次本地结果，不宣称普适正确」。解析摘要时**失败/错误排在 passed 前面**，避免 `1 failed, 78 passed` 被读成全绿。
+
+### 8.3 Q9 的已知边界（必须写清，否则制造新盲区）
+
+`--check` **不重跑 pytest**，而是把包里已记录的实测行原样喂回 `build()`。理由是两次执行 + 偶发波动会造成假 STALE。代价：实测行是**生成那一刻的快照**，此后测试挂了 `--check` 不会发现。
+分工：`--check` 只答「文档内容是否还与仓库一致」；「测试是否健康」由 `verify.bat` 第 1 段现场执行负责。这条边界不写下来，就会变成下一轮外部评审指出的第 5 类失真。
+
+### 8.4 耗时实测（与建议里的「十秒级」不符，如实记录）
+
+| 模式 | 实测耗时 | 输出 |
+|---|---|---|
+| `--fast` | 2.3s | `- 单元测试实测：--fast 模式未执行测试（对外发正式评审包时请去掉 --fast）` |
+| 默认 | **38.0s**（约 16.7×） | `79 passed / 79 total` |
+
+38s 比预估慢，但评审包是低频操作（一天几次），可接受；本地迭代用 `--fast`。
+
+### 8.5 验证证据（测试通过不算证据，变红才算）
+
+| 验证动作 | 结果 |
+|---|---|
+| 全量单测 | `79 passed in 34.50s` |
+| Q9 默认 vs `--fast` 对比 | 2.3s / 38.0s，输出行如上 |
+| 故意弄挂一个测试 + 默认模式生成 | `**2 failed, 78 passed / 80 total**`，如实显示、未强行全绿；退出码仍 0（结果被记录，不是生成失败） |
+| Q9 四组变异 | ① 去掉 fast 分支 ② 失败排到 passed 后 ③ check 改为重跑 ④ 去掉防递归护栏 → **全部 `1 failed`**（真 FAILED，非 ERROR），`RESTORED: True` |
+| Q8 变异 | 错版本号 → CI 冒烟 `1 failed`、生成 `exit=0`，职责分离成立，`RESTORED: True` |
+| Q7 两组变异 | 删掉白名单校验 / 误锁整句 → 均变红 |
+
+「弄挂一个测试」时出现 **2 failed** 而非 1：新增用例让 `_pytest_count()` 变成 80，包里仍写 79，`test_test_count_matches_repo` 按设计报红——顺带又验了一次数字漂移检测。
+
+### 8.6 本轮踩到的两个真缺陷（已修，判据升级）
+
+1. **递归套娃**：测试里写裸 `build()` → `_pytest_result()` 再起一轮 `pytest tests/` → 又跑到该用例 → 无限递归，全量测试被超时掐断。修法：`_pytest_result()` 检测 `PYTEST_CURRENT_TEST`，在 pytest 进程内以默认模式生成时**立即 PacketError** 并给出可操作的提示；测试内一律 `fast=True` / `write_packet(..., fast=True)`。`test_build_inside_pytest_refuses_default_mode` 锁死。
+2. **变异脚本自身也会把代码留在改坏状态**：变异 D 去掉护栏后真触发递归，进程被 SIGTERM，`finally` 未执行，`review_packet.py` 停在 `if False:`。判据升级：变异脚本必须 `-u` 无缓冲输出 + 每个子进程 `timeout` + **顶层 finally 强制还原** + 结束打印 `RESTORED: True`；并且区分 `FAILED` / `ERROR`（§7 已定）之外，还要区分 `TIMEOUT`。
+
+---
+
+## 9. S3-1：R3 断言执行器 + 错误模式分类器（已完成，待人工验证）
+
+### 9.1 先纠正一个容易被忽略的事实
+
+此前 `fixtures/raw-*.json` 里的 `assertion_results` **全是手工伪造的评测输出**，
+`diagnosis_report.build_report()` 只做组装、不做判定。所以仓库到 S2 为止验证的是
+「组装器对不对」，**不是「判定对不对」**。S3-1 补的正是缺失的那一层：
+
+    trace(tool_calls) + 产物 → assertion_evaluator → assertion_results → build_report() → DTO
+
+### 9.2 本步范围（刻意做小）
+
+| 做 | 不做 |
+|---|---|
+| 只实现 `trace_sequence`（R3） | R1/R2/R4/R5 一律 `NotImplementedError`，不静默放过 |
+| 判定表达式由 `rubric.expected.calls` **派生**，代码里没有 `offset=10` | 不接进 DTO 流水线、不改 fixtures、`build_report()` 零改动 |
+| 分类规则读 `error_pattern_detection.cases`，首命中即止 | 不实现 mock / 故障注入 / 超时控制 / 参数 schema 校验 |
+| trace 不可用 → `unscored` + `reason_code`，不产出错误模式 | 不擅自改任务 YAML 的词表与规则 |
+
+`allow_interleaved=false` / `ordered=false` / 各步 `params_match` 不一致，三种契约形状
+一律**抛错拒绝执行**——过滤法天然允许穿插，若契约要求严格相邻，这个实现会误判，
+所以宁可不产出，也不给一个看起来合理的 pass。
+
+### 9.3 现场对照（`python src/arena/assertion_evaluator.py --demo`）
+
+| trace | state | 错误模式 | 命中来源 | offsets |
+|---|---|---|---|---|
+| 真重试 | pass | — | — | `[0,10,10]` |
+| 真重试+穿插 | pass | — | — | `[0,10,10]` |
+| 假重试 | fail | `retry_wrong_params` | `case:offsets_equals` | `[0,10,0]` |
+| 无重试 | fail | `no_retry` | `case:offsets_equals` | `[0,10]` |
+| 重试耗尽 | fail | `retry_exhausted` | `case:last_status,offsets_starts_with` | `[0,10,10]` |
+| 未上报 trace | unscored | — | `trace_not_reported` | — |
+
+判定比 spike 更严：YAML 首步明写 `http_status: 500`，所以「失败码是 404 但确实重试了」判 fail。
+
+### 9.4 实现中抓到的一个真 bug（测试逼出来的，不是外部评审提的）
+
+`_classify()` 原来靠 `all(_predicate_holds(...) for ...)` 逐条求值来发现未知谓词。
+但 `all()` **短路**：某个 case 的前置条件为假时，它后面的非法谓词永远不会被求值，
+于是词表里写错一个谓词名可以静默潜伏，直到某天规则顺序一变才走错分类。
+修法：分类开始前**全量校验所有 cases 的谓词名**。`test_unknown_predicate_fails_loud`
+正是把这个 case 加在不命中的那条规则上，才复现出来。
+
+### 9.5 验证证据
+
+`tests/test_assertion_evaluator.py` **24 passed**；五组变异全部真 `FAILED`（非 `ERROR`）：
+硬编码 `offset=10` / 去掉 `http_status=500` 约束 / 分类全走 default / 去掉全量谓词校验 /
+trace 缺失改判 fail。`RESTORED: True`。
+另有一条端到端用例：把执行器输出直接替换 `raw-perfect.json` 的 R3，`build_report()`
+组装结果 `ratio=1.0`；换成假重试后 `ratio=0.75` 且带 `retry_wrong_params`，并过 JSON Schema。
+
+### 9.6 暴露的契约缺口 → Q10（**待你拍板，我没有擅自改 YAML**）
+
+`error_pattern_detection.cases` 只枚举了三条 offset 序列，`default: retry_wrong_params`
+会被不少合法 trace 触发，且触发时**分类理由并不成立**：
+
+| trace 形状 | offsets | 实际走向 | 语义上应该是 |
+|---|---|---|---|
+| 现有 `raw-fake-retry.json` | `[0,10,0,0]` | `default` → `retry_wrong_params` | 恰好蒙对（退回首页确实发生了） |
+| 上报了 trace 但零调用 | `[]` | `default` → `retry_wrong_params` | `no_retry`（根本没做事） |
+| 只拉了第一页就停 | `[0]` | `default` → `retry_wrong_params` | `no_retry` / 新标签 |
+
+执行器已把 `classification_source` 写进 `evidence.extra`，`default` 命中可被审计；
+两条用例把缺口钉住。选项：
+- **(a) 不动契约**，接受 default 兜底，靠 evidence 里的来源字段人工抽查（当前状态）；
+- **(b) 补 case**：`offsets_equals: [] → no_retry`、`[0] → no_retry`，并把 `default` 改窄或保留；
+- **(c) 换成语义谓词**：不枚举 offset 序列，改判「失败页之后是否重新访问过已拉取页 / 是否再无调用」，规则更少也更抗变体。
+
+我倾向 **(c)**，但它会动任务 YAML 与词表，属于契约变更，按纪律得你拍板后才做。
+
+### 9.7 S3-2 的范围 → Q11（**待你拍板**）
+
+- **(a) 接进流水线**：给 fixtures 补原始 `tool_calls`，用执行器真算 R3 结果再喂 `build_report()`，把"手工伪造"彻底消掉；
+- **(b) 横向铺开**：继续实现 R4 `trace_param_schema_valid`（参数 schema 四项校验），再补 R1/R2/R5；
+- **(c) 先做 Q10 的分类器整改**，再谈接线。
+
+我倾向 **(a)**：先让一条断言端到端闭环，比同时铺开四条更能暴露架构问题。
+
+> **状态更新（2026-11-07）**：Q11 已拍板 (a) 并落地，见 §10.3。
+> Q10 已拍板「先补核心分类、不全量动词表」，但落地时发现一个必须先定的结构矛盾，见 §10.4。
+
+---
+
+## 10. round-8：子序列误判 / default 兜底 / Q10、Q11 拍板（2026-11-07）
+
+外部评审仍**没有拿到代码**，以下结论均先拿仓库证据对证，再决定采纳与否。
+
+### 10.1 核证总表
+
+| # | 主张 | 核证 | 证据 |
+|---|---|---|---|
+| ①-1 | `call_index` 乱序会让本该 fail 的 trace 判成 pass | ✅ **成立，且比他说的更严重** | 原样反例喂进 `assertion_evaluator.evaluate()` 得 `state=pass`；执行器**完全没读** `call_index`，连字段存在都不校验。同一组调用按 `call_index` 排序后得 `fail / retry_wrong_params` |
+| ①-处方 | 补「按 `call_index` 排序预处理」 | ❌ **与仓库已定决策冲突，不采纳** | §1 第 1b 条已采纳「`call_index` 连续校验 → `trace_invalid` → 轨迹断言 `unscored`」。数组顺序与编号不符说明**上报数据不可信**；重排后判 fail 等于用不可信证据断定「学习者不会重试」，把数据问题记成能力不足、污染掌握度 |
+| ③-1 | 验证动作写成「逆序判 fail」 | ❌ 判据错 | 按已定决策逆序应判 `unscored / trace_invalid`，不是 fail |
+| ②-表第 2 行 | 「失败后完全没后续调用 → 被兜底成 `retry_wrong_params`」 | ❌ 举例错 | 实测命中 `case:offsets_equals` → `no_retry`，**没走 default** |
+| ②-表第 1/3 行 | 零调用、只拉首页、跳过故障点全靠 default 兜底 | ✅ 成立 | 三条实测 `classification_source=default`；仓库 §9.6 早已把缺口钉住，本轮又补进 `fixtures/tool-call-cases.json` 的 4 个 case |
+| ②-技能列 | 「零调用的真实技能缺口是 `multi_step_planning`」 | ⚠️ 方向对，但**现有词表做不到** | R3 的三个 `pattern_id` 全部 `mapped_skill_ids: [failure_retry]`，且 `R3.skill_id` 是单值 `failure_retry` → 见 §10.4 |
+| Q10 落地建议 | 「先加 3 个基础谓词即可，不用改词表」 | ⚠️ **内部矛盾** | 它给的 `no_matching_calls` / `no_retry_after_failure` / `retry_wrong_offset` 是**场景名不是谓词**（现有谓词是对 ctx 的布尔判断）；且「不改词表」与「区分 `multi_step_planning` 缺口」不能同时成立 |
+| Q11 | 选 (a)：补原始 `tool_calls`，跑通 R3→DTO 全链路 | ✅ 采纳，已落地 | §10.3 |
+
+**另一个自己查出来的遗留问题**：§1 第 1b 条写的是「`call_index` 连续、**时间戳递增**」，但
+`trace_requirements.minimum.tool_calls.item_fields` 里**根本没有时间戳字段**。这是一条没有契约支撑的
+早期过度声称，本轮不实现，登记在此，避免下一轮有人照着它去写校验。
+
+### 10.2 ① 的处置：执行既有决策，不采纳排序处方
+
+`src/arena/assertion_evaluator.py` 新增 `_validate_calls()`，在**判定之前**统一校验：
+每条必须是对象、`call_index` 必须是非 bool 的 int、必须等于数组下标 +1（即从 1 起连续递增）。
+任一不符 → `state=unscored, reason_code=trace_invalid`，evidence 写明具体违规，不产出错误模式。
+
+关键取舍写进了模块 docstring 和一条可执行回归锁
+`test_why_we_do_not_sort_by_call_index()`：同一组乱序调用排序后会得
+`fail / retry_wrong_params`，这正是「排序处方」会造成的误归因，所以实现必须停在 `unscored`。
+
+配套：`demo` 增加「乱序上报」行；测试 helper `trace()` 自动补合规编号（测乱序时直接构造原始 dict）。
+4 组变异（去掉校验 / 只查第一条 / 把 bool 当整数 / 乱序改判 fail）全部真 `FAILED`，`RESTORED: True`。
+
+> 外部裁判（10 分钟内）：`python src/arena/assertion_evaluator.py --demo` →
+> 「乱序上报」行必须是 `unscored / trace_invalid`，「真重试」仍是 `pass`。
+
+### 10.3 Q11 落地：S3-2 全链路（选 a）
+
+新增 `src/arena/trace_pipeline.py`，补上此前缺的那一步：
+
+```
+fixtures/raw-*.json 的 trace.tool_calls（含合规 call_index）
+  → assertion_evaluator.evaluate()  现算 R3
+  → 回填 assertion_results
+  → diagnosis_report.build_report()（唯一组装出口，语义未改）
+  → validate_report()
+```
+
+- 五份 `raw-*.json` 各补 `trace` 字段；`raw-no-trace` 显式写 `null`（不是省略），
+  与「未上报」区分开。`trace.tool_calls` 条数与 `trace_audit.call_count` 一致。
+- `raw.trace` 与 `trace_audit.reported` 冲突时**拒绝组装**，不猜哪个对。
+- 新增 `fixtures/tool-call-cases.json`：**12 个边界 trace**（真重试 / 穿插 / 假重试 / 无重试 /
+  重试耗尽 / 零调用 / 只拉首页 / 跳过故障点 / 失败后调别的工具 / 重试跳到别的 offset /
+  `call_index` 乱序 / 缺 `call_index`），每条带期望 state、pattern、source、reason_code。
+  另有 `test_case_set_covers_required_names()` 锁住用例集本身——**参数化测试在 cases 被清空时会静默变成 0 条全绿**。
+- `tests/test_trace_pipeline.py` 60+ 条：夹具合规性、R3 确由执行器现算（手写夹具的 `matched_pairs` 必须消失）、
+  分数序不变、每个边界 case 都能组装成合法报告、真相源冲突拒绝、深拷贝不改输入。
+- `verify.bat` 第 3 段现在**同一批五份夹具跑两遍**（手写 DTO 链 / 现算全链路），结果必须一致。
+
+**实测**：两条链分数序都是 `0 / 0 / 0.25 / 0.5 / 1.0`；`raw-no-trace` 现算 + 组装器双重给出 `unscored`。
+`test_raw_empty_exposes_q10_gap()` 把「手写 `no_retry` vs 现算 `retry_wrong_params`(default)」的差异钉成
+Q10 的可执行证据——这是外部评审 ② 从抽象批评变成具体复现的地方。
+
+### 10.4 Q10 为什么停住：一个必须由人拍板的结构矛盾（**我卡在这里**）
+
+你拍的是「先补核心分类，**不全量改 YAML 和词表**」；外部评审同时要求「零调用应归到
+`multi_step_planning` 缺口」。**这两条在当前数据结构下不能同时成立**：
+
+1. 词表里 R3 只有 3 个 `pattern_id`，`mapped_skill_ids` 全是 `failure_retry`；
+   要表达「根本没触发故障点」必须**新增一个 pattern_id** 并映射 `multi_step_planning`。
+2. `R3.skill_id` 是单值，`build_report()` 把它直接写进断言条目，状态层按它做掌握度归因。
+   若同一条断言要按不同错误模式归到不同技能，归因口径就得从「按断言 skill_id」改成
+   「按 error_pattern 的 `mapped_skill_ids`」——那会动 `build_report`、DTO v2 的
+   `attribution_policy`、`docs/data-model.md`，并与**尚未拍板的 P1/P2（掌握度口径）**耦合。
+
+两个可判定选项（都能在 10 分钟内验完，我**没有替你选**）：
+
+| | 做什么 | 通过标准 | 代价 |
+|---|---|---|---|
+| **Q10-A**（保守，贴合「不全量动词表」） | 只给执行器加 3 个语义谓词 + YAML `cases` 补规则；不动词表、不动 DTO | 边界集中 `zero_calls` / `only_first_page` / `skips_page_10` / `wrong_offset_after_failure` 的 `classification_source` 全从 `default` 变 `case:`；`raw-empty` 的 R3 不再靠 default；五夹具分数序不变、schema 全过 | 所有 R3 模式仍归 `failure_retry`，`multi_step_planning` 缺口依旧表达不了，只解决一半 |
+| **Q10-B**（彻底） | 新增 `fault_point_not_reached` 词表项（映射 `multi_step_planning`），并把归因改为按 `mapped_skill_ids` | 除 A 的全部标准外，`raw-empty` 产出的 `skill_gaps` 里出现 `multi_step_planning` | 要动 DTO v2 归因口径与 `data-model.md`，且 P1/P2 未定，可能返工 |
+
+回一个 **A** 或 **B** 即可，测试底座（12 个边界 case + `tests/test_trace_pipeline.py`）已经就位，
+改完立刻能判定。若你上一句「不全量动词表」就是选 A，直接回 A 我就继续。
+
+### 10.5 本步的明确边界（避免下一轮被当成"已完成全部评测"）
+
+- **只现算 R3**。R1/R2/R4/R5 仍读夹具里手写的结果，因为它们的执行器尚未实现。
+  `tests/test_diagnosis_report.py` 保留为 S2 历史基线；把 S2 测试也切到全链路是 S3-3 的事。
+- 没有 mock、没有故障注入、没有超时控制、没有参数 schema 校验（R4 未实现）。
+- 没有 CI 配置文件（Q8 只有可被 CI 调用的冒烟测试）。
+
+### 10.6 验证证据
+
+`tests/` **173 passed** ／ +JMESPath **183 passed** ／ A2E 哨兵 `3 passed, 52 warnings` ／
+DTO 五夹具 **5 行 OK** ／ 全链路五夹具 **5 行 OK** ／ `--check` **OK**（指纹 `9eaeecebcde17f6a`，锚点 `03cf8c9`）。
+本轮 8 组变异（① 四组 + Q11 四组）全部真 `FAILED`（非 `ERROR`/`TIMEOUT`），`RESTORED: True`。
+`--demo` 七行对照表：真重试 / 穿插 → pass；假重试 → `retry_wrong_params`；无重试 → `no_retry`；
+重试耗尽 → `retry_exhausted`；乱序上报 → `unscored/trace_invalid`；未上报 → `unscored/trace_not_reported`。
+
+### 10.7 反馈给外部评审（可直接贴回）
+
+```
+谢谢，① 的漏洞成立且比你说的更严重：执行器连 call_index 字段都没读。
+但处方不采纳：仓库第 1 轮已拍板「call_index 连续校验 → trace_invalid → unscored」，
+排序后判 fail 会把不可信数据记成能力不足，我们已用 test_why_we_do_not_sort_by_call_index 锁死。
+② 表格第 2 行举例错：失败后无后续调用实测命中 case → no_retry，没走 default；
+另外「零调用应归 multi_step_planning」与「不改词表」互相矛盾，见下方 Q10-A/B。
+③ 的通过标准也要改：逆序应判 unscored/trace_invalid，不是 fail。
+现在请只回答一件事：在「不新增 pattern_id、不改 DTO 归因口径」的约束下，
+给出 3 个语义谓词的精确定义（输入 ctx 是什么、各自返回布尔的判据），
+并指出它们对下面 12 个边界 case 的期望输出：
+fixtures/tool-call-cases.json。每条给 10 分钟内可做的验证动作，不要只给看法。
+```
+
+---
+
+## 11. round-9：红队测试落地核证（2026-11-07）
+
+外部 AI 交付 `test_redteam_round8.py`（7 组 / 87 条），声称「已通过本地自检，放进 `tests/` 即可运行」。
+按铁律先核证、隔离跑，**未纳入 `tests/`，未改产品代码**。
+
+### 11.1 核证总表
+
+| 主张 | 核证 | 证据 |
+|---|---|---|
+| 「已通过本地自检」 | ❌ **假绿** | 在原路径跑得 `5 passed, 82 skipped`：文件里 `_REPO_ROOT = Path(__file__).resolve().parents[1]`，原路径没有 `src/` → `HAS_REPO=False` → **全部攻击/对拍用例被 skip**，只跑了它自己参考实现的 5 条自检 |
+| 连上仓库后全绿 | ✅ 成立 | 复制到仓库内一级子目录 `.redteam-tmp/` → `HAS_REPO=True` → `87 passed in 2.23s` |
+| 这些用例有没有牙齿 | ✅ 有 | 3 组变异（去 `call_index` 前置校验 / 去 `http_status=500` 约束 / 过滤表达式不限定工具名）全部真 `FAILED`，非 `ERROR`；`RESTORED: True`，`tests/` 复验 173 passed、`--check` 仍 OK（`9eaeecebcde17f6a`） |
+| docstring「随机对拍 200 条」 | ❌ 失真 | 代码是 `@pytest.mark.parametrize("seed", range(50))`，实际 50 个 seed |
+
+### 11.2 全绿掩盖的真缺口（本轮最有价值的产出）
+
+红队其实造了两类关键输入，却被自己过宽的断言放过去了：
+
+| 输入 | 参考实现 | 我们的执行器 | 按契约应然 |
+|---|---|---|---|
+| `status="sucess"`（不在 `status_enum`） | `unscored` | **`fail`** | `unscored / trace_invalid` |
+| `params=None`（非 dict） | `unscored` | **`fail`** | `unscored / trace_invalid` |
+
+依据：`tasks/dbg-001-order-report.yaml` L120-121 `item_fields` 与
+`status_enum: [success, error, timeout]`；§1 第 1b 条已拍板「trace 前置校验 → `trace_invalid` →
+轨迹断言 `unscored`」。`_validate_calls()` 目前只查「元素为 dict + `call_index` 从 1 连续」，
+没覆盖 status 枚举与 params 类型 → 把**不可信数据**判成「不会重试」，
+与 §10.2 刚修掉的乱序误归因是同一类错误。
+
+放过它的两条断言：
+`test_illegal_status_should_not_crash` 的 `in {"unscored","fail","pass"}`（恒真）；
+`test_non_dict_params_must_be_unscored_or_safe` 的 `in {"unscored","fail"}`。
+→ 登记为 **Q12**，本轮不改代码。
+
+### 11.3 红队文件自身的结构性问题
+
+- `test_multiple_errors_then_success_should_pass` **根本没调用被测执行器**，只断言自己的
+  `reference_evaluate()` → 永远绿，是假用例。
+- `pytest.raises(Exception)` 太宽：`KeyError` / `AttributeError` 也算「拒绝组装」。
+- 参考实现**硬编码** `offset=10` / `http_status=500` / status 枚举，注释却写「契约来自 YAML」
+  → 第二真相源：YAML 一改对拍就误报。它额外校验 status/params、我们的执行器不校验，
+  而随机生成器从不造这两类输入 → **分歧被生成器掩盖**（这正是 11.2 的由来）。
+- 生成器 `limit` 含 20，超 YAML `maximum: 10`。R3 本来不管 limit 上限（归 R4），
+  不算 R3 漏洞，但对拍输入不合规。
+
+### 11.4 是否纳入 `tests/`：暂不
+
+1. 数字漂移：`pytest tests/` 收集数 173 → 260，`review_packet --check` 立刻 `STALE`；
+2. 更关键：把含恒真断言、假用例、第二真相源的外部代码变成 `verify.bat` 第 1 段的判据，
+   以后「绿」会被当成证据——与「绝不用 AI 自评当证据」冲突；
+3. 该文件 `parents[1]` 的设计强制它必须位于**仓库一级子目录**，放桌面 / Downloads 一律全 skip。
+
+建议路径：隔离跑（已建 `.redteam-tmp/`，**临时目录，勿 `git add -A`**）→ 只挑有效用例
+（假阳性 / 假阴性 / 随机对拍）→ 收紧断言、去掉自带参考尺子改从 YAML 派生 → 再纳入 `tests/`。
+
+### 11.5 Q12（待人拍板，AI 不替决）
+
+把 `_validate_calls()` 补齐到 `trace_requirements` 的全部前置约束：
+
+- **(a) 最小**：补 `status ∈ status_enum` + `params` 是 dict 两项；
+- **(b) 完整**：连 `name` 类型、`status=error` 时 `http_status` 必填一并补。
+
+两者都要求：新增回归锁、`fixtures/tool-call-cases.json` 补两个 case、变异测试；
+验收＝五夹具分数序 `0/0/0.25/0.5/1.0` 不变、重生成评审包后 `--check` OK。
+Q10 的 A/B 仍未定，Q12 可与 S3-3 合并处理。
+
+### 11.6 可贴回红队的回问
+
+```
+谢谢，87 条在真连上仓库后全绿，3 组变异也都能变红，用例确实有效。
+但请先解释三件事：
+① 你报的「本地自检通过」是 5 passed / 82 skipped（HAS_REPO=False），
+   即攻击用例一条都没跑；为什么把跳过当成通过？
+② test_multiple_errors_then_success_should_pass 没有调用被测执行器，
+   test_illegal_status_should_not_crash 的断言恒真，
+   pytest.raises(Exception) 允许任意异常——这三条请给收紧后的版本。
+③ 你造了 status 非法与 params 非 dict 两类输入，参考实现判 unscored、
+   被测判 fail。按 YAML status_enum 与已定决策（不可信数据判 unscored），
+   这是不是被测执行器的真缺口？请给一个能让它变红的最小用例。
+另外 docstring 写 200 条随机，实际 50 个 seed，请对齐。
+```
+
+---
+
+## 12. round-10：Q10 拍板（选 A）核证、技术债登记与 S3-3 开工判据（2026-11-07）
+
+> 来源：人转交的外部评审回件「二、Q10 决策：选 A（保守方案）」+「三、补充落地建议」，
+> 并附一句「可以开 S3-3 了」。本节按 `HANDOFF.md` §6.3 走 **登记 → 核证 → 处置 → 落仓**；
+> 本节只落决策与判据，**不改任何执行器代码**（代码从 §12.7 的第 1 小步开始，一次一步）。
+
+### 12.1 决策登记（Q10 = A）
+
+| 项 | 内容 |
+|---|---|
+| 决策 | **Q10 = A（保守方案）** |
+| 拍板 | 人，2026-11-07；外部评审给理由，人做的选择 |
+| 生效范围 | `src/arena/assertion_evaluator.py` 分类谓词、`tasks/dbg-001-order-report.yaml` 的 `error_pattern_detection.cases`、`fixtures/tool-call-cases.json` 的 `expect`、`tests/` 回归锁 |
+| 明确不做 | 不新增 `pattern_id`；不改 `mapped_skill_ids`；不改 DTO v2 `attribution_policy`；不改 `build_report()` 按 `spec.skill_id` 的归因口径；不动词表 |
+| 通过标准（照抄 §10.4，**不降低**） | ① `zero_calls` / `only_first_page` / `skips_page_10` / `wrong_offset_after_failure` 四个 case 的 `classification_source` 从 `default` 变 `case:`；② `raw-empty` 的 R3 不再靠 default；③ 五夹具分数序 `0/0/0.25/0.5/1.0` 不变；④ JSON Schema 全过 |
+| 已知代价（接受） | 所有 R3 模式仍归 `failure_retry`，`multi_step_planning` 缺口表达不了 → 登记 TD-001 |
+
+### 12.2 核证总表（回件 8 条主张，逐条挂来源）
+
+| # | 回件主张 | 核证 | 依据 |
+|---|---|---|---|
+| 1 | S3 目标 = 判定逻辑 / 全链路 / 分数单调可信 | ✅ 成立 | §10.5 边界、§10.6 分数序 `0/0/0.25/0.5/1.0` |
+| 2 | P1/P2 都还没最终拍板 | ✅ 基本成立，**附一处修正** | `docs/review-packet-manual.md` L69-75 仍列「待拍板清单（当前 3 条）」，P1/P2 是「我的建议」而非已定决策。修正：P2 口径**已在 DTO 按 (b) 实现**（`docs/diagnosis-report-schema.md` L203「已按…实现」），未落地的是状态层（UserSkillState / FSRS），不是 DTO |
+| 3 | 「单断言绑定单 skill」结构简单，B 会让契约复杂度跳升 | ✅ 成立 | 任务 YAML L233 `R3.skill_id: failure_retry` 单值；§10.4 第 2 点 |
+| 4 | A「解决了 default 黑箱、不可审计」 | ⚠️ **措辞需修正** | `assertion_evaluator.py` L291 已把 `classification_source` 写进 `evidence.extra`，`default` 命中**本来就可审计**（§9.6 L486 亦如此）。真问题是「兜底掩盖词表缺口」，不是黑箱 |
+| 5 | A 让「所有失败分类都有明确规则来源」 | ❌ **过度声称** | §10.4 的 A 只要求 4 个边界 case 改走 `case:`；YAML L244 `default: retry_wrong_params` **按 A 保留**。改完是「4 个已知缺口有来源」，不是「所有」 |
+| 6 | 加 `description` 字段做文案层提示 | ❌ **不采纳（字段已存在）** | `docs/error-patterns-v0.yaml` L8 已声明 `description` 为词表字段，14 条 pattern 每条都有（如 L53）。且 `diagnosis_report.py` L48-49 `load_vocabulary()` **只读 `pattern_id`，不读 `description`**；要让它进诊断报告必须改 `build_report()` + DTO/schema —— 与「不动核心契约」直接冲突。只改词表里已有的措辞可以，但那不产生报告层提示 |
+| 7 | 新增分类规则同步补边界用例集 | ✅ 采纳 | `fixtures/tool-call-cases.json` 已有 `expect.source` 与 12 个 case，底座现成；Q10-A 落地那一步必须同批改 4 条 `expect` + 加逐 case 回归锁 |
+| 8 | 当前 20 项改动 | ❌ 数字错 | `git status --porcelain \| wc -l` 实测 **22** 项（2026-11-07 21:02，HEAD `03cf8c9`） |
+
+> 结论：**Q10 = A 的决策本身不受上述修正影响**。理由 1/3/4 站得住，理由 2 需补「P2 的 DTO 口径已实现」；
+> 补充建议里的 `description` 一条若照做会误伤契约，已挡下。
+
+### 12.3 三条补充建议的处置
+
+| # | 建议 | 处置 | 落地方式 |
+|---|---|---|---|
+| 1 | 把跨技能归因登记技术债，M2 + P1/P2 拍板后再做 B | `采纳` | TD-001，见 §12.4 |
+| 2 | 新增分类规则补进边界用例集，每个 case 有测试守住 | `采纳` | 并入 S3-3-1；`fixtures/tool-call-cases.json` 4 条 `expect` + `tests/test_assertion_evaluator.py` 逐 case 锁 `source != default` |
+| 3 | 按「执行器修复 + S3-2 全链路」拆两次提交 | `修正采纳` | 22 项里还有 Q7/Q8/Q9 评审包改造、红队委托包、HANDOFF、`.gitignore`、`verify.bat` / `review.bat`，两次覆盖不全 → 见 §12.7 四组拆分；且**提交动作等人对全部改动验证通过后再执行** |
+
+### 12.4 技术债登记
+
+| ID | 内容 | 放行条件（可判定） | 影响面 | 来源 |
+|---|---|---|---|---|
+| **TD-001** | 错误模式跨技能归因（Q10-B）：新增 `fault_point_not_reached` → `multi_step_planning`，归因从「按 `spec.skill_id`」改「按 `pattern.mapped_skill_ids`」 | ① M2 接状态层；② P1/P2 由人拍板并从 `review-packet-manual.md` 第 5 节销项；③ DTO v2 `attribution_policy` 有回归锁 | `build_report()` / DTO v2 / `data-model.md` / 词表 | 本节，源于 Q10 选 A |
+| **TD-002** | 文档状态不一致：P2 在 `diagnosis-report-schema.md` L203 写「已按 (b) 实现」，`review-packet-manual.md` L74 仍列「待拍板」；P1 在本文件 L155 写「改成 E2」，`data-model.md` L122 写「待拍板」 | 人拍板 P1/P2 后一次性对齐三处 | 3 份文档 + 评审包指纹 | §12.2 核证 #2 的副产物 |
+
+> TD-002 **本轮不修**，标为「**假设**：评审包可能故意保留待拍板问题给外部评审」。
+> 擅自销项会改变对外发包内容 → 等人确认，不自行判断。
+
+### 12.5 S3-3 完成判据（开工先写，可证伪）
+
+**一句话判据**：给定 `fixtures/raw-*.json` 五份夹具，`trace_pipeline.run_fixture()`
+不再读任何手写 `assertion_results`，五条断言全部由执行器从 `raw` 现算；
+产出报告在 `score.ratio` / `disqualified` / 每条断言 `state` 上与 S2 基线一致，
+分数序保持 `0 / 0 / 0.25 / 0.5 / 1.0`；`tests/test_diagnosis_report.py` 切到全链路后仍全绿。
+
+**为什么只锁 state、不锁 error_patterns**：`raw-empty` 的手写 R3 是 `no_retry`，
+现算是 `retry_wrong_params`(default)，差异由 `test_raw_empty_exposes_q10_gap()` 钉成 Q10 证据
+（`tests/test_trace_pipeline.py` L119-132）。Q10-A 落地后该差异应**消失**，那条测试要同步从
+「暴露缺口」改写成「缺口已修复」的回归锁 —— 这是 S3-3-1 的显式验收项，不是可忽略的红灯。
+
+**外部裁判（十分钟内可跑，仓库根执行）**：
+
+```bash
+python -m pytest tests/ -q
+python src/arena/trace_pipeline.py --fixture all
+python src/arena/review_packet.py --check
+python src/arena/assertion_evaluator.py --demo
+```
+
+外加变异测试：每新增一条分类/判定规则，改坏一处后必须真 `FAILED`（不是 `ERROR`/`TIMEOUT`），
+复原后 `RESTORED: True` 且全量复绿。「测试通过」本身不算证据。
+
+**明确不做**：真实文件系统 / mock / 故障注入 / 超时控制 / CI 配置 / P3 的 R6 一致性校验 / TD-001。
+
+> **【round-21 口径澄清｜追加，不回改历史正文】** 上面末句「`tests/test_diagnosis_report.py` 切到全链路后仍全绿」**不按字面执行**：该文件 6 条负例依赖手写注入 `assertion_results`，把 `_build()` 换成 `run_fixture()` 换成的是被测对象（组装器契约 → 全链路），负例并未失效（§22.4 实测 `23 passed / 0 FAILED`）。人拍板口径见 §20.2 第 2 项、落地记录见 §23：`test_diagnosis_report.py` **原样保留**，改由 `tests/test_trace_pipeline.py` 补「五条全现算 vs S2 基线」一致性锁，锁 `state` / `ratio` / `disqualified` / `reason_code` 四项。
+
+### 12.6 两个待拍板项（AI 不替决；都不阻塞 S3-3-1）
+
+**Q13（新，S3-3 的输入契约，最优先）**：R1 判「文件存在且非空」、R2 判「JSON 内容」，
+但 `fixtures/raw-*.json` 里**没有产物本体**，只有手写 evidence 声称了 `size_bytes` 与两个字段值
+（如 `raw-perfect.json` L34-46）。产物从哪来，三个互斥选项：
+
+| | 做法 | 代价 |
+|---|---|---|
+| **(a) 建议** | 五份 raw 夹具加 `artifacts: {"/workspace/report.json": "<文件内容字符串>"}`，值从现有手写 evidence 与 `trace.tool_calls` 里 `write_report.params.content` 对齐填 | 要改 5 份夹具；但产物与轨迹是两份独立证据，正好给 P3 的 R6 留了比对基础 |
+| (b) | 从 `trace.tool_calls` 的 `write_report.params.content` 直接取 | 不用改夹具，但 R1 变成「trace 自称写了文件」，伪造 trace 可直接过 R1/R2，与 P3 要堵的洞相反 |
+| (c) | 真在磁盘建 `/workspace/report.json` | Windows 上路径不成立，排除 |
+
+推荐 (a)。**必须人定**：选错要返工 5 份夹具 + R1/R2 两个执行器及其测试。
+
+**Q12（沿用 §11.5）**：`_validate_calls()` 补到 `trace_requirements` 的全部前置约束 ——
+(a) 最小：补 `status ∈ status_enum` + `params` 是 dict；(b) 完整：再补 `name` 类型、
+`status=error` 时 `http_status` 必填。两者都要新增回归锁、用例集补 2 个 case、变异测试。
+§11.5 已写明「Q12 可与 S3-3 合并处理」，本轮仍未拍板。
+
+### 12.7 小步拆分与提交拆分
+
+**开发小步**（一步 = 一个可独立验证的最小单元，每步跑完 §12.5 的裁判再进下一步）：
+
+| 步 | 内容 | 完成判据 | 依赖 |
+|---|---|---|---|
+| **S3-3-1** | Q10-A 落地：3 个语义谓词 + YAML `cases` 补规则 + 用例集 4 条 `expect` 改 `case` + 逐 case 回归锁 + 处置 `test_raw_empty_exposes_q10_gap` | §12.1 通过标准四条全满足；变异测试真 `FAILED` | 无（**下一轮第一小步**） |
+| S3-3-2 | R5 `trace_final_status` 执行器 + `evaluate_assertion()` 分发注册 | 五夹具 R5 state 与手写基线一致 | 无 |
+| S3-3-3 | R1 `file_exists` | 同上 | Q13 |
+| S3-3-4 | R2 `json_field_equals`（`subset` + `tolerance 0.01`，禁止浮点 `==`） | 同上 | Q13 + S3-3-3 |
+| S3-3-5 | R4 `trace_param_schema_valid`（required/type/range/additional_properties 四项，见 `docs/executor-semantics.md` §2） | 同上 | 无 |
+| S3-3-6 | `trace_pipeline` 现算全部 5 条 + S2 测试切全链路 | §12.5 一句话判据 | 1-5 |
+
+Q12 可在 S3-3-1 或 S3-3-2 顺带做（同文件、同校验函数），**待人选 a/b 后并入**。
+
+**提交拆分**（22 项，`HEAD=03cf8c9`，全部**等人验证通过后**再执行；本轮不 commit / 不 push）：
+
+| 组 | 内容 | 大致文件 |
+|---|---|---|
+| 1 | Q7/Q8/Q9 评审包改造 | `review_packet.py` / `review-packet-manual.md` / `review-packet.md` / `test_review_packet.py` / `review.bat` / `verify.bat` / `.gitignore` |
+| 2 | 执行器修复 + S3-1（含 Q10-A） | `assertion_evaluator.py` / `test_assertion_evaluator.py` / `tool-call-cases.json` / `tasks/*.yaml` |
+| 3 | S3-2 全链路打通 | `trace_pipeline.py` / `test_trace_pipeline.py` / 5 份 `raw-*.json` |
+| 4 | 处置记录与交接 | `review-response-v1.md` / `redteam-brief-round8.md` / `HANDOFF.md` / `docs/archive/` |
+
+> 与人转交建议的差别：原建议是「两次提交（执行器修复 + S3-2）」，这里拆成 4 组，
+> 因为 22 项里有整块评审包改造与处置记录，塞进任一组都会破坏原子性。
+
+### 12.8 本轮请人做的动作
+
+1. **验证存量 22 项**：跑 §12.5 的四条裁判；`git status --porcelain | wc -l` 应为 22。
+2. **回两个字母**：Q13 选 `a` / `b`；Q12 选 `a` / `b`（或「暂缓」）。
+3. 若不认可 §12.2 的核证或 §12.4 的 TD-002 假设，指出具体行号，本节按核证结果修订。
+4. 确认后才进 S3-3-1。本轮**未改任何执行器代码、未 commit、未 push**。
+
+---
+
+## 13. round-11：S3-3-1 落地 —— Q10-A 分类器整改（2026-11-07）
+
+> 人对 §12.8 回「按照你的想法来，我看过了，继续吧」。按 §12.7 只做 **S3-3-1** 一个小步，
+> 做完即停；未顺手做 S3-3-2，也未 commit / push。
+
+### 13.1 授权范围与两个待拍板项的落定
+
+| 项 | 落定 | 依据 / 生效时点 |
+|---|---|---|
+| **Q13**（产物输入契约） | **(a)** 夹具加 `artifacts` 字段 | 依据人在本轮的授权「按照你的想法来」采纳 §12.6 的建议值。**本步不写该字段**，S3-3-3 实现 R1 时才落地；若否决请直接指出 |
+| **Q12**（`_validate_calls()` 补齐） | **(a) 最小**：只补 `status ∈ status_enum` + `params` 是 dict | 同样按授权取最小方案：这两类输入是红队实测暴露的真缺口（§11.2），(b) 的 `name` 类型 / `http_status` 必填尚无反例，不扩张。**代码排进 S3-3-2**（同文件同函数，避免本步塞两个改动单元） |
+
+> 两项都由 AI 依授权代定、写在此处供人复核；若人否决，本步的 Q10-A 实现**不依赖它们**，可独立回退。
+
+### 13.2 三个语义谓词的精确定义（代码里没有第二份任务常量）
+
+`ctx` 在 `evaluate()` 里构造，两个计数都来自**已存在的派生结果**，不新解析 trace：
+
+| 谓词 | 输入 | 布尔判据 | 覆盖的边界 case |
+|---|---|---|---|
+| `no_tool_calls` | `call_count = len(offsets)`（YAML `probe` 取到的工具调用条数） | `call_count == 0` | `zero_calls` |
+| `fault_point_not_reached` | `fault_call_count = len(projected)` | `fault_call_count == 0` | `only_first_page`、`skips_page_10` |
+| `fault_point_not_repeated` | 同上 | `fault_call_count < 2` | `wrong_offset_after_failure` |
+
+- `projected` 由 `_filter_expr(spec)` 生成 `calls[?(name==... && params.offset==...)]` 过滤得到，
+  条件全部取自 `expected.calls`；**故障点是 10 还是 20 由 YAML 决定**，代码不写死。
+  把 YAML 里的 `offset` 改成 20，同一组 trace 的分类必须跟着变 ——
+  `test_q10a_predicates_follow_yaml_fault_point` 锁死这一点。
+- 三个谓词在 YAML 里只接受 `true`；写成 `false` 抛 `EvaluatorError`，
+  不会静默变成「永不命中」再悄悄退回 default（`test_count_predicates_reject_silent_misuse`）。
+- YAML `cases` 按「现有 3 条 → 新增 3 条 → `default`」顺序匹配、首命中即止。
+  **`default` 保留**：未枚举的序列（实测 `[10,0,10]` 两次 error）仍走兜底，
+  `classification_source` 如实记为 `default`，覆盖度缺口继续可观测。
+
+### 13.3 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `src/arena/assertion_evaluator.py` | 新增 `_COUNT_PREDICATES` 与 3 个分支；`evaluate()` 的 ctx 加 `call_count` / `fault_call_count`；`--demo` 加「零调用 / 只拉首页」两行；顺手统一三处「四类 / 六类」的过时文案 |
+| `tasks/dbg-001-order-report.yaml` | R3 的 `error_pattern_detection.cases` 末尾补 3 条明写规则 + Q10-A 注释；`default` 保留并注明用途 |
+| `fixtures/tool-call-cases.json` | 4 条 `expect` 从 `default` 改 `case`（3 条 `no_retry`、1 条 `retry_wrong_params`），`note` 与 `_comment` 同步 |
+| `tests/test_assertion_evaluator.py` | 33 → **39 条**：`test_zero_calls_is_classified_by_written_rule`、4 条参数化的 `test_q10a_boundary_cases_are_classified_by_written_rules`、YAML 派生锁、布尔谓词误用锁；`test_default_is_observable_when_rules_miss` 换成仍能触发兜底的 `[10,0,10]` |
+| `tests/test_trace_pipeline.py` | `test_raw_empty_exposes_q10_gap` → `test_raw_empty_q10_gap_is_closed`（§12.5 预告的改写，差异应消失） |
+| `docs/review-packet.md` | 重生成：179 个用例 / 179 passed，新指纹 `f2c7b2bce038884c` |
+| 文档失真处置 | `docs/redteam-brief-round8.md` 头部加「历史快照已过期」警示；`HANDOFF.md` 索引同步用例数、`--demo` 行数、§13、快照状态 |
+
+### 13.4 通过标准逐条核证（照抄 §12.1，未降低）
+
+| # | 标准 | 实测 |
+|---|---|---|
+| ① | 四个边界的 `classification_source` 从 `default` 变 `case:` | `case:no_tool_calls`（零调用）／`case:fault_point_not_reached`（只拉首页、跳过故障点）／`case:fault_point_not_repeated`（失败后跳到 20）。用例集遍历 + `--demo` 两处一致 |
+| ② | `raw-empty` 的 R3 不再靠 default | `--fixture all` 首行 `R3=fail patterns=['no_retry']`；手写基线也是 `no_retry`，round-8 钉住的差异消失 |
+| ③ | 五夹具分数序不变 | `0 / 0 / 0.25 / 0.5 / 1.0`（五夹具实测） |
+| ④ | JSON Schema 全过 | `tests/` 179 passed，含全链路 schema 校验 |
+
+### 13.5 验证证据（外部裁判，不拿「测试通过」当证据）
+
+- `pytest tests/ -q` → **179 passed**（原 173，+6 条新约束）。
+- 数字防漂移锁**真的工作了**：改完测试数后 `test_test_count_matches_repo` 先变红
+  （包里仍是 173），迫使重生成评审包。生成跑了两遍：第一遍如实记录过渡态
+  `1 failed, 178 passed`，第二遍在测试全绿后记录 `179 passed / 179 total` —— 对外发包不带假红。
+- `--check` **OK**（`f2c7b2bce038884c`，锚点 `03cf8c9`）；`--demo` **九行**；
+  `trace_pipeline.py --fixture all` **五行 OK**；匿名扫描无绝对路径 / 真名。
+- **三组变异全部真 `FAILED`**（非 `ERROR` / `TIMEOUT`），`RESTORED: True`：
+
+| 变异 | 结果 |
+|---|---|
+| M1 删掉 YAML 新增的 3 条 case | `12 failed, 167 passed` |
+| M2 `fault_point_not_repeated` 判据 `< 2` 改 `< 1` | `3 failed, 176 passed` |
+| M3 `fault_call_count` 硬编码成 `offset == 10` | `1 failed, 178 passed` |
+
+> M1 第一次用 LF 锚点匹配到 0 处（任务 YAML 是 **CRLF**），按纪律 **ABORT 而非硬跑**，
+> 换成 CRLF 字节锚点后补跑才算数。字节级替换 + 顶层 `finally` 复原，避免行尾改动污染仓库。
+
+### 13.6 明确不做 / 下一步
+
+- 未新增 `pattern_id`、未动词表 `mapped_skill_ids`、未改 DTO v2 归因 —— Q10=A 的边界守住，TD-001 仍在册。
+- Q13 的 `artifacts` 字段、Q12(a) 的校验代码**本步都没写**，分别在 S3-3-3 / S3-3-2 落地。
+- §10.6 与 §11.1 里的「173 passed」是**当时的历史验证快照**，不回改（回改等于篡改历史记录）；现役数字以本节与评审包为准。
+- 用例集里 `source=default` 的样例归零，**不等于删了兜底**：`default` 仍在 YAML，
+  可观测性改由 `test_default_is_observable_when_rules_miss`（`[10,0,10]` 两次 error）单独守住。
+  这条要在下轮红队前说清楚，否则「12 个 case 全绿」会被误读成「分类已完备」。
+- **下一步 S3-3-2**：R5 `trace_final_status` 执行器 + `evaluate_assertion()` 分发注册，顺带落 Q12(a)；仍是一次一步、验完再进下一步。
+- 工作区仍是**未 commit、未 push** 状态，改动项由 §12 时的 22 变 **23**
+  （本步新增 `tasks/dbg-001-order-report.yaml` 一项）；提交按 §12.7 的四组拆分等人事后执行。
+
+---
+
+## 14. round-12：外部验收回件核证（2026-11-08）
+
+> 来源：人转交的「S3-3-1 / Q10-A 分类器整改 — 外部验收报告」（2026-11-08），
+> 针对 `docs/verify-brief-s3-3-1.md` 委托包。本节按 `HANDOFF.md` §6.3 走
+> **核证 → 登记 → 处置 → 落仓 → 人拍板**；**本轮不改任何产品代码**。
+>
+> 回件声明其环境可读仓库，与委托包 §0.2 第 6 条「你没有工作目录」的前提不符；
+> 但它给出了可复现命令与实测数字，且下列关键项已在我方环境**独立复现**，
+> 故不因前提差异打折。此差异登记为委托包模板修正项，见 §14.7。
+
+### 14.1 核证方法与实测
+
+| 动作 | 我方实测 | 与回件 |
+|---|---|---|
+| 回件 §2 的 P0 探针（8 条，纯内存改 spec，不落盘） | 8 行**逐字一致**，含 `RAISED EvaluatorError`、`src=case:`（空）、`T8 params=None → case:no_tool_calls` | ✅ |
+| 变异 C：`no_tool_calls` 判据 `== 0` → `<= 1` | `179 passed`（**全绿**） | ✅ 盲区成立 |
+| 变异 D：`call_count = len(offsets)` → `len(projected)` | `179 passed`（**全绿**） | ✅ 盲区成立 |
+| 变异 T2-A：删 YAML 前两条新增 case（CRLF 字节锚点，count=1） | `9 failed, 170 passed` | ✅ |
+| 三处变异均字节级替换 + 顶层 `finally` 复原 | `RESTORED: True` | — |
+| 行号抽查 | `evaluator:137-150 / 177 / 197 / 222-223 / 289 / 318 / 351 / 425-426`、`yaml:21 / 229-230 / 239 / 250-253`、`error-patterns-v0.yaml:51-53`、`trace_pipeline:14,88`、`tests/test_task_yaml.py:93,121` 全部对得上 | ✅ |
+| 硬事实 | `verify.bat` 确指隔离 venv；`python 3.13.14`、`pytest 8.4.2` 一致 | ✅ |
+| probe 空值行为 | `params=None / "oops" / {"limit":10} / {"offset":null}` → `[]`；`{"offset":0}` → `[0]` | ✅ |
+
+> 回件 17 条核证（V1–V17）**未发现实质错误**。仅 V9 引用的 `break` 行号写作 221，
+> 实际 `break` 在 `evaluator:226`（221 是第二遍 `for case in cases:`）；不影响结论。
+
+### 14.2 核证总表（按处置分类）
+
+| # | 回件判定 | 我方核证 | 处置 |
+|---|---|---|---|
+| V1/V2/V3/V11/V13/V14/V15/V16 | 我方自述成立 | ✅ 复现 | 无动作 |
+| **V12** | 「三组变异足以推出新增逻辑被守住」**不成立** | ✅ C/D 两变异改坏语义仍 179 全绿 | **认**，登记 TD-004 |
+| **V9** | 「写 `false` 必抛 `EvaluatorError`」**部分不成立**（`break` 跳过 + `all()` 短路） | ✅ P0 两条静默路径复现 | **认**，登记 TD-003 |
+| **V17** | 新洞 H1：case 缺 `match` → `or {}` + `all([])==True` 全命中，来源记 `case:` | ✅ 复现；预校验谓词名的循环同样跳过空 match | 采纳，登记 TD-003 |
+| V7 / P1 | `no_tool_calls` 名实不符；`no_retry` 词表描述对「从没 500」的 trace 不成立 | ✅ `write_report_only` → `case:no_tool_calls`；词表 L53 确写「首次 500 后」 | 采纳，登记 TD-005，**待拍板 D1** |
+| V10 / P3 | 判定路径成立，但 `_DEMO_CALLS` 硬编码、YAML 两个 offset 键无相等断言 | ✅ `_DEMO_CALLS:351` 硬编码 `fetch_orders/0/10`；`test_task_yaml.py:93,121` 各钉 10、无相等断言 | 部分采纳，登记 TD-006，**待拍板 D4** |
+| V8 / P2 | 分类正确性依赖 YAML 顺序；**修正我方「4 个边界」为 3 个** | ✅ `wrong_offset_after_failure` 由 `fault_point_not_repeated` 唯一覆盖，删前两条仍正确 | **认**，见 §14.3 |
+| V6 / P7 | 「与手写基线一致」是同一作者自洽检查，不是独立证据 | ✅ `trace_pipeline.py:14,88` 只现算 R3 | **认**，措辞收窄，见 §14.3 |
+| V4 | 「被测试精确锁住」仅 `zero_calls` 成立 | ✅ `test_assertion_evaluator.py:263` 只 `startswith("case:")`；`test_trace_pipeline.py:173` 把来源归并成 `case/default` | 并入 TD-004 |
+
+### 14.3 我方自述需修正的三处（不回改历史正文，在本节声明）
+
+1. **§13.2「写成 `false` 抛 `EvaluatorError`，不会静默退回 default」** → 应限定为
+   「**被求值到时**抛错」；前置 case 命中后 `break`、`all()` 短路都可跳过该 case。
+2. **§13.5「三组变异全部真 FAILED」** 只能推出「这三处改动被守住」，
+   **不能**推出「新增逻辑被测试真正守住」；C/D 是反例。
+3. **委托包 §5 T2「4 个边界 case 依赖顺序」** → 准确是 **3 个**；
+   `wrong_offset_after_failure` 不依赖前置两条。
+
+另：§13.4② 把「手写基线与现算一致」列为通过证据，应改写为
+「以 `classification_source.startswith("case:")` 为判据；与手写夹具一致只作自洽检查」。
+
+### 14.4 技术债登记
+
+| ID | 内容 | 可判定放行条件 | 撞 Q10=A 边界？ |
+|---|---|---|---|
+| **TD-003** | 分类 spec 缺加载期校验：空/缺 `match` 全命中 catch-all（H1）；计数谓词值非 `True`、或 `false` 被短路跳过 | 构造 `match` 缺失/空、`no_tool_calls: false` 的 spec，在**看 trace 之前**抛 `EvaluatorError`；删掉该校验后专用测试真 `FAILED` | 否（纯防御，不改分类结果） |
+| **TD-004** | 分类来源断言粒度不足：4 条参数化只 `startswith("case:")`，全链路把来源归并成 `case/default` | 变异 D 必须让至少一条测试真 `FAILED`；补 `only_first_page → case:fault_point_not_reached` 与 `evidence.observed.offsets` 的精确断言 | 否（只加测试） |
+| **TD-005** | `no_tool_calls` 名实不符（实为「带非空 offset 的 `fetch_orders` 调用数」），且 `no_retry` 词表描述对未发生 500 的 trace 不成立 | 人拍板 D1 后二选一落地；若动 `classification_source` 字符串，下游按字符串索引处同步 | **是**（可能动词表或改分类结果） |
+| **TD-006** | `fault_injection.match.offset` 与 R3 `expected.calls[].params_match.offset` 分别钉死 10，无相等断言 | 人拍板 D4 后加一致性校验或相等断言；把其中一处改成 20 时测试真 `FAILED` | 可能（会拒绝「两处故意不同」的任务） |
+| TD-001 / TD-002 | 沿用 §12.4，未销项 | — | — |
+
+### 14.5 待拍板项（回件 D1–D5，AI 不替决）
+
+| # | 要定的事 | 选项 A | 选项 B | 我的建议（可否决） |
+|---|---|---|---|---|
+| **D1** | `no_tool_calls` 到底测什么 | 改成真零调用 `len(trace.tool_calls)==0`；「仅调别的工具」落 `default`，覆盖度可观测；代价：这类 trace 失去 `case:` 来源，§13.4 文案同步改 | 保留 probe 语义，谓词与 `zero_calls` 改名 `no_fetch_calls` / `no_probe_hits`，修正词表描述；代价：`classification_source` 字符串变化 | **B**（A 会把已有 `case:` 覆盖度倒退回 `default`，与 Q10 初衷相反）；但 B 撞 TD-005 边界 |
+| **D2** | 配置校验时机 | **spec 加载即校验**（计数谓词值须 `True`、`match` 非空合法），配置错在跑 trace 前就失败 | 保持运行期求值，短路可让错误长期潜伏 | **A**，与 TD-003 合并 |
+| **D3** | 重叠谓词顺序依赖 | 让谓词自足（如给 `fault_point_not_repeated` 加 `call_count > fault_call_count`），顺序不再承载语义；代价：未枚举序列分类可能变化，需补 fixture | 不改谓词，把「重叠谓词按特异性排序」写成显式不变量 + 「重排即红」专用测试 | **B**（A 改分类结果，S3-3 全链路尚未打通，此时动语义易返工） |
+| **D4** | 两个 offset 键 | 增加运行期一致性校验（两处必须相等）；代价：拒绝「注入点与判定口径故意不同」的任务 | 维持两处独立钉死（现状）；代价：口径可能漂移 | **暂缓**，登记 TD-006，等任务层 YAML 定稿后一次性处理 |
+| **D5** | Q10-A 与 Q12(a) 先后 | 先落 Q12(a) 再宣称「归因可用」 | 保持现状 | **A 与现有排期重合**（Q12(a) 已定 S3-3-2），不算新决策；只需收窄声称，见 §14.3 |
+
+> **往上抽一层**：当前阶段目标是「S3 全链路打通 + 分数单调可信」，不是把分类器打磨到完美。
+> 因此建议**先放行不撞契约的三项**（TD-003 防御校验、TD-004 补精确断言、D5 措辞收窄），
+> 把 D1 / D3 / D4 这类会改语义或动契约的挂到 M2 状态层之后，与 TD-001 同批处理。
+> 这与 Q10 选 A 时「规避 P1/P2 未定导致返工」的理由一致。**最终由人拍板。**
+
+### 14.6 最小放行批（若人只回「按建议」）
+
+一次一个小步，每步跑完 §12.5 的四条裁判再进下一步：
+
+| 步 | 内容 | 完成判据 |
+|---|---|---|
+| **S3-3-1b** | TD-003：`load_r3_spec()` 加载期校验 cases（`match` 非空、键合法、计数谓词值 `True`）+ 专用回归锁 + 变异测试 | 缺 `match` / `false` 的 spec 在任何 trace 前抛 `EvaluatorError`；删校验真 `FAILED` |
+| **S3-3-1c** | TD-004：补 `only_first_page` 精确 `source` 断言 + `observed.offsets` / `call_count` 断言 | 变异 C/D 至少各让一条测试真 `FAILED`；原 179+ 全绿 |
+| **S3-3-2** | 原计划不变：R5 执行器 + 分发注册 + Q12(a) 最小校验 | 五夹具 R5 state 与手写基线一致 |
+
+以上均**不新增 `pattern_id`、不动词表、不改 DTO**，守住 Q10=A 边界。
+
+### 14.7 委托包模板修正与本轮验证动作
+
+- `docs/verify-brief-s3-3-1.md` §0.2 第 6 条写死「你没有仓库，不要声称我跑过了」，
+  前提是错的（本次评审环境可读仓库）。下轮外发前把该条改成
+  「**若能读仓库，请注明并给出实测；若不能，不要声称跑过**」，别再写死前提。
+- 该包 §2 引用的 `docs/review-response-v1.md` 全文指纹 `ec91a86ddb1b5a6a` 是**生成时快照**，
+  追加本节后已变化；包本身是一次性快照，不回改，下轮外发前重生成。
+- 包内 §4 的 8 个内联块仍与磁盘逐字一致（本轮未改任何源文件），`SELFCHECK: PASS` 仍成立。
+
+**请人验证（仓库根）**：
+
+```bash
+python -m pytest tests/ -q                        # 179 passed
+python src/arena/review_packet.py --check         # OK
+python src/arena/trace_pipeline.py --fixture all  # 5 行 OK
+```
+
+外加复现 C/D 盲区：字节级把 `assertion_evaluator.py` 的 `== 0` 改 `<= 1`、
+`len(offsets)` 改 `len(projected)`，各跑一次全量 pytest，应均为 `179 passed`；
+顶层 `finally` 复原，打印 `RESTORED: True`。
+
+> 本轮**未改任何产品代码、未 commit、未 push**；工作区 24 项改动（含委托包），
+> HEAD 仍 `03cf8c9`。等人回 **D1–D5** 的选择（或一句「按建议」）后再进 S3-3-1b。
+
+---
+
+## 15. round-13：最小放行批落地 —— S3-3-1b / 1c（2026-11-08）
+
+> 人回「按照你的建议来」，按 §14.6 的最小放行批执行：**TD-003 → TD-004 → D5 措辞收窄**。
+> D1 / D3 / D4 按 §14.5 的建议**挂到 M2 状态层之后**，与 TD-001 同批，本轮不碰。
+> 全程仍是「一次一个小步，写 → 验 → 报 → 示 → 等确认」，**未 commit / 未 push**。
+
+### 15.1 范围与边界（守住 Q10=A）
+
+| 做 | 不做 |
+|---|---|
+| 分类 spec 的结构校验（纯防御） | 不新增 `pattern_id`、不动词表、不改 DTO / 归因 |
+| 分类来源的精确断言（只加测试 + 用例集期望） | 不改分类结果、不改 `classification_source` 的字符串取值 |
+| 措辞收窄、文档 / 评审包同步 | 不动 D1（`no_tool_calls` 语义）、D3（谓词顺序）、D4（两个 offset 键） |
+
+两个小步都**不改变任何 fixture 的分数与错误模式**：五夹具分数序仍
+`0 / 0 / 0.25 / 0.5 / 1.0`，`--demo` 九行来源逐字不变。
+
+### 15.2 S3-3-1b：TD-003 分类 spec 校验
+
+产品代码改动 5 处，全部在 `src/arena/assertion_evaluator.py`：
+
+1. 新增 `_validate_classification_spec(spec)`：要求 `match` 是**非空 dict**、谓词名在
+   `_PREDICATES` 内、计数谓词值必须是 `True`；`cases` 必须是非空 list、每条是对象。
+2. `load_r3_spec()` 加载后即校验（D2=A：YAML 配置错不用等跑 trace）。
+3. `evaluate()` 在 `trace` 分支**之前**校验（挡住「加载后被内存改坏」的 spec，且配置错
+   不会被 `unscored` 分支吞掉）。
+4. `_classify()` 复用同一校验函数，删掉原来那段重复的全量谓词名循环 —— **校验逻辑只有一份**。
+5. 模块 docstring 写明 H1 / V9 两个驱动漏洞。
+
+校验**不查** `case["pattern"]` 是否已声明：那属于分类结果检查，留在 `_classify`，
+避免改变既有回归锁期待的错误措辞。
+
+**完成判据实测**：
+
+| 判据 | 结果 |
+|---|---|
+| 缺 `match` / `match: {}` / `null` / 非对象 / `mtach:` 拼写错 / case 非对象 / 计数谓词 `false` / 短路之后的未知谓词 | 8 条参数化全部在 `trace=None` 与真实 trace 两种输入下抛 `EvaluatorError` |
+| H1 原样反例（首条 case 无 `match`） | 不再产出 `src=case:` 的空来源，报「缺非空 match」 |
+| 加载即校验 | 临时 YAML 故意漏 `match`，`load_r3_spec(path)` 直接抛 |
+| 删校验真变红 | **M1** 把校验函数整体 no-op → `12 failed`；**M2** 只删 `evaluate()` 里的调用 → `10 failed`（证明「trace 之前」不是空话）；基线 `49 passed`，`RESTORED: True` |
+
+### 15.3 S3-3-1c：TD-004 精确分类来源断言
+
+`fixtures/tool-call-cases.json` 把 12 个 case 的 `expect.source` 从
+`case / default / null` **升级为完整来源字符串**（如 `case:fault_point_not_reached`），
+并新增 `expect.observed_offsets`。两个测试文件不再把来源归并成 `case/default`：
+
+- `test_assertion_evaluator.py`：4 条 Q10-A 参数化改为精确比对 `source` + `offsets`；
+  另加 `test_only_first_page_source_is_exact` 点名锁。
+- `test_trace_pipeline.py`：`test_boundary_cases_match_executor` 精确比对 `source`，
+  并在 `observed_offsets` 非 null 时锁住 probe 序列。
+
+**完成判据实测**（裁判用两个执行器测试文件，避开评审包数字锁的过渡态）：
+
+| 变异 | 结果 |
+|---|---|
+| C：`call_count == 0` → `<= 1` | **FAILED** `3 failed, 108 passed` |
+| D：`call_count = len(offsets)` → `len(projected)` | **FAILED** `5 failed, 106 passed` |
+| E：`probe` 改成 `calls[].params.offset` | **GREEN，无效变异，不计证据**：JMESPath 投影丢弃 `null`，该探针在这批夹具上与原探针语义等价 |
+| E2：`probe` 改成 `.params.limit`（先实测输出 `[10,10,10]` vs `[0,10,10]`，确认非等价） | **FAILED** `16 failed, 95 passed` |
+
+基线 `111 passed`；三组有效变异均字节级替换 + 顶层 `finally` 复原，`RESTORED: True`。
+C / D 正是 §14.1 里「改坏仍 179 全绿」的两个盲区，现在**各让至少一条测试真变红**。
+
+### 15.4 D5：声称口径收窄（不回改历史正文）
+
+- 本轮只让分类来源**可精确审计**，**不宣称「归因可用」**：跨技能归因仍是 TD-001
+  （放行条件：M2 接状态层 + P1/P2 销项 + `attribution_policy` 回归锁）；
+  Q12(a) 的最小校验排在 S3-3-2，未落地前不得把 R3 的分类结果说成「归因结论」。
+- §13.4② 把「与手写夹具一致」列为通过证据的说法，按 §14.3 收窄为
+  「**自洽检查，不作独立证据**」；判据以 `classification_source` 精确值为准。
+  §13 / §14 的历史正文按纪律**不回改**，在本节声明。
+- §13.5「三组变异守住新增逻辑」的过度声称、§13.2「写 `false` 必抛」的限定，
+  已在 §14.3 声明；本轮的 M1/M2 与 C/D/E2 是新的、独立可复现的证据。
+
+### 15.5 技术债状态
+
+| ID | 状态 |
+|---|---|
+| **TD-003 / TD-004** | ✅ **销项**（放行条件逐条实测满足） |
+| TD-001 / TD-002 | 沿用 §12.4，未销项 |
+| TD-005（D1）/ TD-006（D4） | 在册，等 M2 与任务层 YAML 定稿 |
+| D3（谓词顺序不变量） | 在册，建议 B 方案，与 TD-001 同批 |
+
+### 15.6 文档失真处置
+
+- `docs/verify-brief-s3-3-1.md` 是一次性快照：§4 内联的是 **round-12 的源码**，
+  本轮 4 个源文件已变，已在头部标「**历史快照已过期，勿当现役契约**」。
+- **本轮实测挖出模板第三个缺陷**：§6 自检只比对「包内内联块 vs 包内写死的指纹表」，
+  **不与磁盘逐字比对**。所以包内 `SELFCHECK: PASS` 只证明「包没被手改」，
+  **不证明与现役仓库一致**。下轮重生成须补磁盘比对；连同 §14.7 已登记的两条
+  （§0.2 第 6 条「你没有仓库」写死前提、包内 `review-response-v1.md` 过期指纹）
+  一并处理，本轮不回改历史包正文。
+- **修复记录（一次真实的工具坑）**：用文本编辑给包头部加警示时，编辑器把包内两个
+  **CRLF 内联块**（`diagnosis_report.py`、任务 YAML）整体翻成 LF，8 块里 2 块立刻
+  MISMATCH。已按生成器原始字节构造还原（`body[:-1]` 内 `\n` → `\r\n`），
+  两个块还原后的 sha256[:16] 与包内记录值**逐字相同**；最终 8 块全 `OK`、
+  `SELFCHECK: PASS`、包内 CRLF 恢复 615 处。**教训：含混合行尾的一次性快照包
+  只能字节级编辑，不能走文本编辑器。**
+- `docs/review-packet.md` 因测试数 `179 → 189 → 190` 触发数字锁，已按 Q7 口径重生成两遍。
+  可判定依据：`review_packet.py:322` 的 `build()` **先跑 pytest、后写文件**（`write_packet()` 在 339 行），
+  且 `digest` 只算正文、不含时间戳 —— 两遍指纹 `e9d780a023ff27bc` → `9f878c773fac8d1a`
+  不同即证明正文确有差异：第一遍读到的仍是旧包数字、如实记录过渡态红灯，
+  第二遍在全绿状态写入现役数字。中间复验 `190 passed`，最终 `--check OK`（`9f878c773fac8d1a`）。
+- `HANDOFF.md` 索引与工作日志已同步。
+
+### 15.7 请人验证（仓库根，用隔离 venv 的 python）
+
+```bash
+python -m pytest tests/ -q                        # 190 passed
+python src/arena/trace_pipeline.py --fixture all  # 5 行 OK，分数序 0/0/0.25/0.5/1.0
+python src/arena/review_packet.py --check         # OK
+python src/arena/assertion_evaluator.py --demo    # 九行，来源不变
+```
+
+> 本轮改动集中在 4 个源文件 + 处置文档 / 索引 / 日志；**未 commit、未 push**，
+> HEAD 仍 `03cf8c9`。下一小步仍是 **S3-3-2**：R5 `trace_final_status` 执行器 +
+> `evaluate_assertion()` 分发注册 + Q12(a) 最小校验。
+
+---
+
+## 16. round-14：S3-3-2 落地 —— R5 执行器 + 分发注册 + Q12(a)（2026-11-08）
+
+### 16.1 范围与边界
+
+按 §12.7 / §14.6 **已登记**的 S3-3-2 定义执行，人只回「继续」，本轮无新拍板项。
+守住 Q10=A：**未新增 `pattern_id`、未动词表、未改 DTO、未改归因口径**。
+同时守住小步边界：
+
+- **不改 fixtures 的手写 `assertion_results`**；
+- **不把 R5 接进 `trace_pipeline` 的现算集合**（「五条全现算」仍是 S3-3-6）；
+- Q13(a) 的 `artifacts` 仍未落地（S3-3-3）；D1 / D3 / D4 仍挂 M2；
+- 本轮**不外发委托包**：人已明确外部评测由其按需发起，不主动张罗。
+
+### 16.2 S3-3-2a：R5 执行器与真分发
+
+| 落点 | 内容 |
+|---|---|
+| `load_task_config()` / `load_trace_requirements()` | 缓存的**只是文件文本**，每次 `safe_load` 返回新 dict —— 调用方常 deepcopy 后改 spec 做回归锁，缓存可变对象会被污染 |
+| `_validate_final_status_spec()` | TD-003 同款纪律：加载期（`load_r5_spec`）与判定期各校验一次；`match` 必须且只能含 `target`、pattern 必须在本断言 `error_patterns` 声明。空 match / 拼错 key 直接抛，不做 catch-all |
+| `evaluate_final_status()` | 值域取 `trace_requirements.minimum.final_status.enum`（`completed/crashed/timeout`），`expected` 与 cases 的 pattern 全从 YAML 派生；未上报 / 越界 → `unscored`；非 `completed` → `fail` + YAML pattern，命中来源 `case:final_status` 写进 evidence；枚举扩了但 cases 没跟上就抛错，**不静默编错误模式、不退回 default** |
+| `evaluate_assertion()` | 从「无条件转发 `evaluate()`」变成按 `spec["type"]` 真分发；未实现类型抛 `NotImplementedError`。`evaluate()` 仍是 R3 专用，塞 R5 spec 进去会拒 |
+| `trace_pipeline.recompute_r3()` | 改走分发入口（R3 行为不变）；S3-3-6 切全链路时这一行不必再改 |
+
+**完成判据实测**：`test_r5_executor_matches_report_baseline` 参数化五夹具，
+R5 执行器现算的 `state` 与报告的 R5 `state` 全部一致（pass×4 + unscored×1）。
+
+### 16.3 判据口径澄清与 TD-007（本轮核出的唯一分歧）
+
+§12.7 把完成判据写成「五夹具 R5 state 与**手写基线**一致」。核证发现这句话在
+`raw-no-trace` 上不能按字面执行：
+
+| 来源 | `raw-no-trace` 的 R5 |
+|---|---|
+| `fixtures/raw-no-trace.json` 手写 | `pass` / `observed=null`（没有 trace 却声称干净退出） |
+| `build_report()` L142-146 强制改写 | `unscored` / `reason_code=trace_not_reported` |
+
+依据：任务 YAML L199-200 明写 `trace_*` 断言在 trace 未上报时强制改写成 `unscored`；
+`scoring.gate.on_unscored: do_not_disqualify`（YAML L138）。**手写 pass 是 S2 遗留的假基线，
+不是契约**。所以判据取**最终报告**的 R5 state 为基线。
+
+本轮不改夹具（改基线会牵动 S2 测试），改由
+`test_raw_no_trace_r5_handwritten_pass_is_overridden` 把分歧钉成可执行证据：
+断言手写仍是 `pass`、执行器与报告都是 `unscored`。登记 **TD-007**：
+S3-3-6 切「五条全现算」时一并处置这几份手写结果。
+
+> 这是口径澄清，不是新设计选择：两条契约（YAML 注释 + 计分口径）都已拍板，
+> 没有第三种解释空间。若人认为该以 raw 手写字段为准，指出后本节按核证结果修订。
+
+### 16.4 S3-3-2b：Q12(a) 最小校验
+
+`_validate_calls(calls, status_enum)` 补两项，`status_enum` 由 `_status_enum()` 从 YAML
+派生（不写死允许值）：
+
+- `status ∈ status_enum`；
+- `params` 必须是 dict。
+
+少了这两项，JMESPath 投影会**静默丢弃**畸形调用，把「上报数据坏」判成
+`fail + 错误模式`，污染掌握度与错误模式（§11.2 红队实测的两个反例）。
+改造后本地复现（正确构造的探针，非推断）：
+
+```
+status=sucess  state=unscored  pattern=None  reason=trace_invalid
+params=None    state=unscored  pattern=None  reason=trace_invalid
+params="oops"  state=unscored  pattern=None  reason=trace_invalid
+legal          state=fail      pattern=['no_retry']
+```
+
+用例集补 `bad_status_enum` / `params_not_object` 两个 case，`REQUIRED_CASES` 同步；
+新增 5 条专用回归锁（3 条参数化 + 枚举派生 + 枚举缺失拒绝猜测）。
+
+> 一处探针坑如实记录：第一次写的探针把 `params=None` 误构造成默认 dict，
+> 打印出 `state=fail`，看似产品有洞；改回逐字段构造后三条反例全部 `unscored`。
+> 结论以测试里的原样反例与上面重跑的探针为准。
+
+### 16.5 变异测试（不拿「测试通过」当证据）
+
+裁判范围：`tests/test_final_status.py` + `tests/test_assertion_evaluator.py` +
+`tests/test_trace_pipeline.py`，基线 **157 passed**。刻意避开当时仍红的
+数字锁（190→236 过渡态），保证变异基线干净。全部字节级替换 + 顶层 `finally` 复原。
+
+| 变异 | 改坏什么 | 结果 |
+|---|---|---|
+| M1 | R5 分类器 `==` → `!=` | `4 failed, 153 passed` |
+| M2 | 越界检查 `if observed not in enum` → `if False` | `6 failed, 151 passed` |
+| M3 | `if observed == expected` → `if True`（crash 判 pass） | `6 failed, 151 passed` |
+| M4 | 分发器 R5 分支 → `if False` | `31 failed, 126 passed` |
+| M5 | 去掉 `status` 枚举校验 | `4 failed, 153 passed` |
+| M6 | 去掉 `params` 类型校验 | `4 failed, 153 passed` |
+| M7 | 删掉 `load_r5_spec()` 的加载期校验 | `1 failed, 156 passed` |
+
+七组全部真 `FAILED`（无 `ERROR` / `TIMEOUT`），`RESTORED: True`。
+M5 / M6 各有 4 条红灯，正是两个反例在「执行器层 + 全链路层」各被锁一次。
+
+### 16.6 验证证据与文档同步
+
+- `tests/` **236 passed**（原 190，+46）。逐文件 `--collect-only` 实测：
+  `test_final_status.py` **31**（新文件）、`test_trace_pipeline.py` 61→**71**
+  （+6 条新断言 + 用例集 2 个新 case × 2 组参数化 = +10）、
+  `test_assertion_evaluator.py` 50→**55**（+5 条 Q12 回归锁），其余文件不变；
+- `review_packet.py --check` **OK**（`2e5bf2eeea02cda8`）；评审包因数字锁
+  `190→236` 按 Q7 口径**重生成两遍**：第一遍 `a027da95a2ce5d47` 如实记录过渡态
+  `1 failed, 235 passed`，中间复验 `236 passed` 后第二遍写入全绿结果；
+- 五夹具分数序 `0 / 0 / 0.25 / 0.5 / 1.0` 不变、`--demo` 九行不变、匿名扫描 CLEAN；
+- `HANDOFF.md` 索引与工作日志已同步。
+
+### 16.7 请人验证（仓库根，用隔离 venv 的 python）
+
+```bash
+python -m pytest tests/ -q                        # 236 passed
+python src/arena/trace_pipeline.py --fixture all  # 5 行 OK
+python src/arena/review_packet.py --check         # OK 2e5bf2eeea02cda8
+python src/arena/assertion_evaluator.py --demo    # 九行，来源不变
+```
+
+> 下一小步 **S3-3-3**：R1 `file_exists` 执行器 + Q13(a) 的 `artifacts` 字段
+> （五份夹具补产物本体）。本轮**未 commit、未 push**，HEAD 仍 `03cf8c9`。
+
+---
+
+## 17. round-15：S3-3-3 落地 —— Q13(a) 产物本体 + R1 执行器（2026-11-08）
+
+### 17.1 口径澄清：外部评测不是禁令，也不是每轮固定动作
+
+§16.1 记「本轮不外发委托包：人已明确外部评测由其按需发起，不主动张罗」，
+我把这句话理解成了**禁止提议**。人本轮纠正：
+
+> 「不是你不能提出找 AI 的意见，而是说有必要你就说，如果这一轮你觉得不需要的话，
+> 我们就可以继续往前推进了。」
+
+**现行口径**：有判据地提，不把「要不要外发」当每轮收尾。
+本轮不提的判据是「本地裁判能覆盖本步全部风险面」：S3-3-3 是已拍板契约
+（Q13=a）的机械落地，判定语义由 pytest 锁、规则没写死由变异测试锁、仓库没漂移由
+`--check` 锁；**没有跨模块口径分歧，没有第二真相源需求，没有判据本身的歧义**。
+上一次外部验收之所以值，是因为它咬出「自述与磁盘不符」「改坏仍全绿」这类本地闭环
+看不见的东西。到 **S3-3-6 切全链路**时要同时碰 TD-007 / 008 / 009 的手写假基线、
+DTO 口径与五条执行器交叉，那时值得请一次。
+
+§16.1 是当时的如实记录，按历史不改；本节为现行口径。收到回件仍走
+「核证 → 登记 → 处置 → 落仓 → 人拍板」。
+
+### 17.2 S3-3-3a：Q13(a) 产物本体入仓
+
+按 §12.6 已拍板的 (a)，五份 `fixtures/raw-*.json` 顶层补 `artifacts` 字段。
+填值依据：优先取 `trace.tool_calls` 里 `write_report.params.content`；该调用不存在的，
+取手写 R2 `evidence.observed` 序列化（Q13(a) 原文「从现有手写 evidence 与 content 对齐填」）。
+
+| 夹具 | `artifacts` | 与 trace 的 write_report | 说明 |
+|---|---|---|---|
+| `raw-empty` | `{}` | 无（0 次调用） | R1 fail |
+| `raw-no-file` | `{}` | 无 | R1 fail，做了活却没交产物 |
+| `raw-fake-retry` | 错误报告 42 B | **无 write_report，产物却存在** | 刻意保留的不一致，留给 P3 的 R6 做交叉比对（Q13(a) 的原意），由 `test_fake_retry_artifact_and_trace_disagree_on_purpose` 钉住 |
+| `raw-no-trace` | 正确报告 44 B | trace=null | 产物与轨迹是两份**独立**证据：没上报 trace 不代表没交产物 |
+| `raw-perfect` | 正确报告 44 B | 逐字一致 | 上界锚点 |
+
+落地实测：`236 passed` 不变、五夹具分数序 `0 / 0 / 0.25 / 0.5 / 1.0` 不变 —— 本小步
+只加数据，不改任何行为。
+
+### 17.3 S3-3-3b：R1 `file_exists` 执行器
+
+| 落点 | 内容 |
+|---|---|
+| `evaluate_assertion()` | 注册第三个 type；新增 `artifacts` 参数并**置于末尾**，既有 R3 调用方 `trace_pipeline.recompute_r3()` 一行都不用改 |
+| `evaluate_file_exists()` | 只读 `artifacts[target]`，**绝不读 trace**。Q13 的 (b) 方案（从 trace 自称推断产物）被 `test_r1_never_infers_artifact_from_trace` 直接钉死 |
+| `_validate_file_exists_spec()` | TD-003 同款：加载期 + 判定期各一次。空 `match`、拼错键、值非 bool、pattern 未声明、`options.non_empty != true` 全部抛，不做 catch-all、不静默降级 |
+| `load_r1_spec()` | 与 `load_r3_spec` / `load_r5_spec` 同一纪律：加载即校验 |
+| `_classify_file_exists()` | cases 顺序匹配首命中；`fail` 却漏配规则就抛错，**不编 pattern、不退回兜底**；命中来源写精确键名 `case:exists,non_empty`（TD-004 同款） |
+
+四态口径（「平台没采集到产物」与「学生没交产物」严格分开）：
+
+| 观测 | state | 结果 |
+|---|---|---|
+| `artifacts` 字段缺失 / 非对象 / 值非字符串 | `unscored` | `reason_code=artifact_invalid`，不归因、不产出错误模式 |
+| `target` 不在 `artifacts` 里 | `fail` | `no_output_file`（YAML case 派生） |
+| 内容为空字符串 | `fail` | `empty_output_file` |
+| 内容非空 | `pass` | 不分类、无 reason_code |
+
+「非空」= UTF-8 字节数 > 0：不 `strip`、不解析 JSON（内容对不对是 R2 的职责）。
+这两条口径各有独立回归锁，避免日后有人「好心」加一步静默改掉语义。
+
+**刻意守住的小步边界**：不改手写 `assertion_results`；不把 R1 接进 `trace_pipeline`
+的现算集合（与 R5 一样，本步只在约束测试里现算，「五条全现算」仍是 S3-3-6）；
+不改 DTO / 词表 / 归因口径。
+
+### 17.4 完成判据实测
+
+§12.7 的判据是「五夹具 R1 state 与手写基线一致」。按 §16.3 的口径澄清，
+基线取**最终报告**的 R1 state，并同时核对手写值，三者全一致：
+
+| 夹具 | 现算 | 手写 | 报告 | 错误模式 |
+|---|---|---|---|---|
+| `raw-empty` | fail | fail | fail | `no_output_file` |
+| `raw-no-file` | fail | fail | fail | `no_output_file` |
+| `raw-fake-retry` | pass | pass | pass | — |
+| `raw-no-trace` | pass | pass | pass | — |
+| `raw-perfect` | pass | pass | pass | — |
+
+R1 的 type 是 `file_exists` 而非 `trace_*`，所以 `raw-no-trace` **不受**
+`build_report()` 的强制改写影响 —— 这正是 TD-007 只发生在 R5 的原因，由
+`test_no_trace_fixture_r1_is_not_rewritten` 单独锁住。
+另有 `test_r1_output_can_be_fed_to_build_report` 参数化五夹具：现算结果替换手写结果后
+过 JSON Schema、分数序不动。
+
+### 17.5 本轮核出的两处分歧（登记，不扩大本步范围）
+
+**TD-008：`artifact_invalid` 不在 DTO v2 的 `reason_code` 封闭枚举里。**
+核证来源：`docs/diagnosis-report.schema.json` L199-206 只列
+`trace_not_reported / trace_invalid / dependency_blocked / tool_no_response / invoke_timeout`，
+`docs/diagnosis-report-schema.md` §6 是同一张表。执行器输出 `unscored` 是诚实的，
+组装器不拦，但 `validate_report()` 明确拒绝。
+
+处置：**本步不改 DTO**（Q10-A 以来的一贯纪律，且扩枚举会牵动 M2 状态层分支）。
+不假装能过、也不擅自扩，改用 `test_unscored_artifact_reason_code_is_not_in_dto_yet`
+把缺口钉成**可执行红灯证据**：既断言枚举确实不含该值，也断言 `validate_report()`
+抛 `ReportError`。S3-3-6 切全链路时一并处置（届时评估扩枚举还是复用既有码）。
+五夹具的 `artifacts` 都合法，完成判据与「可直喂」断言均不受影响。
+
+**TD-009：手写 `size_bytes` 与产物本体长度不符。**
+实测：`raw-perfect` 手写 96 / 实际 44 B，`raw-fake-retry` 58 / 42 B，
+`raw-no-trace` 58 / 44 B。这是 S2 手写 evidence 的历史痕迹，不是本步引入的错误。
+沿用 TD-007 的处置纪律：**本步不改夹具手写结果**（改会牵动 S2 测试），
+S3-3-6 切全链路时以执行器现算的 evidence 为准统一销项。
+
+> 附带一处如实记录：若人为把 `artifacts` 置为不可信，R1 变 `unscored` 门禁，
+> 而手写 R2 仍是 `pass`，报告会给出满分。这是 S2 手写假基线的同族问题（TD-007），
+> 不是 R1 执行器的判定错误；同样留到 S3-3-6 五条全现算时自然消失。
+
+### 17.6 变异测试（不拿「297 条通过」当证据）
+
+裁判范围 `tests/test_file_exists.py` + `tests/test_final_status.py`，基线 **92 passed**。
+全部唯一锚点、字节级替换、顶层 `finally` 复原；排除 `ERROR` / `TIMEOUT`。
+
+| 变异 | 改坏什么 | 结果 |
+|---|---|---|
+| M1 | 去掉 `non_empty` 语义校验 | `3 failed, 89 passed` |
+| M2 | 去掉 `artifacts` 容器校验 | `7 failed, 85 passed` |
+| M3 | 去掉内容类型校验 | `5 failed, 87 passed` |
+| M4 | `non_empty` 改成只看 `exists`（空文件判 pass） | `3 failed, 89 passed` |
+| M5 | 分类 `all(...)` → `if True`（首条 case 全命中） | `4 failed, 88 passed` |
+| M6 | 永远认为「没交产物」 | `22 failed, 70 passed` |
+| M7 | 命中来源降为低粒度 `case` | `1 failed, 91 passed` |
+| M8 | 删掉 `load_r1_spec()` 的加载期校验 | `1 failed, 91 passed` |
+| M9 | 分发器 `file_exists` 分支 → `if False` | `51 failed, 41 passed` |
+| M10 | `size_bytes` 口径改成常数 1 | `5 failed, 87 passed` |
+
+十组全部真 `FAILED`，逐组 `RESTORED=True`，`FINAL_RESTORED: True`，`ALL_KILLED: True`。
+M7 / M8 各只有 1 条红灯，但**确实有独立回归锁**（精确来源、加载期校验），与
+round-12 外部验收 C/D 那种「改坏仍全绿」的盲区不同。一次性变异脚本跑完即删，
+不留进仓库。
+
+### 17.7 验证证据与文档同步
+
+- `tests/` **297 passed**（原 236，+61）：新增 `test_file_exists.py` **62 条**，
+  `test_final_status.py` 31→**30**（S3-3-2 的过期锁：移除 1 条已实现的 `file_exists`
+  参数化 case、`SUPPORTED_TYPES` 跟着现况改三值、未实现 type 的匹配措辞不再绑步骤号）。
+  逐文件 `--collect-only` 实测：55 / 3 / 23 / **62** / **30** / 30 / 23 / 71 = 297；
+- 五夹具 `0 / 0 / 0.25 / 0.5 / 1.0` 不变、`--demo` 九行不变。
+  **匿名扫描分范围如实报告**：对外包（`review-packet.md` / `review-packet-manual.md` /
+  `verify-brief-s3-3-1.md`）+ `HANDOFF` / `README` + 本轮改动的夹具、测试、执行器源码
+  按 FORBIDDEN 词表与绝对路径模式扫描 **CLEAN**，生成器 `_guard()` 两遍生成时也未拦；
+  但用同一词表扫**内部**处置记录 `review-response-v1.md`，命中既有的「历史昵称」2 处
+  （L5 / L151，历史正文，**本轮未新增**）。该文件不外发，按「历史正文不回改」未动，
+  登记为待办：若日后要把处置记录一并外发，须先清理这两处。此处不写无条件「CLEAN」；
+- 评审包按 Q7 口径**重生成两遍**：第一遍 `e9f0b425fcde89f2` 如实记录过渡态
+  `1 failed, 296 passed`，中间复验 `297 passed`，第二遍 `45673a16131c241c` 写入全绿结果；
+  `--check` **OK**（`45673a16131c241c`）；
+- `HANDOFF.md` 索引与工作日志已同步；`git status --porcelain | wc -l` = **26**
+  （原 25 + 新增 `tests/test_file_exists.py`）。
+
+### 17.8 请人验证（仓库根，用隔离 venv 的 python）
+
+```bash
+python -m pytest tests/ -q                        # 297 passed
+python src/arena/trace_pipeline.py --fixture all  # 5 行 OK，分数序不变
+python src/arena/review_packet.py --check         # OK 45673a16131c241c
+python src/arena/assertion_evaluator.py --demo    # 九行，来源不变
+```
+
+另请人工拍板一处：**TD-008 的处置方向**（S3-3-6 时给 `reason_code` 扩枚举，
+还是复用既有码）。本轮按「不改 DTO」暂挂，未自作主张。
+
+---
+
+## 18. round-15：S3-3-4 落地 —— R2 报告内容执行器（2026-11-09）
+
+> 人对 §17.8 放行「下一步」。按 §12.7 只做 **S3-3-4** 一个小步，做完即停；
+> 未顺手做 S3-3-5，未 commit / push。本步依赖 Q13(a) 的 `artifacts` 与 S3-3-3 的 R1。
+
+### 18.1 契约来源（没有第二份任务常量）
+
+| 来源 | 本步据此实现的部分 |
+|---|---|
+| `docs/executor-semantics.md` §3 | 配了 `tolerance` 的数值字段按 `abs(实际-期望) ≤ tolerance` 判定；其余按 `compare: subset` 精确匹配；**禁止浮点严格 `==`** |
+| `tasks/dbg-001-order-report.yaml` R2 | `expected` / `tolerance` / `depends_on` / `cases` / `error_patterns` 全部从这里派生 |
+| `docs/error-patterns-v0.yaml` | 分类结果必须已登记进词表，否则抛错，不编 pattern |
+| 五份夹具的手写 R2 | 完成判据取**最终报告** R2 state，并同时核对手写值（沿用 §16.3 口径） |
+
+`_json_match_keys()` 由 `expected` 派生合法 `match` 键（`missing_fields` +
+`<field>_mismatch`），代码里不写 `valid_count` / `1837.99` / `0.01` 这类常量。
+
+### 18.2 实现要点
+
+| 函数 | 内容 |
+|---|---|
+| `_validate_json_field_equals_spec()` | 加载期 + 判定期各校验一次（TD-003 同款）：`type` / `target` / `compare=subset` / `expected` 非空对象 / `tolerance` 键与值 / cases 非空 / `match` 非空且键合法 / `missing_fields` 是 expected 键的非空子集 / mismatch 谓词只接受 `true` / pattern 与 default 均已声明 |
+| `_finite_number()` | 容差比较的数值守卫：`bool` 是 `int` 子类必须排除，`NaN` / `inf` / 超大整数一律拒绝 |
+| `_field_equal()` | 有容差走 `abs(差) ≤ tol`；无容差走精确比较，且显式挡住 `True == 1` |
+| `evaluate_json_field_equals()` | 依赖折叠 → 产物读取 → JSON 解析 → 逐字段比较 → 分类；产物只从 `artifacts[target]` 读，**绝不**从 trace 的 `write_report` 自述推断 |
+| `_classify_json_fields()` | **收集全部命中**并去重保序（与 R3/R5 的「首命中即止」不同）；命中来源写精确键名（TD-004 同款） |
+| `evaluate_assertion()` | 注册第四个 type，新增末尾参数 `dependency_results`；R3 调用方零改动 |
+| `load_r2_spec()` | 加载即校验 |
+
+四态口径：
+
+| 观测 | state | 结果 |
+|---|---|---|
+| `depends_on` 里前置未 `pass` | `blocked` | `dependency_blocked`（**在 DTO 枚举内**），不看产物内容 |
+| `artifacts` 非对象 / 前置已过却缺 `target` / 值非字符串 | `unscored` | `artifact_invalid`，不归因、不产出错误模式 |
+| 字段齐且值在容差内 | `pass` | 额外字段忽略；evidence 记 `tolerance` |
+| 缺字段 | `fail` | `report_missing_field` |
+| 字段值不符 | `fail` | `wrong_valid_count` / `wrong_total_amount`，可同时两个 |
+
+「缺前置结果」直接抛 `EvaluatorError`：**不在没有依据时猜一个 pass/fail**。
+
+### 18.3 完成判据实测
+
+§12.7 判据是「五夹具 R2 state 与手写基线一致」。实测现算 / 手写 / 最终报告三方全一致：
+
+| 夹具 | 现算 | 手写 | 报告 | 错误模式 |
+|---|---|---|---|---|
+| `raw-empty` | blocked | blocked | blocked | — |
+| `raw-no-file` | blocked | blocked | blocked | — |
+| `raw-fake-retry` | fail | fail | fail | `wrong_valid_count` + `wrong_total_amount` |
+| `raw-no-trace` | pass | pass | pass | — |
+| `raw-perfect` | pass | pass | pass | — |
+
+分数序 `0 / 0 / 0.25 / 0.5 / 1.0` 不变、`--demo` 九行不变。另有参数化测试把
+R2 现算结果替换手写结果后过 `validate_report()`，分数序不动。R2 的 type 不是
+`trace_*`，`raw-no-trace` 不受 `build_report()` 强制改写影响（同 TD-007 口径）。
+
+### 18.4 两处假设 + 两处登记（均不扩大本步范围）
+
+**假设①**：产物内容不是合法 JSON 对象时，按「expected 里的字段一个都没观测到」处理，
+归入既有 `report_missing_field`，并在 `note` 写明。YAML / 词表都没有
+`report_invalid_json`，按「不改 DTO / 不改词表」纪律不擅自新增。代价是「平台把产物
+截断了」与「学生写了坏文件」目前不可分——**S3-3-6 请人拍板**。
+
+**假设②**：多 pattern 按 YAML cases 顺序去重输出。手写 `raw-fake-retry` 是
+`["wrong_total_amount", "wrong_valid_count"]`（反序），现算是
+`["wrong_valid_count", "wrong_total_amount"]`。**集合相同、state 与归因相同**，
+`§12.7` 判据不受影响；登记为 **TD-010**，S3-3-6 切全链路时以现算为准统一销项。
+
+**TD-008 在 R2 同样成立**：`artifact_invalid` 仍不在 DTO `reason_code` 封闭枚举，
+R2 的 `unscored` 分支也产出它。`test_artifact_invalid_reason_code_is_not_in_dto_yet`
+把缺口钉成可执行红灯证据；五夹具的 `artifacts` 都合法，完成判据不受影响。
+
+**§17.7 的一处自述纠正**：上一轮写「内部处置记录有既有的 2 处昵称禁用词，本轮未新增」，
+但那句声明本身引用了被禁用的词，写入磁盘后扫描变成 **3 处**（L5 / L151 / L1424）。
+属「自述与磁盘不符」同族，按「历史正文不回改」不返工；若日后要把处置记录外发，
+须一并清理 3 处。本轮 §18 不再重复写出该词。
+
+### 18.5 本地裁判抓到的三处真问题
+
+| # | 问题 | 处置 |
+|---|---|---|
+| 1 | `tolerance=[]` 被 `spec.get("tolerance") or {}` 的 falsy 折叠成合法空 dict，绕过类型校验 | 校验改为显式判 `None` 后再判 `isinstance(dict)`；补参数化回归锁 |
+| 2 | 变异 M7（删掉 `bool` 守卫）**首次全绿**：原测试用期望值 17，`True == 17` 本就不成立，是假锁 | 补 `test_bool_guard_covers_true_equals_one()`，把期望值改成 1，真正覆盖 `True == 1` |
+| 3 | 变异脚本 `verdict()` 用裸 `timeout` 子串判 collection error，失败输出里的 DTO 枚举值 `invoke_timeout` 造成误判（M10 曾被记成 INVALID） | 脚本改用 `error collecting` / `N errors in` 精确标志；复核实际输出为 `13 failed, 96 passed` 真红灯 |
+
+第 3 项是**一次性脚本**自身的缺陷，不是产品代码缺陷；脚本跑完即删，不留进仓库。
+
+### 18.6 变异测试（不拿「406 条通过」当证据）
+
+裁判范围 `tests/test_json_field_equals.py` + `tests/test_file_exists.py` +
+`tests/test_final_status.py`，基线 **201 passed**。全部唯一锚点、字节级替换、
+顶层 `finally` 复原，排除 `ERROR` / `TIMEOUT` 与无效等价变异。
+
+| 变异 | 改坏什么 | 结果 |
+|---|---|---|
+| M1 | 去掉 `compare=subset` 校验 | `2 failed, 199 passed` |
+| M2 | 去掉 `tolerance` 容器类型校验 | `1 failed, 200 passed` |
+| M3 | 去掉容差值正有限数校验 | `6 failed, 195 passed` |
+| M4 | 未知 `match` 键不再拦 | `1 failed, 200 passed` |
+| M5 | mismatch 写成 `false` 不再拦 | `2 failed, 199 passed` |
+| M6 | 退回浮点严格 `==` | `4 failed, 197 passed` |
+| M7 | 去掉 `bool`/`int` 隐式等价守卫 | `1 failed, 200 passed`（补锁后） |
+| M8 | `missing_fields` 谓词变全命中 catch-all | `19 failed, 182 passed` |
+| M9 | 去掉多 pattern 去重保序 | `8 failed, 193 passed` |
+| M10 | 去掉 `depends_on` 依赖折叠 | `13 failed, 188 passed` |
+| M11 | 分发器不注册 R2 | `74 failed, 127 passed` |
+| M12 | 命中来源降为低粒度 `case` | `4 failed, 197 passed` |
+| M13 | 忽略字段值不符，只看缺字段 | `22 failed, 179 passed` |
+
+十三组全部真 `FAILED`，逐组 `RESTORED=True`，`ALL_KILLED: True`、
+`FINAL_RESTORED: True`。M2 / M4 / M7 各只有 1 条红灯，但**确有独立回归锁**，
+与 round-12 外部验收 C/D 那种「改坏仍全绿」不同 —— M7 首轮确实全绿，
+是补锁后才转成红灯，这一处如实记在 §18.5。
+
+### 18.7 验证证据与文档同步
+
+- `tests/` **297 → 406 passed**（+110 新增 `test_json_field_equals.py`；
+  `test_final_status.py` 30 → 29，移除 1 条已实现 R2 的未实现 case）。
+  逐文件 `--collect-only`：55 / 3 / 23 / 62 / **29** / **110** / 30 / 23 / 71 = 406；
+- 五夹具分数序与 `--demo` 九行不变；`SUPPORTED_TYPES` 三值 → 四值，
+  `test_final_status.py` / `test_file_exists.py` 两处历史锁按现况更新；
+- **匿名扫描分范围如实报告**：对外包（`review-packet.md` /
+  `review-packet-manual.md` / `verify-brief-s3-3-1.md`）+ `HANDOFF` / `README` +
+  本轮改动的夹具、测试、执行器源码按禁用词表与绝对路径模式扫描 **CLEAN**；
+  内部处置记录有 3 处昵称禁用词（见 §18.4 纠正），该文件不外发。
+  此处不写无条件「CLEAN」；
+- 评审包按 Q7 **重生成两遍**：第一遍 `5c095a9158fd1b42` 如实记过渡态
+  `1 failed, 405 passed`，中间复验 `406 passed`，第二遍 `66fa3deb1ad7b0fc`
+  写入全绿结果；`--check` **OK**（`66fa3deb1ad7b0fc`）；
+- `HANDOFF.md` 索引与工作日志已同步；`git status --porcelain | wc -l` = **27**
+  （原 26 + 新增 `tests/test_json_field_equals.py`）。
+
+### 18.8 请人验证（仓库根，用隔离 venv 的 python）
+
+```bash
+python -m pytest tests/ -q                        # 406 passed
+python src/arena/trace_pipeline.py --fixture all  # 5 行 OK，分数序不变
+python src/arena/review_packet.py --check         # OK 66fa3deb1ad7b0fc
+python src/arena/assertion_evaluator.py --demo    # 九行，来源不变
+```
+
+另请人拍板两处（不急，S3-3-6 切全链路时一并处置即可）：**假设①** 是否要给
+「产物不是合法 JSON」新增独立 pattern / reason_code；**假设② / TD-010** 是否以
+现算顺序为准统一五夹具手写 evidence。TD-007 / 008 / 009 / 010 与 D1 / D3 / D4、
+TD-001 仍挂 M2 / S3-3-6。
+
+## 19. round-16：S3-3-5 落地 —— R4 工具参数 schema 执行器（2026-11-09）
+
+### 19.1 契约来源与判据口径
+
+| 来源 | 本步锁定的事实 |
+|---|---|
+| `docs/executor-semantics.md` §2 | `check_schema: true` **同时覆盖 required / type / range / additional_properties 四项**，叠加 `mode: all_calls_must_be_valid`：任一次调用违规即 fail |
+| `tasks/dbg-001-order-report.yaml` R4 | `expected.schema_ref: tools` 指向任务 YAML 的工具表；`cases` 明写「顺序匹配，首命中即止」，四条 match 的值是 `tools` 而非 `true` |
+| `docs/error-patterns-v0.yaml` | 4 个 `param_*` pattern 均已登记；分类结果未登记即抛错，不编 pattern |
+| 五份夹具的手写 R4 | 判据沿用 §16.3 / §18.1：**取最终报告 state**，不取手写值 |
+
+零调用判 `pass` 是 YAML 注释里明写的「全称命题平凡为真，设计缺陷而非实现错误」，由 gate 层的 R1 兜住。本步**不擅自改语义**，只把它写成可执行回归锁。
+
+### 19.2 实现要点
+
+| 函数 | 内容 |
+|---|---|
+| `_validate_tool_schemas()` | tools 表结构校验：参数数组非空、参数名唯一、`type` 只实现 `integer` / `string`、`required` 显式 bool、`minimum` / `maximum` 有限数且不倒挂、`additional_properties` 必须是 bool |
+| `load_tool_schemas(ref, ...)` | 从 `task[ref]` 读工具声明；`ref` 来自 `expected.schema_ref`，**不是写死的 `tools`**；重复工具名 / 缺 name 直接抛 |
+| `_validate_param_schema_spec()` | 加载期 + 判定期各一道（TD-003 同款）：type / target / `check_schema=true` / `mode` / `schema_ref` / probe 非空 / cases 非空 / `match` 非空且键合法 / match 值必须等于 `schema_ref` / pattern 与 default 已声明 / **四类校验必须各有 case 覆盖** |
+| `_param_type_ok()` | `bool` 显式排除出 `integer`（`True == 1` 陷阱） |
+| `_check_call_params()` | 单次调用的四项校验，只产出违规明细；**类型不符即跳过 range**，避免 Python 3 的 str/int 比较异常 |
+| `_classify_param_schema()` | 按 cases 顺序**首命中即止**（与 R2 的「收集全部命中」不同），来源写精确键名（TD-004 同款） |
+| `evaluate_param_schema()` | 前置可信度校验 → probe 投影 → 逐调用四项校验 → pass/fail；新增末尾参数 `schemas` |
+| `evaluate_assertion()` | 注册第五个 type，新增末尾参数 `schemas`；R3 调用方零改动 |
+| `load_r4_spec()` | 加载即校验，并顺带校验 `schema_ref` 指向的表可读 |
+
+四态口径：`trace=None` → `unscored / trace_not_reported`；`tool_calls` 不是数组、`call_index` 不连续、`status` 越界、`params` 非对象、probe 投影丢调用、出现未声明的工具名 → `unscored / trace_invalid`。**没有一条把「上报数据坏」记成 `fail`。**
+
+### 19.3 完成判据实测
+
+五夹具 R4 现算 state 与**最终报告**逐一一致：
+
+| 夹具 | 现算 | 手写 | 最终报告 | ratio |
+|---|---|---|---|---|
+| raw-empty | pass | pass | pass | 0.0 |
+| raw-no-file | pass | pass | pass | 0.0 |
+| raw-fake-retry | pass | pass | pass | 0.25 |
+| raw-no-trace | **unscored** | **pass** | **unscored** | 0.5 |
+| raw-perfect | pass | pass | pass | 1.0 |
+
+`trace_param_schema_valid` 以 `trace_` 开头，被 `build_report()` 的强制改写规则覆盖，所以 `raw-no-trace` 的最终报告是 `unscored / trace_not_reported`，与手写 `pass` 不符。
+
+**TD-008 在 R4 不成立**：R4 的 unscored 只用 `trace_not_reported` / `trace_invalid`，两者都在 DTO v2 `reason_code` 封闭枚举内（schema L199-206）。已用 `test_unscored_reason_codes_are_in_dto_enum` + 三条 `build_report()` / `validate_report()` 端到端测试钉住，不把 R1 的 `artifact_invalid` 缺口扩大解释。
+
+### 19.4 两处假设 + 一处登记（均不扩大本步范围）
+
+| 编号 | 内容 | 处置 |
+|---|---|---|
+| **假设①** | 调用里出现 tools 未声明的**工具名**时，无法对照 schema，判 `unscored / trace_invalid`；不复用 `param_out_of_schema`（词表里它专指未声明的**参数名**） | 挂 S3-3-6 请人拍板；已钉回归锁 |
+| **假设②** | 同一次调用有多类违规时只按 cases 顺序报最优先的一个 pattern，全量违规明细仍留在 `evidence.observed.violations` | 挂 S3-3-6；`test_case_priority_follows_yaml_order_not_violation_order` 把规则来源锁在 YAML |
+| **TD-011** | `raw-no-trace` 手写 R4=`pass / observed=null` 是 S2 假基线，与最终报告 / 现算 `unscored` 不符。**TD-007 同族**（当时在 R5 上发现），本步不改夹具 | 挂 S3-3-6 切全链路时与 TD-007/009/010 一并处置 |
+
+### 19.5 本地裁判抓到的四处真问题
+
+1. `test_unscored_reason_codes_are_in_dto_enum` 想当然按 `$defs.Assertion` 取枚举 —— 实际枚举在顶层 `properties.assertions.items.properties.reason_code`。**测试笔误**，核证 schema 后修正，不是产品缺陷。
+2. `test_mixed_violations...` 把 `{"offset":0,"limit":"20"}` 当「多类违规」—— 类型不符后按设计跳过 range，实际只有一类。换成 `{"limit":"20"}`（缺必填 + 类型错）才是真多类，且能验证 `missing_required` 优先于 `type_mismatch`。
+3. `test_duplicate_tool_name_in_yaml_is_rejected` 原写成「YAML 文本里 `name: fetch_orders` 出现次数 == 1」，实测 3 次（tools 定义 + R3 `expected.calls` 两步）—— 典型的**脆弱自指检查**。改成写临时 YAML 让 `load_tool_schemas()` 真遇到重复工具名并抛错，另补一条缺 name 的分支。
+4. 变异 M15 首轮被判 `INVALID (anchor_count=2)`：`source = "case:" + ...` 在 R1 分类器里有同款写法。按纪律不拿非唯一锚点凑数，收窄到带 `_PARAM_KIND_BY_KEY` 的上下文后重跑。
+
+### 19.6 变异测试（不拿「510 条通过」当证据）
+
+基线四文件 `305 passed`；字节级唯一锚点替换，**16 组全部真 `FAILED`**、逐组 `RESTORED=True`、`ALL_KILLED: True`、`FINAL_RESTORED: True`、无 ERROR / TIMEOUT / 无效等价变异。
+
+| 组 | 变异 | 红灯数 | 组 | 变异 | 红灯数 |
+|---|---|---|---|---|---|
+| M1 | `additional_properties` 守卫失效 | 2 | M9 | 有违规也判 pass | 26 |
+| M2 | required 跳过 | 5 | M10 | 判定期 spec 校验移除 | 16 |
+| M3 | type 跳过 | 9 | M11 | 判定期 tools 表校验移除 | 7 |
+| M4 | range 跳过 | 13 | M12 | 四类 case 覆盖校验跳过 | 1 |
+| M5 | bool 不再排除出 integer | 2 | M13 | match 的 schema_ref 值校验跳过 | 2 |
+| M6 | 分类恒定取第一条 case | 19 | M14 | probe 投影完整性检查跳过 | 1 |
+| M7 | 调用序列可信度校验跳过 | 3 | M15 | 分类来源退化为低粒度 | 7 |
+| M8 | 未知工具名不再判 unscored | 3 | M16 | `SUPPORTED_TYPES` 与分发脱节 | 4 |
+
+M12 / M14 各只有 1 条红灯，但确实是独立锁（不是被别的测试顺带抓住）。临时脚本跑完即删，`.redteam-tmp/` 只剩两份历史文件，本轮未新增残留。
+
+### 19.7 验证证据与文档同步
+
+- `tests/` **406 → 510 passed**（新增 `tests/test_param_schema.py` 104 条）；三处历史锁按现况更新：两处 `SUPPORTED_TYPES` 集合改五值、三处「未实现 type」改用虚构 `future_assertion_type`，不再随步骤号反复改断言。
+- 五夹具分数序 `0 / 0 / 0.25 / 0.5 / 1.0` 不变、`--demo` 九行不变。
+- 评审包按 Q7 **重生成两遍**：第一遍 `648157469b69526c` 如实记过渡态 `1 failed, 509 passed`，复验全绿后第二遍 `d66c5cf0bafe7e00`；`--check OK`。
+- 匿名扫描**分范围如实说**：对外包 + `review-packet-manual.md` + `verify-brief-s3-3-1.md` + `HANDOFF.md` / `README.md` + 五夹具 + 本轮改动文件 CLEAN；内部处置记录 `review-response-v1.md` 仍有 3 处禁用词（L5 / L151 / L1424，均为历史正文，本轮未新增、不外发）。**不写无条件 CLEAN。**
+- `HANDOFF.md` 索引与本轮工作日志已同步；`git status --porcelain | wc -l` = **28**（原 27 + 新增 `test_param_schema.py`），HEAD 仍 `03cf8c9`。
+
+### 19.8 请人验证（仓库根，用隔离 venv 的 python）
+
+```bash
+python -m pytest tests/ -q                        # 510 passed
+python src/arena/trace_pipeline.py --fixture all  # 5 行 OK，分数序不变
+python src/arena/review_packet.py --check         # OK d66c5cf0bafe7e00
+python src/arena/assertion_evaluator.py --demo    # 九行，来源不变
+```
+
+另请人拍板（不急，S3-3-6 一并处置）：**假设①** 未知工具名是否应新增独立 pattern / reason_code；**假设②** 多类违规是否要输出全部 pattern；**TD-011** 五夹具手写假基线如何统一。TD-007 / 008 / 009 / 010 / 011 与 D1 / D3 / D4、TD-001 仍挂 M2 / S3-3-6。
+
+> 下一小步 **S3-3-6**：`trace_pipeline` 现算全部 5 条 + S2 测试切全链路。
+> 这一步会同时碰 TD-007/009/010/011 的手写假基线、TD-008 的 DTO 口径、五条执行器交叉，
+> 本地裁判覆盖不到「跨模块口径分歧」这一层 —— 按既定判据，届时主动提请一次外部评测。
+> 本轮**未 commit、未 push**，HEAD 仍 `03cf8c9`。
+
+---
+
+## 20. round-17：S3-3-6 开工核证、四项拍板与外评委托包（2026-11-09）
+
+人对 §19.8 回「ok没问题」，放行推进 S3-3-6。按 §12.7 的「一步 = 一个可独立验证的最小单元」，
+**本轮先做只读核证 + 外评委托包，未改任何产品代码、测试、夹具或 DTO**。理由见 §20.3：
+切全链路会撞上 DTO 契约变更与判据歧义，按「有判据地提」的口径，先请一次外部评测再落地，避免返工。
+
+### 20.1 只读核证（四条事实，均未改文件）
+
+| # | 核证动作 | 实测结论 |
+|---|---|---|
+| 1 | 在内存里模拟「五条断言全现算」：五份夹具逐条跑五个执行器，替换手写 `assertion_results` 后过 `build_report()` + `validate_report()` | **五夹具每条 `state` / `ratio` / `disqualified` / `by_state` 与 S2 基线逐项一致**，分数序 `0 / 0 / 0.25 / 0.5 / 1.0` 不变，DTO 校验全部 OK。§12.5 的主判据**可满足** |
+| 2 | 读 `tests/test_diagnosis_report.py` 的 6 条负例（缺断言 / 重复断言 / fail 无 pattern / 未声明 pattern / blocked 无依据 / no-trace 强制改写） | 六条**全靠手写注入 `assertion_results`** 构造坏输入。§12.5 末句「`tests/test_diagnosis_report.py` 切到全链路后仍全绿」有互斥解读：把 `_build()` 改走 `run_fixture()` 会让负例再也注入不进去，**覆盖静默消失**。判据本身有歧义，属本地裁判咬不到的语义盲区 |
+| 3 | 实测 TD-008 的触发条件（artifacts 合法 / 缺失 / 非 dict / 值非 str） | `reason_code` 封闭枚举只有 5 个值：`trace_not_reported` / `trace_invalid` / `dependency_blocked` / `tool_no_response` / `invoke_timeout`。artifacts 三类非法输入 → R1 `unscored / artifact_invalid` → `validate_report()` 抛 `ReportError`。**是真缺口**，但五夹具 artifacts 合法，故不阻塞 §12.5 主判据 |
+| 4 | 比对手写 evidence 与现算 evidence | 每份夹具 3–4 条断言的 evidence 不同（现算本该不同）；§12.5 只锁 `state` / `ratio` / `disqualified`，不锁 evidence。**TD-009/010 不阻塞** |
+
+补充澄清：**「不再被读」≠「已被删除」**。切全链路后手写假基线仍留在夹具里，
+只是 `run_fixture()` 不再消费；TD-007/009/010/011 的「销项」指以现算 evidence 为准并在文档中关闭登记，
+不是改五份夹具的手写字段（改会牵动 S2 测试）。这一区分写进了委托包 §2，请评测方核证。
+
+### 20.2 四项拍板（人逐项勾选「建议」，AI 不替决）
+
+| 项 | 人的决定 | 落地时的连带面 |
+|---|---|---|
+| TD-008 | **给 `reason_code` 扩枚举**加 `artifact_invalid` | 改 `docs/diagnosis-report.schema.json` + `docs/diagnosis-report-schema.md` §6 + 相关测试枚举断言 + 评审包快照；不改判 `fail`、不复用 `trace_invalid` |
+| §12.5 判据歧义 | **`tests/test_diagnosis_report.py` 原样保留**，在 `tests/test_trace_pipeline.py` 补「五条全现算 vs S2 基线」一致性锁，并澄清 §12.5 措辞 | 6 条负例的注入能力保住；新增锁要覆盖五条 state、ratio、disqualified，不能只锁 R3 |
+| TD-007/009/010/011 + R2/R4 两处假设 | **切全链路时一并销项**，以现算 evidence 为准，不改夹具手写字段 | 假设①（产物非 JSON 归 `report_missing_field`）、R4 未知工具名 `unscored/trace_invalid`、假设②（多类违规只报最优先 pattern）按现算口径定稿，§20 / §21 逐条登记 |
+| 外部评测 | **发起本次** | 回件按「核证 → 登记 → 处置 → 落仓 → 人拍板」处理；四项已拍板项不翻案，但「按此决定落地会产生什么洞」属于评测范围 |
+
+### 20.3 为什么这一轮提外评（有判据，不是每轮固定收尾）
+
+前四小步（S3-3-2/3/4/5）不提，因为 pytest 锁判定语义、变异测试锁规则没写死、`--check` 锁仓库没漂移，
+本地三套裁判能覆盖全部风险面。**本轮命中既定判据**：本地裁判能证明「代码按我写的判据跑通」，
+却证明不了「判据本身没错」——§12.5 末句有互斥解读、TD-008 是跨模块 DTO 契约变更、
+五个 TD + 两处假设同时销项属语义判断。这正是 §19 末尾预告的「届时主动提请一次」。
+
+外评发起权在人；四项拍板由人逐项决定，AI 只给判据与代价，不替决、不把「要不要外发」当收尾动作。
+
+### 20.4 委托包（`docs/verify-brief-s3-3-6.md`，本轮唯一新增交付物）
+
+`206415 B / 4193 行`，自包含单文件，**现役快照**（明确标注旧包 `verify-brief-s3-3-1.md` 与
+`redteam-brief-round8.md` 已过期、勿当依据）。
+
+- **§0** 任务书：只评**尚未落地的方案**，不找已落地代码的 bug、不替人翻案；违反纪律的产出不予采信。
+- **§2** 决策摘录（§12.5 / §12.7 逐字，其余剪裁）+ 9 条登记摘要，全部标「不作证据」。
+- **§3** 自报基线与只读模拟表，标「不作证据」，请评测方自行判定能否推出「不丢覆盖」。
+- **§4** 逐字内联 **15 个现役文件**：任务 YAML、DTO schema、schema 说明、执行器语义、词表、
+  三个产品源文件、两个测试文件、五份夹具。原始字节拼接，未做换行转换。
+- **§5** 12 条中性命题 T1–T12：判据歧义与负例覆盖（T1/T2）、扩枚举连带面与四态口径（T3/T4/T5）、
+  R2/R4 两处假设（T6/T7/T8）、五条执行器交叉与执行顺序（T9/T10/T11）、反向结论复核（T12）。
+- **§6** 指纹表 + 用户侧自检命令；**§7** 边界 / 匿名 / 已知未修。
+
+### 20.5 委托包自检证据（修掉 §15.6 登记的模板缺陷）
+
+上一版委托包的自检只验「包内内联块 vs 包内指纹表」自洽，`ALL_8_BLOCKS_MATCH` 是 vacuous truth 风险，
+且不与磁盘比对 → 通过 ≠ 现役一致。**本版两道都过**：
+
+| 检查 | 实测 |
+|---|---|
+| 生成器逐字自检：15 块分别比对「包内块 vs 指纹表」与「包内块 vs 磁盘字节」 | 15 行全 `OK OK`，`SELFCHECK: PASS` |
+| **包里印给评审方的那段自检命令**单独抽出实跑（不是只信生成器） | 提取 17 行脚本 → 15 行全 `OK OK`、`SELFCHECK: PASS`、`EXIT: 0` |
+| 一字节变异（改包体 1 字节） | 生成器 `MUTATION_DETECTED: True`；印刷命令实跑 `BAD_COUNT: 2`、`SELFCHECK: FAIL`、`MUTATION_DETECTED: True` |
+| 复原 | 两次均 `RESTORED: True`，包体字节复原 |
+| 结构精确核证 | 包自身 8 个顶层章节各出现 1 次；完整 `BEGIN/END` 标记 15/15 配对；T1–T12 恰好 12 条 |
+| 匿名 / 保密 | 对外包 `CLEAN`（真名 / 校名 / 昵称 / 本机绝对路径 / 用户名 / PAT 形态均无）；只给本单文件，不给整个仓库 |
+| 评审包一致性 | 新增 docs 文件不影响快照（`review_packet` 只取 git sha / 提交列表 / 用例数 / 实测行 / 评分表），`--check OK (d66c5cf0bafe7e00)` |
+
+生成器 `.redteam-tmp/gen_verify_brief_s3_3_6.py` 已 gitignore，不进仓；临时抽出脚本跑完即删。
+
+### 20.6 明确不做 / 状态
+
+- **未改任何产品代码、测试、夹具、DTO、词表**；`tests/` 仍 `510 passed`，HEAD 仍 `03cf8c9`。
+- **未 commit、未 push**，工作区 28 → **29 项**改动（本包为新增未跟踪文件）。
+- 代码落地**等回件核证之后**再做：评测可能咬动 TD-008 的连带面与 §12.5 判据解读，先改会返工。
+  回件处理顺序按 §20.2 的四项拍板逐条核证 → 登记 → 处置 → 落仓 → 必要时再请人拍板。
+- 只把 `docs/verify-brief-s3-3-6.md` 这一份文件外发；不要给整个仓库、过期红队包、
+  含绝对路径的日志或任何凭据。
+
+### 20.7 请人验证（仓库根，隔离 venv 的 python）
+
+```bash
+python -m pytest tests/ -q                        # 510 passed（本轮未改代码，应不变）
+python src/arena/review_packet.py --check         # OK d66c5cf0bafe7e00
+```
+
+包内 §6 的自检命令请在仓库根跑一次，应输出 15 行 `OK OK` + `SELFCHECK: PASS`。
+PowerShell 用户不要把 heredoc 多行直接粘贴（`>>` 是续行符），存成 `.py` 再跑。
+
+> 下一步：**外发 `docs/verify-brief-s3-3-6.md`**，回件到齐后按 §20.2 落地 S3-3-6。
+
+---
+
+## 21. round-18：S3-3-6 外部评测回件核证（2026-11-09）
+
+### 21.1 回件身份与交付格式核证（先定性，再谈内容）
+
+用户转来回件 `agent-suggestions-s3-3-6.md`（550 行，分 A / B / C 三部分）。它开头自述：
+**「本文是建议，不是验收结论」**，且把委托包 §2 / §3 明确标为「待核证主张，不当作已证事实」——这两点与委托包 §0 的纪律一致，予以采信。
+
+但委托包 §0.4（L45–50）要求交付 **① 核证总表 ② 可判定命题（输入→期望→实际→何时判通过）③ 待拍板项（两选项各自代价） ④ 不写总体评价**；§5 T1/T2 还明确要求「逐条给出判定」+「最小复现」。实测回件：
+
+| 要求 | 回件实际 | 判定 |
+|---|---|---|
+| 核证总表 | 无 | 未满足 |
+| 可判定命题 / 最小复现 | 无；T1–T12 只给「建议」，T1/T2 的逐条判定被笼统带过 | 未满足 |
+| 待拍板项 | T4 / T7 标了「需人拍板」，但把已拍板项写成「建议改成 Y」（违反 §0.4 第 3 条） | 部分满足 |
+| 不写总体评价 | A / C 部分含大量面向「被评测 Agent」的指导与鼓励性表述 | 未满足 |
+
+**定性结论：这份回件不构成验收结论，只能当「建议清单」处理**。按项目纪律「不用 AI 自评当证据」，同样不把外部 AI 的建议当证据；以下每条都改由本地只读实测复核。
+
+### 21.2 核证总表（依据均为仓库内实测 / 源码行号，非回件自述）
+
+复现方式：仓库根用隔离 venv 的 python 跑一段只读内存模拟（五条全现算 + `build_report()` + `validate_report()`）；扩枚举场景用**内存副本**改 schema，不写磁盘。探针跑完即删，未留仓内文件。
+
+| # | 主张（回件位置） | 核证 | 依据 / 最小复现 |
+|---|---|---|---|
+| 1 | §0 表格：委托包 §6 是「T1–T12 落地建议」、§7 是「评审纪律」 | **不成立** | 委托包 §6 = 指纹表与用户侧自检（L4121）、§7 = 边界/匿名/已知未修（L4178）、§0 = 给评审 AI 的任务书（L10）。三处映射全错位 |
+| 2 | A 部分对委托包 §4 的行号引用（L322–350 计分、L364–368 产物、L396–402 expected/tolerance、L377 on_fail 注释、L235–247 tools、L272–297 orders） | **成立** | 抽查 6 处逐行比对，全部对得上；行号口径标注也正确 |
+| 3 | A2.1：剔除 `amount` 缺失 / null / 负数，本题无 0 金额 | **成立** | 委托包 §4 L229、L272–294，20 条订单确无 0 金额 |
+| 4 | A2.2：`fetch_orders` 仅 offset(≥0) / limit(1..10)、`additional_properties: false` | **成立** | 委托包 §4 L238–247、L261–270 |
+| 5 | A2.4：「`_validate_calls()` 会逐条检查 … 缺字段/类型不对 → R3/R4 直接 unscored」「error 调用 http_status/error 必填、success 调用 result_summary 必填」 | **不成立** | `_validate_calls()`（assertion_evaluator.py L247）按已拍板的 **Q12(a) 最小校验**只查 `call_index` 连续、`status ∈ enum`、`params` 是 dict。实测删掉 success 调用的 `result_summary` → R3=pass、R4=pass；删掉 error 调用的 `http_status`/`error` → R3=fail（序列匹配不到）、R4=pass。**均未 unscored，也不影响得分**。登记 TD-014 |
+| 6 | A4：「`[0,8,17]` 绕开故障点可拿 0.75」 | **成立** | 实测 `ratio=0.75 / disqualified=False`，R3=fail(`no_retry`)，R1/R2/R4/R5=pass。真实判据漏洞，登记 TD-013 |
+| 7 | A4 表格抽查 `[0,10,0]` / `[0,10,20]` / `[0,10,10]` | **成立** | 实测 `retry_wrong_params` / `retry_wrong_params` / `pass` |
+| 8 | A5：「trace 不可信（缺 call_index）→ ratio=0.50」 | **成立** | 实测 R3/R4=`unscored/trace_invalid`，`ratio=0.5 / disq=False` |
+| 9 | T3 前半：「`_check_result_consistency()` 只查 state/pattern 而不查 reason_code」 | **成立** | diagnosis_report.py L102–124，只校验 state 合法、fail 必须有 pattern、blocked/unscored 必须有 reason_code（**非空**） |
+| 10 | T3 后半：「扩枚举后非法值仍可能漏过」 | **不成立** | `validate_report()`（L56–62）用 `jsonschema.Draft202012Validator` 全量校验；实测把任一 `reason_code` 改成 `totally_bogus_code` → 抛 `ReportError`。schema 是权威兜底，无需再加一层 |
+| 11 | T4：「artifacts 缺失 + trace 完美 → 没产物却拿 0.5」 | **成立，但有前提** | 现役 schema 下 `validate_report()` 直接抛 `ReportError`（TD-008 未修，先崩）；用内存副本模拟**扩枚举后**实测 `ratio=0.5 / disq=False`，R1=`unscored/artifact_invalid`、R2=`blocked/dependency_blocked`、R3/R4=`pass`。**真漏洞，登记 TD-012，需人拍板** |
+| 12 | T5：「R1 fail → R2 blocked，不要复用 artifact_invalid」 | **现状已符合** | assertion_evaluator.py L761–776：依赖折叠先于 artifacts 判定，返回 `blocked/dependency_blocked`。加回归锁即可 |
+| 13 | T6：「坏 JSON 不要判 unscored」 | **成立** | 实测坏 JSON → `fail / report_missing_field`；合法 JSON 缺字段 → 同。但两者 `evidence` 的 key 完全相同（`observed`/`expected`/`extra`），**唯一区别是顶层 `note` 文本**；回件要求的 `parse_error`/`raw_excerpt` 现状没有。登记 TD-015 |
+| 14 | T7：「不能因为 `trace_*` 类型被 `build_report()` 强制改写成 unscored」 | **不成立** | 实测未知工具名 + `trace_audit.reported=true / schema_valid=true`：执行器 `unscored/trace_invalid` → 最终报告 `unscored/trace_invalid`，**强制改写未发生**。委托包 §5 T7（L4085–4086）已预判「不会触发」，回件把因果写反了 |
+| 15 | T7：「未知工具名应判 fail」 | **语义分歧，与已拍板项冲突** | 用户 §20.2 拍板 C 项「假设①②按现算口径定稿」。不照做，列入待拍板 |
+| 16 | T8：「`evidence.observed.violations` 必须收集全部违规」 | **现状已符合** | assertion_evaluator.py L1008–1039 收集 extra_keys / missing_required / type_mismatch / out_of_range 全量；分类首命中。加组合测试即可 |
+| 17 | T9：「gate fail 时 credit 仍计算并留 evidence」 | **现状已符合** | `build_report()` L200 遍历全部断言，无 early return。拓扑排序属落地建议 |
+| 18 | T11：「trace_audit 冲突校验保留在 pipeline 入口」 | **现状已符合** | trace_pipeline.py L75–78；实测 `reported=false` + 非空 trace → 抛 `PipelineError`。切换时勿丢 |
+| 19 | T12：「R4 unscored 只用 `trace_not_reported` / `trace_invalid`」 | **成立** | 7 组输入（trace=None / tool_calls 缺失 / call_index 不连续 / params 非 dict / 未知工具名 / status 越界 / 合法）实测集合 = `{trace_invalid, trace_not_reported}`。TD-008 不影响 R4 |
+| 20 | B4 变异清单「把未知工具名改判 `unscored/trace_invalid`」 | **无效等价变异** | 现状即如此，改了等于没改。按 §15 / §19 的变异纪律**必须排除**，不得凑数 |
+| 21 | 五条全现算基线分数序 `0/0/0.25/0.5/1.0` | **成立** | 只读模拟五夹具，逐夹具 ratio 与 S2 一致，`validate_report()` 全 OK（与 §20.1 一致） |
+
+### 21.3 处置分类
+
+| 类 | 内容 | 处置 |
+|---|---|---|
+| **A · 可直接落地**（无需新拍板，执行 §20.2 已定方向） | T1/T2 一致性锁 + 「手写结果改哨兵值输出不变」测试；T3 前半逐文件同步枚举副本 + 枚举一致性测试；T5/T8/T9/T11/T12 回归锁；B4 变异清单（剔除无效等价项） | 待 §21.5 拍板后，与机械切换一并落地 |
+| **B · 需人拍板** | TD-012（artifacts 缺失的 state 口径）、T7（未知工具名口径）、TD-015（坏 JSON evidence 增量）、TD-013（是否本步钉 0.75 回归锁） | **本轮不动代码**，见 §21.5 |
+| **C · 登记不改** | 回件 5 处事实错误（#1/#5/#10/#14/#20）+ 交付格式不符 §21.1 | 只记录，不回改外部文件 |
+| **D · 范围外** | A 部分（给被 dbg-001 评测 Agent 的执行建议）、A6 工程建议、C 部分（给评审 Agent 的纪律） | 与 S3-3-6 落地无关，不处置；其中 A4 的 0.75 漏洞已抽出登记 TD-013 |
+
+### 21.4 新登记 TD
+
+- **TD-012（真漏洞，需拍板）**：`artifacts` 缺失 + trace 完美，扩枚举后出现「没产物却拿 0.5」。根因是 R1 属 gate，而 `on_unscored: do_not_disqualify`（YAML §4 L330）不拦 unscored；R2 被依赖折叠成 blocked（0 分），但 R3/R4 仍各拿 1 分。**注意：现役 schema 下这份输入会直接抛 `ReportError` 而不是给分**，所以 TD-008 一旦销项，风险立即显形。
+- **TD-013（判据漏洞，P3/R6 同族）**：`[0,8,17]` 用合法重叠分页绕开 `offset=10` 故障点，R3 判 `no_retry` 但 R1/R2/R4/R5 全过，`ratio=0.75`。产物与轨迹可分离，R6 未做「产物 vs trace 自述」比对。
+- **TD-014（已拍板边界，非 bug）**：YAML `trace_requirements.item_fields` 声明了 `http_status`/`error`/`result_summary`，但 Q12(a) 明确只做最小校验，执行器不查这三项。回件把它误述成「必填且缺失即 unscored」。登记备查，**不改语义**。
+- **TD-015（可落地增量）**：坏 JSON 与「合法 JSON 缺字段」当前都是 `fail/report_missing_field`，`evidence` 完全一致，只有顶层 `note` 文本不同；下游无法结构化区分「学生写坏文件」与「字段漏写」。回件建议补 `parse_error` / `raw_excerpt`（脱敏），不动词表/DTO 即可做。
+- **文档瑕疵（不编号）**：R2 与 R4 的两处假设在 §18 / §19 / 委托包 §5 里都叫「假设①」，编号重复；§21 起按「R2 假设①」「R4 假设①」区分。
+
+### 21.5 请人拍板（四项，均不替决）
+
+| # | 问题 | 选项 A（建议） | 选项 B | 代价差异 |
+|---|---|---|---|---|
+| **P-A** | TD-012：artifacts 缺失时 R1 判什么 | 维持 `unscored/artifact_invalid`，接受 `ratio=0.5`，**加一条测试把该 ratio 钉死**，并在文档写明「这是有意的 do_not_disqualify 后果」 | 区分「学生没交」→ `fail`（gate 拦，ratio=0）与「平台采集故障」→ `unscored` | A 不动执行器、不改词表，但保留「没产物拿一半分」；B 语义更直，但现有输入**没有可判定的观测字段**区分两者，得先加字段或引入新规则，属扩大范围 |
+| **P-B** | T7：未知工具名口径 | **维持已拍板口径** `unscored/trace_invalid`，只加回归锁与 evidence（`unknown_tools` 现状已有） | 改判 `fail` + 复用 `param_out_of_schema`，evidence 写 `unknown_tool` | B 把「能力/纪律问题」正确归因，但**推翻 §20.2 已拍板的 C 项**，且 R4 的 `trace_invalid` 分支要重划；若改，需同时更新委托包假设清单与 TD 登记 |
+| **P-C** | TD-015：本步是否补结构化 evidence | 本步补 `parse_error` / `raw_excerpt`（脱敏），不改词表/DTO，加两条可区分测试 | 继续挂 M2，本步只加「坏 JSON 判 fail」的回归锁 | A 一次做干净、下游可判定；B 改动面最小但债务留存 |
+| **P-D** | TD-013：0.75 漏洞本步怎么处置 | 只**登记 + 加一条回归锁**把 0.75 钉死，R6 仍挂 P3/M2 | 本步就修 R3 判据（如要求故障点必须出现） | A 不扩范围；B 会改变五夹具分数序与已拍板 Q10-A 的分类词表，风险大 |
+
+四项拍板后按小步落地：**先机械切换 + A 类测试锁 → 变异测试 → 评审包两遍重生成 → §22 落仓**，B 类按拍板结果分别处置。
+
+### 21.6 本轮状态
+
+- **未改任何产品代码 / 测试 / 夹具 / DTO / 词表 / 委托包**；只新增本节 §21、同步 HANDOFF 索引与工作日志。
+- 只读核证用的一次性探针跑完即删；`.redteam-tmp/` 只剩既有的三个 gitignore 文件。
+- `tests/` 应仍 `510 passed`，评审包 `--check` 应仍 `OK (d66c5cf0bafe7e00)`（§20.5 已核证：快照不含 docs 正文，新增章节不影响）。
+- HEAD 仍 `03cf8c9`，全部改动未 commit / 未 push。
+
+> 下一步：**等 §21.5 四项拍板**。若用户回「按你的想法来」，则按每项选项 A 执行。
+
+---
+
+## 22. round-20：同侪审计回件核证（2026-11-09）
+
+### 22.1 回件身份与交付质量
+
+回件 `review-s3-3-6-peer-audit.md`（368 行）：自述「仓库只读 + 仓库外临时 venv 复跑 + 变异在副本」，§7 明确列未核证项，未声称跑过无环境的命令。按 §21.1 同一把尺子量，**交付格式基本符合 §0.4**——事实挂 `文件:行号`、每条发现配最小输入与实测输出、§5 给三组副本变异、§4 给两选项代价，比 round-18 回件可用得多。仍有两处缺口：主张散在 F1–F10 与 Q1–Q6 两处、无统一「输入 → 期望 → 实测 → 判定条件」总表；部分数字在其自建副本上产生，与现役仓库无对应锚点（§22.4）。
+
+**所有结论改由本地只读探针复核**：一次性内存模拟 + 一次字节级临时变异（`RESTORED: True`），探针跑完即删；本轮未改产品代码。基线真值先复核：`30` 项改动、`HEAD 03cf8c9`、`510 passed`、`--check OK (d66c5cf0bafe7e00)`、五夹具 `0/0/0.25/0.5/1.0`。
+
+### 22.2 核证总表
+
+| 组 | 回件主张 | 本地实测 | 判定 |
+|---|---|---|---|
+| §0 / §1.7 | 五条全现算后逐项一致 | 五夹具 `ratio` 与每条 `state` 与 S2 基线全等 | **成立** |
+| §1 提醒 | 一致性锁必须锁报告层，锁 raw 层会假红 | `raw-no-trace` raw 层手写 pass → 现算 unscored，报告层被强制改写抹平（TD-007/011 同族） | **成立** |
+| **F1** | `trace_audit` 是未核证的第二真相源 | `call_index=9` → `audit.schema_valid=True`、R3/R4=`unscored/trace_invalid`、R5=pass、`ratio=0.5`、`notes=None`、`validate_report()=PASS`；`call_count=999` 原样保留且放行；`trace.final_status=crashed` → R5=fail / `disq=True` 但 `audit.final_status` 仍 `completed` | **成立，TD-016** |
+| **F2** | `run_fixture(task=...)` 的 task 不进判定 | 注入 task 把 R3 `params_match` 改成 `offset:999`，R3 仍 `pass`、`filter_expr` 仍是 `params.offset==10`（默认 spec） | **成立，TD-017** |
+| **F3** | R3 把「调用畸形」判成「没有行为」 | 参数名写 `offsets` ×3 与只调 `write_report` → `fail/no_retry` 且 `source=case:no_tool_calls`（谎报零调用）；真重试但 error 缺 `http_status` → `fail/retry_wrong_params` / `default` | **成立，TD-018** |
+| F3 附注 | schema 已声明 `status_error_without_http_status` 但没人产出 | `diagnosis-report.schema.json:296` 确有该值；`_validate_calls()` 不实现（Q12(a) 边界，TD-014 已登记） | **成立** |
+| **F4** | 未知工具名屏蔽已观测违规 | `fetch_orders(limit=99)` + `imaginary_tool` → `unscored/trace_invalid`，`observed` 只剩 `unknown_tools`，`out_of_range` 消失 | **成立，TD-019a** |
+| **F5** | R4 空集 pass 计入掌握度 | `state=pass` / `checked_calls=0` / `skill_id=tool_param_validation` / `attribution.pass.counts_toward_mastery=true` | **成立，TD-019b** |
+| **F6①** | P-A 的 B 前提写错 | `artifacts` 字段缺失（扩枚举后）→ `0.5 / disq=False`；`artifacts: {}` → `0.0 / disq=True`。**两者已可区分** | **成立，推翻我方简报** |
+| **F6②** | 门禁 note 文案与事实相反 | note 写「分数不会因此变高」，同份报告 `ratio=0.5` | **成立，TD-021** |
+| **F7 前半** | 连带面比登记多 | `_check_result_consistency()`（L102–124）不读 `reason_code`；`test_file_exists.py:353` / `test_json_field_equals.py:333` 均断言 `artifact_invalid not in allowed`（后者还带 `pytest.raises(ReportError)`）；`docs/review-packet.md` 不含枚举值；现役 schema 下 artifacts 缺失 → `ReportError`（绊线存在） | **成立** |
+| **F8** | TD-015 描述不精确 | 语法错 / 合法非对象 / 空白 → `observed=null` + 有 note；合法对象缺字段 → `observed={}` + 无 note | **成立，但回件小遗漏**：坍缩 3 类非 2 类 |
+| **F9** | 配置校验缺口 | gate 内复制 R1 → 6 条断言 / 两个 R1 / `validate_report()=PASS`；`depends_on` 拼错（blocked 夹具）→ `KeyError`；执行器侧依赖缺失 → `blocked/dependency_blocked`，两条路径两种行为 | **成立，TD-020** |
+| **F10** | 夹具描述漂移 | `raw-empty.json` 的 `description` 仍写「实测得 2/6 = 0.333」；TD-009 只登记 `size_bytes` | **成立，补登记** |
+| Q3 / Q4 | gate 不兜 0.5 / 未知工具误归因 | `0.5 / disq=False / by_state` 与 F4 一致 | **成立** |
+| **Q5** | 「R4 仍读手写」是假锚点 | `raw-no-trace` 上 `score` 全等、R4 的 `state/reason_code/evidence` 全等，**唯一差异是 `note`**；把每条手写结果污染成 `STALE_HANDWRITTEN` 后，5 条断言全部泄漏到报告 | **成立**：只锁 state/ratio 抓不到，note 污染锁必要 |
+| §1 环境 | 缺 fsrs 时 508+2 | 本仓 `requirements.txt` pin `fsrs==6.3.2`，`510 passed` | 对方临时 venv 差异，非代码问题 |
+
+### 22.3 两处推翻我方简报（已订正，留痕）
+
+| 位置 | 原文（错） | 实测（对） | 处置 |
+|---|---|---|---|
+| `peer-brief` §1.9 P-A 的 B 代价 | 「现有输入**没有可判定的观测字段**区分两者，得先加字段」 | `artifacts` 字段缺失 vs `artifacts: {}` 已区分（0.5 vs 0.0+DQ）；B 的真实代价是「平台采集故障直接 DQ 学生」 | 已改准 |
+| `peer-brief` §1.9 P-C / §2.2 / §21.4 TD-015 | 「坏 JSON 与合法 JSON 缺字段 evidence **完全相同**」 | `observed: null` vs `{}` 是既有区分器；真坍缩在语法错 / 合法非对象 / 空白三类之间 | `peer-brief` §1.9 / §2.2 已改准；§21.4 属历史正文不回改，本节留痕 |
+
+`docs/peer-brief-s3-3-6.md` 头部加了 round-20 订正声明、§3 加了订正记录，避免错误前提继续外发。P-A / P-C 的**建议仍选 A**，只是理由改对。
+
+### 22.4 与本地实测不符 / 依赖副本未复现（登记，不回改外部文件）
+
+- **Q1「5 条 FAILED + 1 条空转」不成立**：按回件字面「把 `_build()` 换成 `run_fixture()`」做字节级变异，本地 `23 passed / 0 FAILED`、`RESTORED: True`。原因是六条负例中 **5 条直接调 `build_report(TASK, raw, VOCAB)`**（L87 / 94 / 153 / 163 / 174），根本不经 `_build`；唯一走 `_build` 的 no-trace 负例（L135）换后仍通过。**最终建议仍采纳，但理由要改**：字面执行改变的是「被测对象」（组装器契约 → 全链路），不是「负例失效」；§12.5 措辞仍须澄清。若回件用的是另一种替换方式，需它补最小复现。
+- **F7「24 failed → 10 failed」标「假设」**：现役 `trace_pipeline` 尚未接 R1/R2/R4/R5，没有 `recompute_all`，该数字依赖回件自建副本实现，本地无对应变异锚点 → 不写入事实。
+- **F8 坍缩类**：回件列 2 类，实测 3 类（含空白）；P-C 验收测试应瞄准这 3 类互不可分。
+- **Q5 措辞**：回件说「R4 的 evidence 都相同」成立；但整条 R4 并不同（`note` 不同），所以 note 污染锁仍是最稳锚点，不是可选项。
+
+### 22.5 新登记 TD
+
+- **TD-016（高）**：`trace_audit` 与执行器判定可自相矛盾且 schema 放行（`schema_valid` / `call_count` / `final_status` 三处）。切全链路后显形，需决定「原样保留」还是「从 trace 派生 + 冲突拒绝组装」。
+- **TD-017（高）**：`run_fixture(task=...)` 不把 task 传进 `recompute_r3`，R3 永远用默认 spec；`recompute_all` 若照抄，「换 task 跑」的测试会假绿。
+- **TD-018（中高）**：R3 `call_count = len(offsets)`（JMESPath 投影丢 null）导致参数幻觉被记成「零调用」且 `classification_source=case:no_tool_calls` 说谎；`status=error` 缺 `http_status` 被判 `retry_wrong_params`（能力问题），混淆数据缺失与能力不足。
+- **TD-019（中，两项）**：(a) `unknown_tools` 非空即 `unscored`，屏蔽已观测违规；(b) 零调用时 R4 `pass` 仍计入掌握度。
+- **TD-020（低）**：`rubric_layers()` 不查层内重复 id；`depends_on` 拼错在组装器抛 `KeyError`、在执行器静默判 blocked。
+- **TD-021（低，文案 / 文档）**：门禁 unscored 的 note 写「分数不会因此变高」与 `ratio=0.5` 相反；`raw-empty.json` 的 `description` 仍写「2/6 = 0.333」（P6 后为 0），后者并入 TD-009 补登记。
+
+### 22.6 处置分类
+
+| 类 | 内容 | 处置 |
+|---|---|---|
+| **A · 可直接落地**（与已拍板方向一致） | Q5 的 note 污染锁 + 报告层一致性锁（锁 `state` / `ratio` / `disqualified` / `reason_code`，不只锁 state）；F7 两条红灯测试**反转成正向锁**（不删除）+ `docs/diagnosis-report-schema.md` §6 枚举副本同步；P-A 的 0.5 / 0.0 双分支锁；`recompute_all` 从传入 `task` 取全部 spec（机械切换本就该如此）；F6 的 note 文案订正；F10 夹具描述订正 | 等 §22.7 拍板后随 S3-3-6 落地 |
+| **B · 需人拍板** | P-A~P-D（前提已订正）+ 新增 P-E（范围）+ F3 第二层（Q12(b) 半条） | 见 §22.7 |
+| **C · 登记不改** | Q1 数字、F7 数字、F8 类别数、回件 §1 环境差异、§7 未核证项 | 只记录 |
+| **D · 范围外** | P3/R6、真实 FS / mock / 超时 / CI、TD-001、D1/D3/D4；回件 §5「`run_fixture` 拆 `run_raw`」属实现方式，等 P-E 定了再定 | 不处置 |
+
+### 22.7 请人拍板（AI 不替决）
+
+- **旧四项 P-A~P-D**：前提已按 §22.3 订正，建议仍**全选 A**；P-A 的理由改为「0.5 是 `do_not_disqualify` 的已知代价，不是无法区分」，P-C 的验收测试改为瞄准「语法错 / 合法非对象 / 空白」三类坍缩。
+- **新增 P-E（范围，本轮最关键）**：回件把 F1 / F3 第二层 / F4 / F5 / F9 的修复全排进 S3-3-6，并自评「拍板影响：无」。**不采信该自评**——把 `trace_audit` 从「来件原样保留」改成「从 trace 派生 + 冲突即拒绝组装」是**新的契约决策**；再加上 R3/R4 判定语义变更，等于一步塞进 7 处修复，违反「一步 = 一个可独立验证的最小单元」，也会让变异锚点互相干扰、TD-008 绊线削弱与新语义混在一起难定位。
+  - **选项 A（建议）**：S3-3-6 只做机械切换 + 已拍板四项 + 与切换直接相关的回归锁（含 Q5 note 污染锁、artifacts 传递正向锁）；新发现的修复另开 **S3-3-7 系列**，按 F1 → F2 → F3 → F4/F5 → F9 逐步落地，每步各自配变异测试。
+  - **选项 B**：全部塞进 S3-3-6。代价：单次改动面过大、红灯难归因、评审包两遍重生成会被多轮中间态污染。
+  - 另需人定：**F3 第二层**（`status=error` 缺 `http_status` → `unscored`）是否做。它是 Q12(b) 被推迟的半条，与已拍板 Q12(a) 最小校验边界相邻；建议随 P-E 的 A 一起挂 S3-3-7 单独拍板，不混进机械切换。
+
+### 22.8 本轮状态
+
+- **未改任何产品代码 / 测试 / 夹具 / DTO / 词表 / 委托包**；只订正 `docs/peer-brief-s3-3-6.md` 三处事实错误 + 头部/§3 留痕、新增本节 §22、同步 HANDOFF 索引与工作日志。
+- 只读探针跑完即删；`--check OK (d66c5cf0bafe7e00)`、`510 passed`、五夹具分数序与 `--demo` 不变。
+- HEAD 仍 `03cf8c9`，工作区 **30 项**改动全部未 commit / 未 push（本轮无新增文件）。
+
+> 下一步：**等 P-A~P-D 与 P-E 拍板**。若回「按你的想法来」，按每项选项 A 执行；S3-3-7 系列在 S3-3-6 验收后再开工。
+
+---
+
+## 23. round-21：S3-3-6 落地 —— 五条全现算 + 已拍板项销项（2026-11-09）
+
+### 23.1 授权范围（人回「按照你的想法来」）
+
+按 §22.7：**P-A / P-B / P-C / P-D / P-E 全选 A**；F3 第二层（`status=error` 缺
+`http_status` → `unscored`，Q12(b) 被推迟的半条）不混进本步，挂 S3-3-7 单独拍板。
+人另补一句「如果需要它有只读权限，可以告诉它本地文件地址」——这是**授权预留**，不是本轮发起外部评测（判据见 §23.5）；据此把精确只读清单落进 `docs/peer-brief-s3-3-6.md` §4.2。
+
+### 23.2 改动清单（逐文件）
+
+| 文件 | 改动 |
+|---|---|
+| `src/arena/trace_pipeline.py` | 新增 `recompute_all(raw, task, vocab)`：从**传入 task** 的 `rubric_gate + rubric_credit` 派生五条 spec，逐条走 `ae.evaluate_assertion()`，注入 `artifacts` / `trace_requirements.minimum` / 前置结果 / 工具声明；`run_fixture()` 改走它。`recompute_r3()` **原样保留**作 S3-2 兼容入口（71 条历史锁继续调它，不在主链路上）。真相源冲突与 id 壳校验都在入口拒绝（T11）。 |
+| `src/arena/assertion_evaluator.py` | ① `load_tool_schemas()` 加末尾可选 `task`，工具声明不再回落默认 YAML；② R2 补 `_json_excerpt()` 与 `parse_error` / `raw_excerpt`（P-C=A），三类坍缩（空白 / 语法错 / 合法非对象）结构化可分；**判定口径与词表 / DTO 未改**。 |
+| `docs/diagnosis-report.schema.json` + `docs/diagnosis-report-schema.md` §6 | TD-008：`reason_code` 扩入 `artifact_invalid`，文档副本同步。 |
+| `src/arena/diagnosis_report.py` | TD-021 / F6②：门禁 unscored 的 note 原文「分数不会因此变高」与 `ratio=0.5` 相反，改成如实陈述「其余 credit 仍计分，可能出现 0 < ratio < 1」。计分与归因语义**未动**。 |
+| `fixtures/raw-empty.json` | TD-021 / F10：`description` 里 P6 改造前的 `2/6 = 0.333` 标成历史留痕，注明现行 `ratio=0 / disqualified=true`。五份夹具的手写 `assertion_results` **一字未改**（§20.2 第 3 项：不再被读 ≠ 已被删除）。 |
+| `tests/test_trace_pipeline.py` | 新增 24 条：五夹具报告层一致性锁（state / ratio / disqualified / reason_code）、Q5 哨兵污染锁、注入 task 两条正向锁、P-A 双分支、artifacts 正向传递、P-B 回归锁、TD-013 的 0.75 锁、T11 入口防御、不改输入。 |
+| `tests/test_json_field_equals.py` / `tests/test_file_exists.py` | 各新增/反转：TD-008 两条红灯测试**反转成正向锁、函数保留不删除**（§22.6 A 类）；R2 新增 8 条三类坍缩与脱敏锁。 |
+| `docs/review-response-v1.md` §12.5 / §23、`HANDOFF.md`、`docs/peer-brief-s3-3-6.md` | §12.5 末句**追加**口径澄清（不回改历史正文）；§23 为本节；索引与只读清单同步。 |
+| `verify.bat` | 两处 ASCII 注释仍写「只现算 R3」，与主链路不符（F10 同族文档失真），改为 `recompute_all()` 口径；**脚本逻辑未动**。 |
+
+### 23.3 完成判据实测（照 §12.5 一句话判据，未降低）
+
+- 五夹具 `run_fixture()` **不再读任何手写 `assertion_results` 内容**（只借 id 壳核对集合）；哨兵污染锁把整条手写结果换成 `STALE_HANDWRITTEN_S3_3_6` 后，五份报告里都搜不到该串。
+- 五夹具逐条 `state` / `reason_code` + `score.ratio` / `disqualified` 与 S2 基线**逐项全等**；分数序 `0 / 0 / 0.25 / 0.5 / 1.0` 不变；`validate_report()` 全 OK；`assertion_evaluator.py --demo` 九行不变。
+- §20.2 第 2 项按拍板执行：`tests/test_diagnosis_report.py` **原样保留**（6 条负例的手写注入能力保住），一致性锁补在 `test_trace_pipeline.py`；§12.5 末句只追加澄清注记，历史正文不回改。
+- `tests/`：510 → **542 passed**（新增 24 + 8 条）。
+
+### 23.4 变异证据（不拿「测试通过」当证据）
+
+一次性脚本 `.redteam-tmp/mutation_s3_3_6.py`（跑完即删）做 **13 组字节级变异**：
+`artifacts` 断供、手写结果回填、主链路退回 `recompute_r3`、工具声明回落默认文件、
+id 壳校验短路、注入 task 失效、空白判定退化、三类坍缩合并、结构化 evidence 短路、
+脱敏上限放宽、note 文案回退、DTO 枚举删项。
+
+结果 **13/13 全真 `FAILED`**（逐组 `1~12 failed`，无 `ERROR` / `TIMEOUT` / `NO_FAIL` /
+无效等价变异），每组 `RESTORED: True`、`ALL_KILLED: True`、`FINAL_RESTORED: True`、
+`PROBLEMS: []`。锚点重复一律判 INVALID 不凑数（沿用 §19.6 M15 纪律）。
+
+### 23.5 为什么这一轮不提外部评测（有判据，不是每轮固定收尾）
+
+本轮是**已拍板契约的机械落地 + 与切换直接相关的回归锁**：pytest 锁判定语义与报告层一致性、
+13 组变异锁规则没写死、`--check` 锁仓库没漂移，三套本地裁判覆盖全部风险面；
+没有跨模块口径分歧、没有需要第二真相源的语义判断、判据歧义已由 §20.2 拍板消解。
+**只读路径授权已记档**：等 S3-3-7 撞到 F1（`trace_audit` 升级为第二真相源）/ F3（归因分界）/
+F4·F5（空集与未知工具是否计入掌握度）这类本地裁判覆盖不到的语义盲区时再启用，发起权在人。
+
+### 23.6 销项 / 未销项（不夸大）
+
+- **销项**：TD-007 / 008 / 009 / 010 / 011、R2 与 R4 两处假设（按 §20.2 第 3 项以现算 evidence 定稿）、TD-015（P-C=A）、TD-021（F6 + F10 文案）；§12.5 判据歧义按 §20.2 第 2 项澄清。
+- **F2 / TD-017 已随机械切换消解**：§22.6 A 类明写「`recompute_all` 从传入 task 取全部 spec」，本轮连工具声明表也改为从注入 task 派生，两条正向锁钉住。故 S3-3-7 序列调整为 **F1 → F3 → F4/F5 → F9**，不再单列 F2。
+- **只登记 + 加回归锁，未修**：TD-012（P-A=A：`artifacts` 字段缺失仍 `0.5 / disq=False`，是有意的 `do_not_disqualify` 代价）、TD-013（P-D=A：`[0,8,17]` 仍 `0.75`，R6 挂 P3/M2）、TD-014（已拍板边界非 bug）。
+- **未修且风险仍在**：TD-016（`trace_audit` 的 `call_count` / `final_status` 与执行器判定冲突仍被 schema 放行）、TD-018 / F3、TD-019 / F4·F5、TD-020 / F9。本轮 `recompute_all` 只保留 T11 的 `reported` vs `trace` 入口校验，**没有**把 audit 升级为派生 + 冲突即拒绝组装——那是新的契约决策，按 P-E=A 留给 S3-3-7。
+- `docs/verify-brief-s3-3-6.md` 内联的是落地前源码，**自此标为过期历史快照**；其 §6「包内块 vs 磁盘字节」自检现在必然 `MISMATCH`，属设计使然，勿据此判定仓库被篡改。下轮外发前重新生成。
+
+### 23.7 验证证据与状态
+
+- `tests/` **542 passed**；`--fixture all` 五夹具分数序不变；`--demo` 九行不变。
+- 评审包按 Q7 **重生成两遍**：第一遍 `641fdc72ff4c9a7c` 为过渡态（生成时现场 pytest 仍是
+  `1 failed, 541 passed` —— 旧包记 510 而实际已 542，测试数锁如实报红），
+  第二遍复验 `542 passed` 后重生成 `1a5a93605212b5c4`，`--check OK (1a5a93605212b5c4)`。
+- 匿名扫描分范围：用 `review_packet.py` 的 `FORBIDDEN` 五词 + 本机用户名 / 绝对路径 /
+  凭据形态扫可外发范围 **32 个文件**：唯一命中是 `review_packet.py` L49 的**检测模式常量本身**
+  （扫描器自指，不是内容泄漏），排除该行后 **0 命中 → CLEAN**。
+  `docs/review-response-v1.md` 是内部记录、不外发：历史正文 3 处昵称禁用词按 §17.7 不回改；
+  本节 §23.8 的验证命令含本机用户名 / 绝对路径 2 处（与此前 §16.7 / §19.8 同款）。
+  **不写无条件 CLEAN**；对外可发范围内的新增内容未引入本机绝对路径或凭据形态。
+- HEAD 仍 `03cf8c9`，工作区 **33 项**改动全部**未 commit / 未 push**。
+  **订正**：round-20 记的是 30 项，本轮**新改了 3 个此前干净的文件**
+  （`docs/diagnosis-report.schema.json` / `docs/diagnosis-report-schema.md` /
+  `src/arena/diagnosis_report.py`），按 `git status --porcelain | wc -l` 实测为 33；
+  本轮无新增文件，临时变异脚本跑完即删。
+
+### 23.8 请人验证（仓库根，隔离 venv 的 python，单行）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"; & "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+```
+
+另可跑 `src/arena/trace_pipeline.py --fixture all`、`src/arena/review_packet.py --check`、
+`src/arena/assertion_evaluator.py --demo`（本轮均已实跑，结果见 §23.7），或仓库根一键 `verify.bat`。
+**如实声明**：`verify.bat` 本轮**未实跑**——末尾有 `pause`，需交互式 cmd；其 [1]/[3]/[4]/[5]
+段已用等效命令分别跑过，[2] 段 A2E 哨兵依赖上层独立 venv，与本轮改动无关，留给人验收时一并跑。
+**下一步**：S3-3-7 系列（F1 → F3 → F4/F5 → F9）在人对本轮验收后再开工；不提前动判定语义。
+
+---
+
+## 24. round-22：S3-3-7 第 1 步 —— F1 / TD-016 缺口证据锁与契约决策准备（2026-11-09）
+
+### 24.1 授权范围（人回「可以，继续吧」）
+
+- 按 §23.8「等人对本轮验收后再开工」：本句视为对 §23 的验收 + 开 S3-3-7。按 P-E=A 与 §23.6 的序列（**F1 → F3 → F4/F5 → F9**），本轮**只走 F1 的第一步**：本地复现、把矛盾钉成可执行证据锁、备好契约决策的外部输入。
+- **明确不改判定语义**：`trace_audit` 是否升级为第二真相源是**新的契约决策**，AI 不替人拍板。三个产品源文件一个字节未改，`docs/diagnosis-report.schema.json` 未改，五份夹具未改。F3 第二层（Q12(b) 半条）仍单独挂 S3-3-7，未混入本步。
+
+### 24.2 本地只读复现（不采信外部回件自述）
+
+以 `fixtures/raw-perfect.json` 为基底，只改左列，走 `recompute_all → build_report → validate_report`：
+
+| 编号 | 单点改动 | 报告实测 | `validate_report()` |
+|---|---|---|---|
+| A | `trace_audit.call_count = 999`（`trace.tool_calls` 实际 5 条） | `call_count` 原样 999；`ratio=1.0` / `disqualified=false` / `notes=None` | **放行** |
+| B | `trace.final_status = "crashed"`，`audit.final_status` 保持 `completed` | R5 `fail`、`disqualified=true`、`ratio=0.0`；但 `audit.final_status` 仍 `completed` | **放行** |
+| C | `trace.tool_calls[0].call_index = 9`，`audit.schema_valid` 保持 `true` | R3/R4 = `unscored / trace_invalid`、`ratio=0.5`；但 `audit.schema_valid=true`、`invalid_reasons=[]`、`call_count=5`、`notes=None` | **放行** |
+
+与 §22.2 F1 表逐项吻合，且这次是**本地探针实测**，不是引用回件结论。C 是三处里最要紧的：断言侧已有 `reason_code=trace_invalid` 明写「数据问题」，但同一份报告的 `trace_audit` 同时声明 `schema_valid=true` / `invalid_reasons=[]`（等于说「数据合规」），`notes` 又是 `None`，没有任何地方解释两者为何矛盾；下游若按 audit 判可信度，会得出与断言状态相反的结论。**订正**：本节初稿曾写成「没有任何字段说明这次降级是数据问题还是能力问题」，不确，按磁盘事实改准。根因在 `diagnosis_report.py:195` 的 `trace_audit = dict(raw["trace_audit"])`（原样复制）+ schema L49–80 只管类型与两条 `allOf` + `trace_pipeline.py` T11 只校验 `reported` 一位。
+
+### 24.3 改动清单（逐文件）
+
+| 文件 | 改动 |
+|---|---|
+| `tests/test_trace_pipeline.py` | 末尾追加 `_report_from_raw()` helper + **三条 F1 缺口证据锁**（`test_f1_td016_{call_count,final_status,schema_valid}_conflict_is_currently_allowed`），对应上表 A/B/C |
+| `docs/peer-brief-s3-3-7-f1.md` | **新增**：给同侪 AI 的 F1 契约决策简报（§0 指令、§1 现状与三处复现、§2 Q1–Q5 可判定命题、§3 我方倾向标「假设」+ 反证条件、§4 边界与相对路径只读清单） |
+| `docs/review-packet.md` | 生成物，按 Q7 两遍重生成（测试数锁如实报红后的过渡态 → 复验态） |
+| `docs/review-response-v1.md` §24、`HANDOFF.md`、`docs/peer-brief-s3-3-6.md` §4.3、工作日志 | 索引与状态同步 |
+
+三条锁断言的是**现状**（矛盾会被放行），**不是应然**；注释里明写 F1 落地时应沿 TD-008 惯例**反转成正向锁、函数不删除**。
+
+### 24.4 变异证据（不拿「测试通过」当证据）
+
+字节级替换 `diagnosis_report.py`，模拟 F1 修复后的行为，跑对应单测：
+
+| 变异 | 注入行为 | 结果 |
+|---|---|---|
+| M1 | `call_count` 与 `len(trace.tool_calls)` 冲突即抛 `ReportError` | 真 `FAILED`（`1 failed`），`RESTORED=True` |
+| M2 | `final_status` 与 `trace.final_status` 冲突即抛 `ReportError` | 真 `FAILED`，`RESTORED=True` |
+| M3 | 有 `trace_invalid` 断言时把 `schema_valid` 派生为 `false` / `invalid_reasons` 非空 | 真 `FAILED`，`RESTORED=True` |
+| M4（负对照） | 只改一处无关注释 | `1 passed`，如实标为**无效等价变异、不计入证据** |
+
+`REAL_MUTATIONS=3`、`ALL_TRUE_FAILED=True`、`RESTORED_EACH=True`、`FINAL_RESTORED=True`，无 `ERROR` / `TIMEOUT`。临时复现脚本与变异脚本跑完即删。
+
+### 24.5 为什么这一轮提外部评测（有判据，不是每轮固定收尾）
+
+§23.5 记档的触发条件已到达：F1 问的是「`trace_audit` 的定位究竟是什么」，属**语义 / 契约盲区**。本地三套裁判能证明「现状会被放行」，**不能证明「应该保留还是派生」**——pytest 锁实现不变、变异锁规则没写死、`--check` 锁仓库没漂移，都不覆盖契约应然；需要第二真相源。§21 / §22 两轮回件已展示本地裁判之外的发现能力。
+
+按纪律**只备包、不发起**：`docs/peer-brief-s3-3-7-f1.md` 是可外发单文件（不内联源码，只给相对路径导航），含 Q1–Q5、我方倾向（明确标「假设」并附**反证条件**）、只读清单。**发起权在人，AI 不替决**；本轮未向任何外部 AI 发送文件。
+
+### 24.6 待拍板（AI 不替决）
+
+| 项 | 两选项 / 待定内容 | 我方倾向（假设，非结论） |
+|---|---|---|
+| **Q1 契约定位** | ① `trace_audit` 是平台侧独立声明，允许与执行器判定不同；② 它是 `trace` 的派生物，必须一致 | **②**：audit 与 trace 写在同一份 raw 里，没有独立数据源，「独立性」是名义上的；C 会直接污染下游可信度判断；T11 已有「真相源冲突即拒绝组装」先例 |
+| **Q2 冲突处置** | (a) 入口抛 `PipelineError`、拒绝组装；(b) 以执行器为准改写 + notes 留痕，照常出报告 | **(a)**：(b) 有把「平台采集故障」悄悄记成「学生能力不足」的风险，与 `unscored` 不计掌握度口径冲突 |
+| **Q3 若选 ①** | 最小范围校验到哪一步？只加 `call_count == len(tool_calls)` 算不算已滑向 ② | 不预设，等外部意见 + 人定 |
+| **F3 第二层** | `status=error` 缺 `http_status` → `unscored`（Q12(b) 半条）是否做 | 仍单独挂 S3-3-7，**不与 F1 混做** |
+
+§3 我方倾向的**反证条件**：若能举出一个合法场景，其中 `trace` 与 `trace_audit` 必须不一致、且报告消费者依赖这份差异做出正确决策，则 ② 不成立，倾向撤回。
+
+### 24.7 验证证据与状态
+
+- 局部 `tests/test_trace_pipeline.py` **98 passed**（三条新锁全绿）；全量 `542 → 545 passed`。过渡态 `1 failed, 544 passed` 是 `test_test_count_matches_repo` 如实报红（旧包记 542、实际已 545），不是回归。
+- 评审包按 Q7 **两遍重生成**：`6fd7f20c2b81d1f9`（过渡态，生成时现场 pytest 仍是 `1 failed, 544 passed`）→ `7d11a3f77272e95c`（复验 `545 passed`），`--check OK (7d11a3f77272e95c)`。
+- 五夹具分数序与 `--demo` 不变（本轮未动判定链，附录见 §24.8 的复核命令）。
+- 匿名扫描分范围：可外发范围含本轮新增简报，用 `review_packet.py` 的 `FORBIDDEN` 五词 + 本机用户名 / 绝对路径 / 凭据形态扫描，排除 `review_packet.py` L49 检测常量行后 **0 命中 CLEAN**；`docs/review-response-v1.md` 是内部记录、不外发，历史正文 3 处昵称禁用词按 §17.7 不回改，**不写无条件 CLEAN**。
+- HEAD 仍 `03cf8c9`，工作区 **34 项**（本轮新增 1 个文件）全部**未 commit / 未 push**。
+
+### 24.8 请人验证（仓库根，隔离 venv 的 python）
+
+完整路径单行命令与 §23.8 相同（不在本节重复写本机绝对路径）；另可跑
+`src/arena/trace_pipeline.py --fixture all`、`src/arena/review_packet.py --check`、
+`src/arena/assertion_evaluator.py --demo`，或仓库根 `verify.bat`。
+三条 F1 证据锁可单独复核：
+
+```text
+pytest tests/test_trace_pipeline.py -q -k f1_td016
+```
+
+**下一步**：等人对 Q1 / Q2 / Q3 拍板（或先发外评拿第二意见）；F1 修复落地前不开 F3，判定语义保持不动。
+
+---
+
+## 25. round-23：F1 外评回件核证（2026-11-09）
+
+### 25.1 回件身份与交付格式
+
+| 项 | 核证 |
+|---|---|
+| 文件 | `review-s3-3-7-f1.md`（Qoder，2026-11-09）；是对 `docs/peer-brief-s3-3-7-f1.md` §2 Q1–Q5 的**答复** |
+| 自述定性 | 明写「不是验收结论」「未改原仓库任何字节，补丁只在仓库副本上验证」；假设 H1–H4 逐条标注；无法实测处标「推断」 |
+| 交付格式 | 符合简报 §0：逐条代价表 / 可判定分界 / 最小复现 / 变异锚点 / **统一 diff 文本不落盘** / 待拍板清单 / 证据索引（相对路径 + 行号） |
+| 匿名 | 回件自称不含真名 / 校名 / 昵称 / 本机绝对路径 / 凭据；本轮**未回改外部文件**，只核证与登记 |
+
+**定性**：高质量回件，绝大多数主张可本地复现；下表的"订正"与"新发现"均按磁盘事实，不采信自述。
+
+### 25.2 核证总表（依据均为本地实测 / 源码行号）
+
+| 回件主张 | 本地实测 | 判定 |
+|---|---|---|
+| §1.1 基线 `545 passed` / 五夹具 `0/0/0.25/0.5/1.0` / `--check 7d11a3f77272e95c` | 三项逐字一致（`--check` 实际文案为「评审包内容与仓库一致」，回件写成「与工作区一致」） | **成立**（措辞小异，不影响结论） |
+| §1.2 A / B / C 三处矛盾 | A `ratio=1.0` / `call_count=999`；B `ratio=0.0` / DQ / `audit.final_status=completed`、R5 `fail` 且 `error_patterns=["task_crashed"]`；C `ratio=0.5` / R3·R4 `unscored/trace_invalid` / `notes=None`。三者 `validate_report()` 全 PASS | **成立** |
+| §1.3 五夹具 `raw.trace_audit == 派生值` | 逐字复刻回件 §7.1 派生器后比对，五份**全 True**（`raw-no-trace` 派生为 `reported=false / not_reported / call_count=0`，与手写一致） | **成立**：F1 落地不需改夹具 |
+| §1.4「`trace_audit` 读取点只有 3 处」 | 产品代码内实为 **4 类**：`_assertion_item` L133/146（强制改写，回件 §2.1 自己也引用）、组装器 L195-196、notes L265-270、T11 两处入口 `trace_pipeline.py` L67/69/78 与 L113/115/123 | **不完整，已订正**（见 §25.3）。结论「今天没有消费者依赖差异做正确决策」仍成立 |
+| §2 行号与枚举 | YAML `:138` `on_unscored`、`:153` `fail` 计掌握度、`:156` `unscored` 不计，均对；schema `traceInvalidReason` 枚举 6 值，补丁用的 `not_reported` / `call_index_not_sequential` / `missing_required_field` / `field_type_invalid` **全部在枚举内** | **成立**：补丁不会因原因码非法被 `validate_report()` 拒 |
+| §2.1「audit 有单向否决权」 | `diagnosis_report.py:143-146` 确实按 `trace_ok` 把轨迹断言强制改 `unscored`；`schema_valid=true` 时执行器仍可判 `trace_invalid` | **成立** |
+| §3.2 两条误伤路径 | 枚举含 `timestamp_not_increasing` / `status_error_without_http_status`，但 YAML `trace_requirements.minimum` 未声明、`_validate_calls()` 也不查（实测只查 `call_index` / `status` / `params`） | **成立** |
+| §3.3 R2 的 (b) 改写「执行器结果均为 pass/fail，不涉及结构降级」 | **与磁盘事实不符**，见 §25.3 / TD-022 | **不成立（新发现）** |
+| §4.2 选 ① 第 2 条「取消 audit 单向否决权」 | 该条会改 S2 已定的 `schema_valid=false ⇒ 轨迹断言 unscored` 口径；简报 §4 明写不翻已拍板项 | **边界提示**：是「若选 ① 的必要代价」，不是可执行建议，代价须计入 |
+| §5.2 boundary 测试用 `recompute_r3` | `tests/test_trace_pipeline.py:193` 确为 `tp.recompute_r3(data)`；`test_unknown_tool_stays_unscored_with_evidence` 在 L385 | **成立**；「移到 `build_report` 会让 4 个 case 先红」回件自标推断，本轮未复现，**保持推断** |
+| §6 P1–P9 九条反向路径 | 九条逐条本地复现：P1 `0.5` 且 notes 出现「前置校验（）」空理由；P2 `0.5`；P3 `0.5 / DQ=false`（crash 被压）；P4 `0.5` 且 audit 声称 `completed`；P5 删/改 `final_status` 均 `ratio=1.0` + R5 `unscored`；P6 `0.5`；P7 `0.75`；P8 `ReportError`；P9 `1.0` | **全部成立**（P7/P8/P9 回件自己判定「不属 F1 范围」，本地一致） |
+| §7 补丁在副本上的结果 | 见 §25.4，逐项一致 | **成立** |
+| §7.4 H1–H4 / 重复实现 / 兼容入口旁路 | 与副本结构一致（派生器复刻 `_validate_calls` 四项检查；补丁只覆盖 `recompute_all`） | **成立**，登记为 TD-024 |
+
+### 25.3 三处订正（含我方一处）
+
+1. **我方残留**：`tests/test_trace_pipeline.py` 第三条 F1 锁的 docstring 仍写「报告里没有任何地方说明这次降级是数据问题还是能力问题」。§24.2 已订正文档表述，但测试注释漏改。本轮按磁盘事实改准：断言侧已有 `reason_code=trace_invalid` 说明「数据问题」，真问题是它与 `audit.schema_valid=true` 自相矛盾、`notes=None` 无人解释。**只改注释，不动断言**。
+2. **回件 §1.4 读取点盘点**不完整（漏 `_assertion_item` 与 T11 两处入口），按 §25.2 订正；结论不变。外部文件不回改，此处留痕。
+3. **回件 §3.3 R2 理由与磁盘事实不符**：本地模拟「audit=false / 派生=true → (b) 改写」后跑全链路，评分与 DQ **实质改变**：
+
+| 场景 | 改写前 | 改写后 | R5 |
+|---|---|---|---|
+| P1（false 且无理由） | `0.5 / DQ=False` | `1.0 / DQ=False` | `unscored/trace_invalid` → `pass` |
+| P2（trace 合法、平台更严） | `0.5 / DQ=False` | `1.0 / DQ=False` | `unscored/trace_invalid` → `pass` |
+| P3（crash 被压） | `0.5 / DQ=False` | `0.0 / DQ=True` | `unscored/trace_invalid` → `fail` |
+
+因此回件 §0 的核心分界「按**冲突字段**分（final_status→(a)、schema_valid/call_count→(b)）」在 **P3 上有反例**：`schema_valid` 冲突改写后同样产生 `fail`。若选 R2，分界应改成「按**改写后的执行器结果**是否 fail」，而这在改写前恰被 audit 压住、无法直接读出 —— 是新契约决策（P-F1-6）。
+
+### 25.4 补丁副本核证（原仓库未动）
+
+隔离副本（系统 Temp、含 `.git`），按 §7.1/§7.2 做**字节级替换**，两处锚点各 `count=1`：
+
+| 步骤 | 实测 | 与回件 §7.3 |
+|---|---|---|
+| Step A 只应用源补丁（测试未反转） | `3 failed, 95 passed`，先红的是 `call_count` 锁 | 一致 |
+| Step B 再反转三条 F1 锁 | `545 passed`；`--fixture all` 五夹具分数序不变；`--check OK (7d11a3f77272e95c)` | 一致（证实评审包快照不覆盖 `src/` 与 `tests/` 内容） |
+| Step C A/B/C + P1–P6 共 9 条 | **全部 `PipelineError`**，命中字段与回件一致（如 P4 `final_status: 手写='completed' 派生=缺失`） | 一致 |
+
+`patch --dry-run` 属回件自述、本轮未复现（用锚点唯一性等价核证）；M1–M4 五组变异未逐组重跑，Step A 覆盖了「源补丁单独应用」这一条。副本已清理（`leftover: []`，首次删除因 `.git` objects 只读失败，带权限修复后成功）。**原仓库产品源码、五夹具、DTO schema 一个字节未改**，临时脚本跑完即删。
+
+### 25.5 新登记 TD
+
+- **TD-022（中高）**：R2 的 (b) 改写会实质改变 `ratio` / `disqualified`（P1/P2/P3 实测），不是「只保留诊断」；回件按冲突字段分类的分界在 P3 有反例。若拍板 R2，必须补这三条的回归锁与「何时判通过」。
+- **TD-023（中）**：`reported=false` 时 schema 的 `allOf` 未约束 `final_status` 必须缺失 → P4「无 trace 却声称 completed」可构造且 PASS。回件 P-F1-4 只提 `schema_valid=false ⇒ invalid_reasons≥1`，**不覆盖 P4**。
+- **TD-024（中，实现债非 bug）**：回件 §7.4 自述的两处 —— `_trace_audit_issues()` 复刻 `_validate_calls()` 四项检查（两处规则未来会漂移）；补丁只覆盖 `recompute_all()`，`recompute_r3()` 兼容入口仍可绕过 F1。副本结构核证一致，未做漂移变异。
+- **并入既有**：P9 的 `trace_requirements.minimum.agent_id.required=true` 无执行器 / 派生器检查（`ratio=1.0`），归入 **TD-020（F9 配置校验缺口）**，不新开。
+
+### 25.6 处置分类
+
+| 类 | 内容 | 处置 |
+|---|---|---|
+| **A · 可直接落地** | **无**：所有代码改动都依赖 P-F1-1/2/3 契约决策。本轮唯一已做的机械改动是 §25.3 第 1 条（我方注释订正，不涉及语义） | 已做 |
+| **B · 需人拍板** | P-F1-1~5 + 新增 **P-F1-6**；F3 第二层仍单独挂 S3-3-7 | 见 §25.7，AI 不替决 |
+| **C · 只登记** | TD-022 / 023 / 024、§1.4 读取点订正、回件措辞小异、§5.2 推断保持推断 | 本节留痕，不改外部文件 |
+| **D · 范围外** | F3 / F4 / F5 / F9 落地、P3 的 R6、真实 FS / mock / 超时 / CI、翻已拍板口径（§4.2 第 2 条） | 不处置 |
+
+**本轮不再提外部评测**：第二真相源已由本回件提供，本地副本核证覆盖了实现面，剩下的是契约应然 choice（人拍板），不是新的语义盲区；发起权在人。
+
+### 25.7 请人拍板（AI 不替决）
+
+| 编号 | 问题 | 选项 | 我方倾向（**假设**） |
+|---|---|---|---|
+| P-F1-1 | `trace_audit` 定位 | ① 独立声明 / ② 派生物 | **②**：副本验证 A/B/C + P1–P6 全拒且 `545 passed`、五夹具不变；回件与我方一致 |
+| P-F1-2 | 冲突处置 | (a) 一律拒绝 / (b) 一律改写 / **R1 严格** / **R2 不对称** | **R1（严格拒绝）**：R2 的分界在 P3 有反例、(b) 会改评分（TD-022），且 H1 未确认。**反证条件**：若生产 audit 确由独立服务产生且规则更严（H1 不成立），R1 会拒绝合法提交，须改 R2 或先做 P-F1-5 |
+| P-F1-3 | 检查放在哪 | `recompute_all` / `build_report` / 两入口共用 | **`recompute_all`**（与回件一致）；把「兼容入口可绕过」按 TD-024 留到收敛 `recompute_r3` 时处理 |
+| P-F1-4 | 补 `schema_valid=false ⇒ invalid_reasons≥1` | 补 / 不补 | **补**，但需同时决定要不要补 `reported=false ⇒ final_status 缺失`（TD-023 / P4 空白） |
+| P-F1-5 | 平台更严规则（时间戳、条件必填）进不进 `trace_requirements` | 进 / 不进 | **本轮不进**（与回件一致）；若进须先补执行器与测试，否则 R1 误伤 |
+| **P-F1-6（新）** | R2 的 (b) 改写会改变评分 / DQ，是否接受 | 接受并补 P1/P2/P3 回归锁 / 不接受（→ R1） | 若选 R2 才需答；当前建议直接 R1 以避开 |
+
+### 25.8 本轮状态与请人验证
+
+- 本轮**未落地 F1 修复**：只订正一条测试 docstring（§25.3-1），产品源码 / 夹具 / DTO schema 未动；副本验证不落盘。
+- `tests/` **545 passed**（订正后复跑，见下）；`--check OK`；五夹具分数序与 `--demo` 不变。
+- 匿名扫描分范围：可外发范围未新增文件，订正后的 `tests/test_trace_pipeline.py` 与 §25 相关的 `HANDOFF.md` / `peer-brief` 更新均 **CLEAN**；`docs/review-response-v1.md` 是内部记录、不外发，不写无条件 CLEAN。
+- HEAD 仍 `03cf8c9`，工作区 **34 项**全部**未 commit / 未 push**（本轮无新增文件）。
+
+完整路径单行命令与 §23.8 相同（本节不重复本机绝对路径）。三条缺口锁单独复核：
+`pytest tests/test_trace_pipeline.py -q -k f1_td016` → `3 passed, 95 deselected`。
+
+**下一步**：等人对 P-F1-1~6 拍板；回「按你的想法来」＝ P-F1-1 ②、P-F1-2 R1、P-F1-3 `recompute_all`、P-F1-4 补（含 P4 空白）、P-F1-5 不进、P-F1-6 不必答。拍板后才改判定语义，且仍按「一小步 + 变异 + 两遍重生成评审包」推进。
+
+---
+
+## 26. round-24：F1 / TD-016 修复落地（2026-11-09）
+
+### 26.1 拍板与范围
+
+人回「按照你的想法来」＝ §25.7 的默认组合，逐项落地：
+
+| 编号 | 拍板 | 落地 |
+|---|---|---|
+| P-F1-1 | **② `trace_audit` 是 trace 的派生物** | `_derive_trace_audit()` 从 trace + `trace_requirements.minimum` 算出五个字段 |
+| P-F1-2 | **R1 严格拒绝**（不选回件倾向的 R2） | `_refuse_audit_conflict()` 逐字段对账，`invalid_reasons` 按集合比较；冲突抛 `PipelineError` |
+| P-F1-3 | 检查放 **`recompute_all()`** | 主链路入口写回派生值；`recompute_r3()` 不收敛（TD-024） |
+| P-F1-4 | **补两条 allOf** | A3 `schema_valid=false ⇒ invalid_reasons≥1`；A4 `reported=false ⇒` 不允许 `final_status` |
+| P-F1-5 | 平台更严规则**本轮不进** | 未改 `trace_requirements`、未加时间戳 / 条件必填检查 |
+| P-F1-6 | 选 R1，**不必答** | TD-022 保持登记但本轮不触发 |
+
+**反证条件仍在**：H1（生产 audit 与执行器共享规范/版本）未确认；若生产 audit 由独立服务产生且规则更严，R1 会拒绝合法提交，届时需改 R2 或先做 P-F1-5。这是运维前提，不是本轮可验证项。
+
+### 26.2 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `src/arena/trace_pipeline.py` | 新增 `_trace_audit_issues()` / `_derive_trace_audit()` / `_refuse_audit_conflict()`；`recompute_all()` 派生 audit 并对账后写回；模块 docstring 的「真相源一致性」段与 `recompute_r3` 边界注释同步。**不改执行器语义、不改 `build_report()`** |
+| `tests/test_trace_pipeline.py` | 三条 F1 缺口锁**反转成正向锁、函数不删除**（去掉失真的 `currently_allowed` 后缀，`-k f1_td016` 前缀不变）；新增 28 条回归锁；补 `import jsonschema` |
+| `docs/diagnosis-report.schema.json` | `trace_audit.allOf` 2 条 → 4 条（新增 A3 / A4） |
+| `docs/diagnosis-report-schema.md` | §2 顶层结构标注「派生值」；新增 §2.1（五字段派生规则 / 结构-语义分界 / 四条 allOf / 已知旁路）；§7 规则表补 S7 / S8 |
+| `docs/executor-semantics.md` | 头部状态订正；新增 §4「结构校验与语义 `trace_invalid` 的分界」（H3 / M5 / P-B 护栏） |
+| `docs/review-response-v1.md` | 本节 |
+| `HANDOFF.md` / `docs/peer-brief-s3-3-6.md` §4.3 / `docs/peer-brief-s3-3-7-f1.md` 头部 | 索引与状态同步 |
+
+**一字未改**：五份 `fixtures/raw-*.json`（§25.2 已证手写 audit 与派生值逐字相等）、`tasks/dbg-001-order-report.yaml`、`diagnosis_report.py`、`assertion_evaluator.py`、`docs/error-patterns-v0.yaml`。
+
+### 26.3 分步验证（写→验→报）
+
+| 步 | 实测 | 与回件 §7.3 |
+|---|---|---|
+| 落地前基线 | `545 passed` / `--check OK (7d11a3f77272e95c)` | 一致 |
+| **Step A** 只落源补丁（测试未反转） | `3 failed, 95 passed`，三条 F1 锁全红；`--fixture all` 五夹具 `0/0/0.25/0.5/1.0` 不变；`--check OK` | 一致 |
+| **Step B** 反转三条锁 | `545 passed`；`-k f1_td016` → `3 passed, 95 deselected`；`--check OK` | 一致 |
+| **Step 3** 补两条 allOf | `Draft202012Validator.check_schema()` PASS；`false 无理由` / P4 组合 REJECT、`false 带理由` / 正常组合 PASS；五夹具 `validate_report()` 全通过 | 新增，非回件内容 |
+| **Step 4** 补 28 条回归锁 | 局部 `126 passed`（原 98 + 28） | 新增 |
+
+### 26.4 新增回归锁（28 条，逐条可判定）
+
+| 组 | 条数 | 锁住什么 |
+|---|---|---|
+| `test_f1_report_audit_equals_derived_value` | 5 | 五夹具报告里的 audit == 派生值 == 手写值（「不改夹具」的依据） |
+| `test_f1_report_carries_derived_audit` | 1 | 用 monkeypatch 证明写回的是**派生对象**，不是原样复制 |
+| `test_f1_reverse_paths_are_refused` | 7 | P1 / P2 / P3 / P4 / P5-missing / P5-weird / P6 全部入口拒绝，且错误消息命中对应字段 |
+| P7 / P9 通过路径 | 2 | 空集 `0.75`（TD-013 / F5）、`agent_id` 缺失 `1.0`（TD-020 / F9）不误伤 |
+| P8 入口拒 | 1 | 口径变化见 §26.7 |
+| 语义护栏 | 1 | 未知工具仍 `unscored/trace_invalid`，派生 audit 仍 `schema_valid=true`（H3 / M5） |
+| 兼容入口旁路 | 1 | `recompute_r3` 仍能组装矛盾报告（TD-024 现状锁） |
+| 派生器原因码 | 5 | 五类结构违规各自映射到正确的 `traceInvalidReason` 枚举值 |
+| `trace=None` 派生 | 1 | `not_reported` 分支与 `raw-no-trace` 一致 |
+| 两条新 allOf | 4 | A3 / A4 正反例各一 |
+
+### 26.5 变异裁判（13 组真变异 + 1 组负对照）
+
+字节级替换、锚点 `count==1`、跑 `pytest tests/test_trace_pipeline.py -q -k f1`：
+
+| 变异 | 注入行为 | 实测 |
+|---|---|---|
+| M1 | 删 `out["trace_audit"] = derived` | `1 failed` |
+| M2 | 禁用 `_refuse_audit_conflict` | `11 failed` |
+| M3 / M4 / M5 | 从对账字段里删 `call_count` / `final_status` / `schema_valid` | `2 / 3 / 5 failed` |
+| M6 | 禁用 `invalid_reasons` 比较 | `1 failed` |
+| M7 | 派生 `schema_valid` 恒为 True | `8 failed` |
+| M8 / M9 | 不查 `call_index` 连续性 / `status` 枚举 | `2 / 1 failed` |
+| M10 | 把「未知工具名」混进结构校验（等价回件 M5） | `1 failed` |
+| M11 / M12 | 令 schema A3 / A4 失效 | 各 `1 failed` |
+| M13 | `trace=None` 派生成 `reported=true` | `2 failed` |
+| **M0 负对照** | 只改一处注释 | `31 passed`，如实标**无效等价变异、不计入证据** |
+
+**13/13 全真 `FAILED`**，逐组 `RESTORED: True`、`FINAL_RESTORED: True`，无 `ERROR` / `TIMEOUT` / `MIXED_FAILED_ERROR`。
+
+**如实声明（首次运行的一处脚本缺陷）**：M11 首轮 `ANCHOR_COUNT=0` 未执行 —— `docs/diagnosis-report.schema.json` 是 **CRLF**（309/309 行），跨行锚点里的 `\n` 匹配不上 `\r\n`；`src/arena/trace_pipeline.py` 是 LF 所以其余跨行变异正常。改成**单行唯一锚点**后重跑全部 14 组，结果如上。这是临时脚本的换行符 bug，不是产品缺陷；脚本跑完即删。
+
+### 26.6 全量过渡态与评审包两遍重生成
+
+| 阶段 | 结果 |
+|---|---|
+| 补 28 条锁后全量 | `1 failed, 572 passed` —— 唯一红灯是 `test_test_count_matches_repo`（包记 545、实际 573），正是 Q7 要处理的过渡态 |
+| PASS 1 | `26aac73a0be9a09a`（如实记录过渡态） |
+| PASS 2 | `263da1985856752e` |
+| `--check` | `OK: 评审包内容与仓库一致（263da1985856752e）`；包内记录 **573 个用例被收集 / 573 passed** |
+
+### 26.7 口径变化与 TD 处置（如实留痕）
+
+- **P8 的拒绝点前移**：`schema_valid=true` + `invalid_reasons` 非空原本由 schema A2 在 `validate_report()` 拒；F1 落地后在 `recompute_all()` 入口先被 `invalid_reasons` 对账拒（`PipelineError`）。回件 §6 把 P8 判为「F1 范围外」，本轮按磁盘事实订正为「入口先拒」，并补了一条正向锁。
+- **TD-016 销项**：A/B/C 三处矛盾不再被放行。
+- **TD-023 销项**：补 A4 关闭 P4「无 trace 却声称 completed」。
+- **TD-022**：因选 R1 而不触发，保持登记（若将来改 R2 必须回来补 P1/P2/P3 回归锁）。
+- **TD-024 保持**：派生器与 `_validate_calls()` 仍是两处独立实现；`recompute_r3()` 兼容入口仍可绕过 F1 —— 本轮补了**现状锁**把它钉住，不收敛。
+- **仍未修**：TD-012（`0.5`）、TD-013（`0.75`）、TD-018 / 019 / 020（F3 / F4 / F5 / F9）、TD-021 已销。F3 第二层（`status=error` 缺 `http_status` → `unscored`）仍单独挂 S3-3-7。
+- **范围外未做**：P-F1-5 平台更严规则、真实文件系统 / mock / 超时 / CI、P3 的 R6、翻已拍板口径。
+
+### 26.8 本轮状态与请人验证
+
+- `pytest tests/ -q`：**573 passed**；`-k f1_td016` → `3 passed, 123 deselected`；`-k f1` → `31 passed, 95 deselected`。
+- `--fixture all` 五夹具 `0 / 0 / 0.25 / 0.5 / 1.0`；`--demo` 九行不变；`--check OK`。
+- 匿名扫描分范围结果见 §26.9；`verify.bat` 一键脚本**本轮仍未实跑**（末尾 `pause` 需交互，沿用 §23 声明），其注释口径已在上轮订正。
+- HEAD 仍 `03cf8c9`，工作区 **35 项**改动全部**未 commit / 未 push**（本轮只新增 `docs/executor-semantics.md` 一个此前干净的文件；无新增文件，临时变异脚本已删）。
+- **订正留痕（自述与磁盘不符）**：本节初稿写「36 项、新改三个此前干净的文件」。`git status --porcelain` 实测 **35 项**：`docs/diagnosis-report.schema.json` / `docs/diagnosis-report-schema.md` 自 round-21 的 TD-008 扩枚举起就已在工作区，只有 `executor-semantics.md` 是本轮新改；§25.8 的 34 项是上轮基线。按磁盘事实改准，不覆盖历史正文。
+- 完整路径单行命令与 §23.8 相同（本节不重复本机绝对路径）。
+
+**下一步**：等人对本轮验收；之后按 P-E 序列开 **F3**（`R3 call_count=len(offsets)` 错记零调用 + F3 第二层 `status=error` 缺 `http_status`），再 F4/F5、F9。F3 开工前不动判定语义。
+
+### 26.9 匿名扫描（分范围，跑完整裁判后复核）
+
+| 范围 | 结果 |
+|---|---|
+| 可外发 **33 文件**：对外包 / 交接文档 / 两份同侪简报 / DTO 与语义文档 / 任务 YAML / `src/arena/*.py` / `tests/test_*.py` / `fixtures/*.json` | 排除 `src/arena/review_packet.py:49` 的检测模式常量行（扫描器自指）后 **0 命中，CLEAN** |
+| 本轮新增/修改的可外发文本（`diagnosis-report.schema.json`、`diagnosis-report-schema.md`、`executor-semantics.md`、`HANDOFF.md` §26 摘要、`peer-brief-s3-3-6.md` §4.3、`peer-brief-s3-3-7-f1.md` 头部、`trace_pipeline.py`、`test_trace_pipeline.py`） | 未引入真名 / 校名 / 昵称 / 本机绝对路径 / 任何凭据形态 |
+| `docs/review-response-v1.md`（**内部处置记录、不外发**） | **不写无条件 CLEAN**：§26 实测昵称 0 / 用户名 0 / 绝对路径 0；历史正文里既有的 3 处昵称禁用词按 §17.7 不回改，§23.8 等处的验证命令含本机用户名，均不外发 |
+
+最终复核：`573 passed` / `-k f1_td016` `3 passed, 123 deselected` / 五夹具 `0 / 0 / 0.25 / 0.5 / 1.0` / `--demo` 九行不变 / `--check OK (263da1985856752e)` / `.redteam-tmp/` 仅剩既有 gitignore 文件 / HEAD `03cf8c9` / 工作区 **35 项**全部未 commit 未 push。
+
+---
+
+## 27. round-25：S3-3-7 第 2 步 —— F3 / TD-018 复现、证据锁与归因分界决策准备（2026-11-09）
+
+### 27.1 范围与纪律
+
+人回「继续·」＝ 对 §26 的验收 + 按 §26.8 下一步开 **F3**。按 P-E=A 序列
+（F1 → **F3** → F4/F5 → F9）与「一次只做一小步」，本轮**只做 F3 的第一步**：
+
+1. 本地只读复现 §22.5 F3 / TD-018 两层次；
+2. 把现状钉成可执行证据锁（**断言现状，不是应然**；落地时按 TD-008 / F1 惯例反转、不删除）；
+3. 备好可外发单文件决策简报。
+
+**判定语义一个字节未改**：三个产品源文件、五份夹具、`tasks/dbg-001-order-report.yaml`、
+`docs/diagnosis-report.schema.json`、词表全未动。F3 第二层（Q12(b) 半条）不混进本步，
+F4/F5 / F9 也未开工。
+
+### 27.2 本地复现（六场景，全链路 `recompute_all → build_report → validate_report`）
+
+全部从 `fixtures/raw-perfect.json` 出发、只改内存中的 `trace.tool_calls`，
+并把 `trace_audit` 重算为 F1 派生值以避开对账入口；`validate_report()` 六例全 PASS。
+
+| 场景 | 改动 | R3 实测 | 报告实测 |
+|---|---|---|---|
+| 基线 | 无 | `pass`，`offsets=[0,10,10,20]` | `ratio=1.0` |
+| **A1** | 4 条 `fetch_orders` 的 `params.offset` 全误写成 `offsets` | `fail / no_retry / case:no_tool_calls`，`offsets=[]` | `ratio=0.5`；`audit.call_count=5`；**R4 `fail / param_out_of_schema`** |
+| **A2** | 只保留 1 条 `write_report` | `fail / no_retry / case:no_tool_calls` | `ratio=0.75`；`audit.call_count=1`；R4 `pass` |
+| **A3** | 只把 `status=error` 那条的 `offset` 误写成 `offsets` | `fail / retry_wrong_params / case:fault_point_not_repeated`，`offsets=[0,10,20]` | `ratio=0.5`；R4 `fail / param_out_of_schema` |
+| **B1** | 真重试但 error 那条**删掉** `http_status` | `fail / retry_wrong_params / default`，`http_statuses=[None,None]` | `ratio=0.75`；`audit.schema_valid=true`、`invalid_reasons=[]` |
+| **B2** | 对照：同一条 `http_status` 写成 `404` | `fail / retry_wrong_params / default`，`http_statuses=[404,None]` | `ratio=0.75`；audit 同 B1 |
+
+根因（只读核证）：`evaluate()` 里 `offsets = jmespath.search(probe, ...) or []`，
+JMESPath 投影丢弃 null，于是 `call_count = len(offsets)` 实为「有效 offset 个数」，
+却被 `no_tool_calls` 当成「工具调用条数」；`_validate_calls()` 按已拍板 Q12(a)
+只查三项结构规则，不查 YAML `note` 声明的条件必填。
+
+### 27.3 比 §22.5 更强的三处发现（本轮新增，均已入锁）
+
+1. **B1 与 B2 除 `R3.evidence.observed.http_statuses` 外报告逐字相同**：
+   `state` / `error_patterns` / `classification_source` / `score` / `trace_audit` / `notes` 全等
+   （用「把该字段替换成同一哨兵后 `b1 == b2`」实测）。§22 只记「B1 被判 retry_wrong_params」，
+   未记「数据缺字段」与「数据完整但值错」在归因层**完全不可区分」。这是 Q4 的核心证据。
+2. **A1 里同一份报告的两条断言互相打架**：R4 已抓到参数幻觉，R3 却说「零调用」；
+   `no_retry` 仍会进入掌握度与错误模式。A3 还证明投影丢 null **会改写 offsets 序列本身**
+   （4 个变 3 个），不只是计数错。
+3. **跨模块张力（本轮最要紧）**：F1 刚把 `trace_audit` 收敛为派生物，
+   `_trace_audit_issues()` 刻意只查结构、不查条件必填（`executor-semantics.md` §4）。
+   B1 里 audit 说「数据合规」、断言侧判「能力不足」。若 F3 第二层把 B1 判
+   `unscored / trace_invalid`，**必须同时决定派生器要不要产出 `status_error_without_http_status`**：
+   不同步会重新引入 F1 刚消解的自相矛盾；同步则派生器与执行器各写一份规则，正是 TD-024 的漂移风险。
+   另：`$defs.traceInvalidReason.enum` **已含**该原因码，但 `assertions[].reason_code` 枚举没有；
+   五夹具 + 六场景无任何路径产出它（行为级锁，非静态 grep）。
+
+### 27.4 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `tests/test_trace_pipeline.py` | 末尾追加 F3 区：`_f3_raw()` / `_f3_assertion()` / 五个场景 mutate helper + **7 条现状证据锁**（`test_f3_td018_*`）。复用既有 `_report_from_raw()` 与 `_minimum()`，未改任何历史锁 |
+| `docs/peer-brief-s3-3-7-f3.md` | **新增**：可外发单文件简报。含六场景实测表、Q1–Q6 可判定命题、我方倾向（逐条标「假设」+ 反证条件）、§2.2 跨模块张力、相对路径只读清单、明确不给清单。**不写本机绝对路径 / 体量写死值** |
+| `docs/review-response-v1.md` | 本节 |
+| `HANDOFF.md` / `docs/peer-brief-s3-3-6.md` §4.3 / 工作日志 | 索引、round-25 触发记录与状态同步 |
+
+**一字未改**：`src/arena/{assertion_evaluator,trace_pipeline,diagnosis_report}.py`、
+五份 `fixtures/raw-*.json`、`fixtures/tool-call-cases.json`、任务 YAML、
+`docs/diagnosis-report.schema.json` 及其说明、`docs/executor-semantics.md`、词表、`verify.bat`。
+
+### 27.5 变异裁判（6 组真变异 + 1 组负对照）
+
+对**产品源码**做字节级替换，每组只跑 `pytest tests/test_trace_pipeline.py -q -k f3_td018`，
+逐组恢复原字节。M1 `call_count` 改取 `len(calls)`；M5 `offsets` 写死空；
+M4 `classification_source` 写死 `default`；M2 `_validate_calls()` 补 error 缺 `http_status`；
+M6 `_match_step()` 不再比 `http_status`；M3 audit 派生器产出 `status_error_without_http_status`；
+M7 只改注释（负对照）。
+
+| 结果 | 数值 |
+|---|---|
+| 真变异 | **6/6 全真 `FAILED`**（分别 `2 / 2 / 3 / 2 / 1 / 4 failed`），无 ERROR / TIMEOUT |
+| 负对照 | M7 `PASSED`（无效等价变异，**不计入证据**） |
+| 恢复 | 逐组 `RESTORED: True`，`FINAL_RESTORED: True` |
+
+**如实留痕**：M4 首轮 `ANCHOR_COUNT=2`（`classification_source = source` 在 R3 与 R4 各一处），
+脚本如实 SKIP 且 `VERDICT: FAIL`；核证两处上下文后收窄到含
+`_classify(spec, ctx, allowed)` 的四行唯一块，重跑 7 组全绿。是临时脚本锚点问题，
+非产品缺陷；脚本跑完即删。
+
+### 27.6 全量过渡态与评审包两遍重生成
+
+- 局部 `tests/test_trace_pipeline.py` **133 passed**（原 126 + 7）；`-k f3_td018` **7 passed**。
+- 全量过渡态 `1 failed, 579 passed` —— 唯一红灯是 `test_test_count_matches_repo`
+  （评审包记 573、实际 580），Q7 预期，如实留痕。
+- 按 Q7 两遍重生成：`036aed6fb07fafdb`（过渡态）→ **`0154eccb1392de85`**，
+  `--check OK`，包内记 `580 passed / 580 total`。
+
+### 27.7 待拍板（AI 不替决）
+
+简报 Q1–Q6 逐条给了选项与我方倾向（**假设**）+ 反证条件，此处只列结论索引：
+
+| 编号 | 问题 | 我方倾向（假设） |
+|---|---|---|
+| Q1 | `call_count` / `no_tool_calls` 口径 | **(c)** 保留探针，但把「投影丢 null」显式判数据不可信 → `unscored` |
+| Q2 | 第一层修在哪层 | **(a) + (c) 拆两步**，本轮先只做一步 |
+| Q3 | `status=error` 缺 `http_status` 怎么判 | **(a)** `unscored / trace_invalid`（Q12(b)） |
+| Q4 | B1 / B2 是否必须在归因层可区分 | **必须**，但判据要由人定（现 `observed.http_statuses` 已不同） |
+| Q5 | `status_error_without_http_status` 落到哪 | **(a)** 只进 `trace_audit.invalid_reasons`，R3 复用 `trace_invalid`，暂不扩 DTO |
+| Q6 | F3 与 F4/F5 边界（A2 的 `0.75`） | **留给 F4/F5**，按 P-E 序列 |
+
+**本轮按判据提外评（不是每轮固定收尾）**：§23.5 / `peer-brief-s3-3-6.md` §4.3 记档的触发条件
+明确包含「F3 归因分界」。本地裁判能证明现状会被放行，证明不了**应然该怎么定**；
+且 §27.3 的跨模块张力牵动 F1 刚落地的派生器口径，属本地覆盖不到的语义 / 契约盲区。
+包已备好（`docs/peer-brief-s3-3-7-f3.md`），**未向任何外部 AI 发送文件，发起权在人**。
+若人选择不发起，回「按你的想法来」＝ 按上表倾向落地，仍按「一小步 + 变异 + 两遍重生成评审包」推进。
+
+### 27.8 本轮状态与请人验证
+
+- `pytest tests/ -q`：**573 → 580 passed**（过渡态 `1 failed, 579 passed` 是测试数锁如实报红）。
+- `--fixture all` 五夹具 `0 / 0 / 0.25 / 0.5 / 1.0`；`--demo` 九行不变；`--check OK (0154eccb1392de85)`。
+- 完整路径单行命令与 §23.8 相同（本节不重复本机绝对路径）。可请人复核：
+  `pytest tests/ -q`、`pytest tests/test_trace_pipeline.py -q -k f3_td018`、
+  `python src/arena/review_packet.py --check`、`python src/arena/trace_pipeline.py --fixture all`。
+- `verify.bat` 一键脚本**本轮仍未实跑**（末尾 `pause` 需交互，沿用 §23 / §26 声明），本轮未动它。
+- HEAD 仍 `03cf8c9`，工作区 **36 项**改动全部**未 commit / 未 push**
+  （本轮新增 `docs/peer-brief-s3-3-7-f3.md` 一个文件；`git status --porcelain | wc -l` 实测 36，
+  §26.8 的 35 项是上轮基线）。临时变异 / 探针脚本跑完即删，`.redteam-tmp/` 仅剩既有 gitignore 文件。
+- **下一步**：等人对 Q1–Q6 拍板（或先发外评拿第二意见）；F3 修复落地前不开 F4/F5，判定语义保持不动。
+
+### 27.9 匿名扫描（分范围，跑完整裁判后复核）
+
+| 范围 | 结果 |
+|---|---|
+| 可外发 **34 文件**：对外包 / 交接文档 / 三份同侪简报 / DTO 与语义文档 / 任务 YAML / `src/arena/*.py` / `tests/test_*.py` / `fixtures/*.json` | 排除 `src/arena/review_packet.py:49` 的检测模式常量行（扫描器自指）后 **0 命中，CLEAN** |
+| 本轮新增 / 修改的可外发文本（`docs/peer-brief-s3-3-7-f3.md`、`HANDOFF.md` §27 摘要、`docs/peer-brief-s3-3-6.md` §4.3、`tests/test_trace_pipeline.py`） | 未引入真名 / 校名 / 昵称 / 本机绝对路径 / 任何凭据形态；新简报只写仓库相对路径 |
+| `docs/review-response-v1.md`（**内部处置记录、不外发**） | **不写无条件 CLEAN**：§27 实测昵称 0 / 用户名 0 / 绝对路径 0；历史正文里既有的 3 处昵称禁用词按 §17.7 不回改，§23.8 等处验证命令含本机用户名，均不外发 |
+
+最终复核：`580 passed` / `-k f3_td018` `7 passed, 126 deselected` / 五夹具 `0 / 0 / 0.25 / 0.5 / 1.0` / `--demo` 九行不变 / `--check OK (0154eccb1392de85)` / `.redteam-tmp/` 仅剩既有 gitignore 文件 / HEAD `03cf8c9` / 工作区 **36 项**全部未 commit 未 push。
+
+---
+
+## 28. round-26：F3 外评回件核证（2026-11-10）
+
+### 28.1 范围与纪律
+
+回件：`review-s3-3-7-f3.md`（同侪 AI，日期 2026-11-10，评审对象 `docs/peer-brief-s3-3-7-f3.md`）。
+按「核证 → 登记 → 处置 → 落仓 → 人拍板」处理；**本轮不落地任何 F3 代码改动**，
+三个产品源文件、五份夹具、任务 YAML、DTO schema、词表、7 条 F3 现状证据锁一字未动。
+回件自述「评审前后原仓 36 项、产品源码未改」属**待核证主张**：本地只能核证本轮前后
+`git status --porcelain | wc -l` 均为 36、基线数字一致，无法回看评审期间的磁盘状态。
+
+所有补丁验证在 `%TEMP%/f3-peer-*` 完整副本（含 `.git`）里做，跑完带权限修复清理，
+副本目录核证 `leftover: []`。原仓库全程只读。
+
+### 28.2 核证结论（逐项本地复现，不采信自述）
+
+| 核证项 | 本地实测 | 判定 |
+|---|---|---|
+| 基线 | `580 passed` / 局部 `133 passed` / `-k f3_td018` `7 passed, 126 deselected` / `--check OK (0154eccb1392de85)` / 五夹具 `0/0/0.25/0.5/1.0` | 与回件 §1 一致（耗时不同，非事实差异） |
+| 回件附录 A（13 场景） | 逐字复刻其脚本后全 13 行与 §2/§3 表**逐项吻合**：C1/C2/C5 的 R3 仍 `pass`（0.75）、C3/C7 仍 `fail`、C8/C9 现状与 B1 全等、B1/B2 遮掉 `observed.http_statuses` 后 `b1 == b2` 为 `True` | **成立** |
+| 回件附录 B（audit 同步副作用） | `ratio=0.5`、`by_state={'pass':2,'fail':0,'blocked':0,'unscored':3}`，R5/R3/R4 全 `unscored/trace_invalid` | **成立**，Q5(a)/(c) 不是「只加诊断字段」 |
+| 引用行号 / 枚举 | YAML `offset required: true`、`attribution` 口径；schema `$defs.traceInvalidReason` 6 值含 `status_error_without_http_status`；`assertions[].reason_code` 6 值不含它；`build_report()` 强制改写；`executor-semantics.md` §4；P-B 未知工具锁 | **成立** |
+| 产品补丁 §5.3 | 5 处字节级锚点逐处 `ANCHOR_COUNT=1`，全部替换成功 | **成立** |
+| 测试补丁 §5.4 | 7 条现状锁 → 15 条正向/边界锁，`-k f3_td018` **15 passed, 126 deselected** | **成立** |
+| 副本全量 | `588 passed`；评审包两遍重生成 `499dfd5d80edcdd1` → `cb0fe31598d7403c`，`--check OK`，包内记 `588 passed / 588 total`；五夹具分数序不变 | **成立**（`580 - 7 + 15 = 588`） |
+| 变异 §5.7 | M1 关闭歧义分支 **9 failed**、M2 回退 `http_status` 分支 **5 failed**、M3 `call_count` 回退 `len(offsets)` **1 failed**；逐组 `RESTORED=True`、`FINAL_RESTORED=True`、`MUTATION_VERDICT: PASS`，无 ERROR / TIMEOUT | 与回件逐字一致 |
+
+**两处如实留痕（订正 / 环境）**：
+
+1. **回件 §5.6 指纹写的是过渡态值**：它记 `packet-sha256 = 499dfd5d80edcdd1`
+   为「两遍重生成后的值」，本地实测那是 **PASS 1**，PASS 2 实际是 `cb0fe31598d7403c`。
+   回件已自注「维护者落地后的指纹以本地生成为准，不要照抄隔离副本的值」，故不影响结论，
+   但按磁盘事实订正。
+2. **首次副本全量 pytest 被环境 shim 拦截**：`sitecustomize.py:868 _exit_bulk_guard_control`
+   抛 `SystemExit: 1`，出现在连续启动第 4 个 Python 进程时；同一副本后续
+   `-k f3_td018` / `--fixture all` / M1–M3 / `--check` 全部正常，故判为**环境守卫偶发**，
+   不是产品失败。拆成独立 Bash 进程补跑后 `588 passed in 81.79s`。
+
+### 28.3 我方四处订正（含三处旧倾向被反例推翻）
+
+| 位置 | 原表述 / 倾向 | 核证后的订正 |
+|---|---|---|
+| §27.7 **Q1** | **(c)**「投影丢 null 即判数据不可信」 | 被 **C2 反例**推翻：`offset=0` 写 null 时重试对在 `offset=10`、证据完好，现状 `pass / 0.75`；一刀切会误伤。改为 **(a) 计数口径 + 限定版 (c)**：只在「失败步的匹配字段缺失/null 且该调用是失败步候选」时判 `unscored` |
+| §27.7 **Q2** | **(a) + (c) 拆两步**（`_validate_calls()` 补必填参数 / 派生器补） | 被 **C1/C5 反例**推翻：`limit=20` 越界、删 `offset=0` 的键时 R3 证据完好仍 `pass`；全局 schema / presence 检查会误判。改为 **(b) 加强版**：`evaluate()` 内 `_judge()` 之后做「失败步匹配字段」歧义检查，不碰 `_validate_calls()` 与 audit |
+| §27.7 **Q5** | **(a)** 只进 `trace_audit.invalid_reasons` + 复用 `trace_invalid` | 被**附录 B 实测**推翻：`schema_valid=false` 触发 `build_report()` 全局强制改写，R5/R3/R4 连带 `unscored`，B1 `ratio 0.75 → 0.5`。改为 **(d)**：专用原因码保留不产出，细节放 `observed.ambiguous_match`，audit 保持结构合规 |
+| §27.3 **跨模块张力** | 「F3 第二层判 `unscored` 时**必须**同时决定派生器要不要产出原因码，否则重新引入 F1 刚消解的自相矛盾」 | **判断不成立**：F1 消解的是「原始 audit 声明与 trace 事实冲突」（`call_count=999` 之类）；B1 的 audit 是派生的、结构合规，与 trace 事实无冲突。断言侧 `unscored/trace_invalid` 是**语义判据缺输入**，两者分层共存已有 P-B 先例（未知工具：R4 `unscored/trace_invalid` 而 audit `valid`），且 `executor-semantics.md` §4 明写「派生 `schema_valid` 时不得扫描断言结果里的 `trace_invalid`」。**仍成立的部分**：全局条件必填目前无执行者，已登记 TD-026 |
+
+Q3 / Q4 / Q6 我方倾向与回件一致（`(a)` 仅执行器层 / 必须可区分 / 留给 F4/F5），
+Q4 的最小判据由回件补齐：同一失败步上 `state` / `error_patterns` / `skill_gaps` 至少一项不同，
+`observed.*` 只是原始证据不算归因层可区分。
+
+### 28.4 新登记 TD（不修、只登记）
+
+- **TD-025（中）**：证据层 `observed.offsets` 仍丢 null（回件 §6.1）。A3 `[0,10,20]`、
+  C2 `[10,10,20]` 都比实际调用数短；补丁只修判定、不修投影形状。要连证据形状一起修，
+  须把 YAML probe 改成保 null 的对象投影，并调整 `offsets_equals` / `offsets_starts_with`
+  输入形状 —— 属另一契约步骤。
+- **TD-026（中）**：YAML `note` 声明的全局条件必填（`status=error ⇒ http_status`）**无执行者**
+  （回件 §6.2 / §4.3 残留边界）。补丁只覆盖「缺字段落在失败步候选调用上」；
+  与 R3 无关的 error 调用缺 `http_status` 不会被任何断言标记。要全局执行须：
+  ①写成机器可读的 `trace_requirements`（如 `required_when`）；②执行器与派生器共用一份实现
+  （同时解决 TD-024）；③接受 `schema_valid=false` 的连带 `unscored` 与分数变化（B1 `0.5`）。
+- **TD-027（低）**：`status_error_without_http_status` 是**有声明、无生产者**的死枚举
+  （回件 §6.3）。保留是 DTO 预留位；清理或启用须单开契约步骤，不在 F3 顺手改。
+- **TD-028（中）**：分数序倒置 **A1（4 次目标调用、参数全错）`0.5` < A2（一次目标工具都没调）`0.75`**，
+  补丁前后都存在（回件 §6.4）。与 TD-013 同属「R4 空集 / 无关集平凡 pass + 固定分母」，
+  应作 **F5 验收用例**，不在 F3 改评分。
+- **TD-029（低）**：C3（无 error 调用、null success）仍分类为 `retry_wrong_params`
+  而非 `no_retry`（回件 §6.5），属 Q10-A / TD-001 分类词表口径；F3 只保证它不被误判成 `unscored`。
+
+**保持既有**：TD-012（`0.5`）、TD-013（`0.75`）、TD-018/019/020、TD-021 已销、
+TD-022（选 R1 不触发）、TD-024（派生器重复实现 + 兼容入口旁路）。**TD-016 / TD-023 已销项**。
+
+### 28.5 处置（本轮不落地代码）
+
+- 产品源码 / 夹具 / 任务 YAML / DTO schema / 词表 / 7 条 F3 现状证据锁：**全部不动**。
+  7 条锁仍断言现状；F3 拍板落地时按 TD-008 / F1 惯例**反转成正向锁、函数不删除**。
+- 回件补丁**未应用**到原仓库，只在隔离副本验证过；副本与临时脚本已删净。
+- **本轮不再提外评**：第二真相源已由这份回件提供，副本核证覆盖了实现面（补丁、测试、
+  变异、评审包），剩下是契约应然 choice（D1–D6），属人拍板而非新的语义 / 契约盲区。
+  上一轮授权的只读清单本轮**未启用**，也未向任何外部 AI 发送文件。
+
+### 28.6 待拍板（AI 不替决）
+
+| 编号 | 决策 | 我方倾向（**假设**，附反证条件） |
+|---|---|---|
+| **D1** | Q1 = (a) + 限定版 (c) | **接受**。`call_count` 改目标工具调用条数，C7 从 `case:no_tool_calls` 变 `case:fault_point_not_reached` 保留「没调」vs「调了没碰故障点」的区分。**反证条件**：若生产 trace 允许目标工具无 `offset`（如 cursor 分页），限定版 (c) 会误拒合法提交；本任务 YAML `offset required: true`，本任务内不成立，换任务须重查 |
+| **D2** | Q3 = (a) 仅执行器层，audit 不同步 | **接受**。附录 B 实测同步会把 B1 `0.75 → 0.5` 且连带 R4/R5 unscored；P-B 已确立分层先例 |
+| **D3** | Q5 维持 (d)，专用码保留不产出 | **接受**。不扩 `reason_code` 枚举、不改 DTO |
+| **D4** | Q6 边界维持，A2 的 `0.75` 留 F4/F5 | **接受**。按 P-E 序列，F3 不碰评分分母 / R4 适用域 |
+| **D5** | 单开「投影保 null + 证据形状」步骤 | **建议开，但排在 P-E 序列之后**（F4/F5 → F9 → 契约清理），不塞进 F3；登记 TD-025 |
+| **D6** | 单开「YAML 条件必填 + 结构层」步骤 | **建议开，同上**；须同时解决 TD-024 并接受分数变化；登记 TD-026 |
+| **P-F3-1（新）** | 落地是否按回件 §5.2 拆 **P1**（Q1 第一层：`i` 投影 / `_judge` 返回值 / `params_match` 分支 / `call_count` 口径）与 **P2**（Q3 第二层：`http_status` 分支，约 8 行） | **建议拆两步**，每步独立「变异 + 两遍重生成评审包」，符合一次只做一个可独立验证最小单元的纪律 |
+
+回「按你的想法来」＝ D1–D4 全接受、D5/D6 单开步骤但排在 P-E 序列之后、
+P-F3-1 分 P1/P2 两步落地。**F3 修复落地前不开 F4/F5。**
+
+### 28.7 状态与请人验证
+
+本轮**无新增测试、无判定语义改动**，故评审包不需要重生成；落仓后复核 `--check` 仍应
+`OK (0154eccb1392de85)`。可请人复核（仓库根，用隔离 venv 的 Python）：
+`pytest tests/ -q`、`pytest tests/test_trace_pipeline.py -q -k f3_td018`、
+`python src/arena/review_packet.py --check`、`python src/arena/trace_pipeline.py --fixture all`。
+`verify.bat` 一键脚本**本轮仍未实跑**（末尾 `pause` 需交互，沿用 §23 / §26 / §27 声明）。
+HEAD 仍 `03cf8c9`，工作区 **36 项**改动全部**未 commit / 未 push**（本轮无新增文件）。
+
+### 28.8 匿名扫描（分范围，跑完整裁判后复核）
+
+| 范围 | 结果 |
+|---|---|
+| 可外发文件（对外包 / 交接文档 / 三份同侪简报 / DTO 与语义文档 / 任务 YAML / `src/arena/*.py` / `tests/test_*.py` / `fixtures/*.json`） | 排除 `src/arena/review_packet.py:49` 检测模式常量行（扫描器自指）后 **0 命中，CLEAN** |
+| 本轮新增 / 修改的可外发文本（§28 索引、`docs/peer-brief-s3-3-7-f3.md` 头部、`docs/peer-brief-s3-3-6.md` §4.3） | 未引入真名 / 校名 / 昵称 / 本机绝对路径 / 凭据形态；只写仓库相对路径 |
+| `docs/review-response-v1.md`（**内部处置记录、不外发**） | **不写无条件 CLEAN**：§28 实测昵称 0 / 用户名 0 / 绝对路径 0；历史正文里既有的 3 处昵称禁用词按 §17.7 不回改，§23.8 等处验证命令含本机用户名，均不外发 |
+
+---
+
+## 29. round-27：F3-P1 落地（2026-11-10）
+
+### 29.1 拍板与范围
+
+人回「按你的想法来」＝按 §28.6 的倾向全部拍板：**D1–D4 接受；D5 / D6 单开步骤但排在
+P-E 序列之后（F4/F5 → F9 → 契约清理）；P-F3-1 拆 P1 / P2 两步**。**本轮只做 P1**，
+P2（`http_status` 缺失/null 分支，约 8 行）**未落地**；**F3 修复落地前不开 F4/F5**。
+
+| 决策 | 落地口径 |
+|---|---|
+| D1 | `call_count` 改数目标工具的调用条数；失败步所需 `params_match` 字段缺失/null 判 `unscored/trace_invalid`（限定版 (c)：只看最后命中之后、同名同 status 的候选调用） |
+| D2 | 仅执行器层，`trace_audit` 不补原因码、不置 `schema_valid=false`（分层共存，§4 先例 P-B） |
+| D3 | `status_error_without_http_status` 仍为保留枚举、无生产者；复用 `trace_invalid`，不扩 DTO |
+| D4 | 不碰评分分母 / R4 适用域；A2 的 `0.75` 留 F4/F5 |
+
+**明确未改**：`tasks/*.yaml`、五份夹具、`diagnosis-report.schema.json`、词表、
+`trace_pipeline.py`、F1 的 `_derive_trace_audit()`、`_validate_calls()`、评分口径。
+补丁参照回件 §5.2/§5.3，但**不把隔离副本的实测结论当成本仓证据**，全部在本仓重跑。
+
+### 29.2 改动清单
+
+| 文件 | 改动 | 完成判据 |
+|---|---|---|
+| `src/arena/assertion_evaluator.py` | ① `_filter_expr()` 投影补 `i: call_index`；② `_judge()` 改返回四元组（含 `last_matched`）；③ 新增 `_ambiguous_step()`（**仅 `params_match` 分支**）；④ `evaluate()` 在 `passed` 之后、分类之前接入歧义检查；⑤ `call_count` 改目标工具调用条数 + 注释口径同步 | 失败步缺字段 → `unscored/trace_invalid` 且 `error_patterns=[]`；无关字段缺陷仍 `pass`；零有效 offset 不等于零目标调用 |
+| `tests/test_trace_pipeline.py` | ① 三条现状锁**反转**成正向锁（保留 `test_f3_td018_` 前缀，沿用 TD-008 / F1「反转不删除」惯例）；② 四条 `http_status` 锁**仍断言现状**，docstring 标【P2 待反转/待补强】；③ 新增 8 条边界锁（C1/C2/C3/C4/C5/C7/C8 + `after` 过滤反例） | `-k f3_td018` 收集 15 条且全过；四条 P2 预期红灯仍在 |
+
+### 29.3 分步验证（写→验→报，不跳步）
+
+| 阶段 | 实测 | 说明 |
+|---|---|---|
+| 落地前基线 | `-k f3_td018` `7 passed, 126 deselected` | 与 §28 一致 |
+| 只改产品代码后（局部） | **`2 failed, 5 passed`** | 真实红灯：`all_param_hallucination` 从 `fail` 变 `unscored`、`partial_hallucination` 的 `classification_source` 消失；② 四条仍 `passed`，证明 P1 没越过边界 |
+| 只改产品代码后（全量） | **`2 failed, 578 passed`** | 其余 578 条锁不受 `i` 投影 / 四元组 / `call_count` 影响；也说明旧锁不足以约束新语义 |
+| 反转 + 7 条新锁后（局部） | `14 passed` | — |
+| 反转 + 7 条新锁后（全量） | **`1 failed, 586 passed`** | 唯一红灯 `test_review_packet.py::test_test_count_matches_repo`：包里仍记 580、实际 587，即 **Q7 要求的测试数锁过渡态** |
+| 补第 15 条锁后（局部） | `15 passed, 126 deselected` | — |
+| 最终全量 | **`588 passed in 80.04s`** | `580 - 7 + 15 = 588` |
+
+**为什么要补第 15 条**：首轮变异的 M3（去掉 `after` 过滤）得到 `14 passed`，
+即 **NOT-DETECTED**——这不是产品失败，是**真实的覆盖率缺口**：新加的「只看最后命中
+之后的候选」没有任何测试约束。按「测试通过不算证据」的纪律，未检出不能算通过；
+补 `test_f3_td018_after_filter_targets_only_candidates_after_last_match`（更早的同名
+success 调用也缺字段时，归因仍须指向失败步候选）后 M3 才 `1 failed`。
+另如实留痕：**M3 首次脚本锚点 `ANCHOR_COUNT=0`**（脚本字节写法失配，非产品问题），
+改成单行唯一锚点后补跑，不把跳过当通过。
+
+### 29.4 变异裁判（4 组真变异 + 1 组负对照）
+
+在产品文件上做字节级替换、跑 `-k f3_td018`、逐组还原并校验字节相等：
+
+| 组 | 动作 | 结果 | 失败用例 | `RESTORED` |
+|---|---|---|---|---|
+| 负对照 | 不改 | `15 passed` | — | — |
+| M1 | 关闭歧义分支（`if False and ambiguity`） | `5 failed, 10 passed` | ① 两条 + C4 + C8 + `after` 反例 | `True` |
+| M2 | `call_count` 回退 `len(offsets)` | `1 failed, 14 passed` | `zero_valid_offsets_are_not_zero_target_calls` | `True` |
+| M3 | 去掉 `after` 过滤 | `1 failed, 14 passed` | `after_filter_targets_only_candidates_after_last_match` | `True` |
+| M4 | 去掉显式 `null` 判定 | `1 failed, 14 passed` | `explicit_null_offset_on_failed_step_is_unscored` | `True` |
+
+`FINAL_RESTORED=True`、`MUTATION_VERDICT: PASS`；四组均为真 `FAILED`，
+无 `ERROR` / `TIMEOUT`。M2 说明 Q1(a) 的计数口径是可观测、可锁的，不是注释改动。
+
+### 29.5 其它基线与评审包两遍重生成
+
+| 裁判 | 结果 |
+|---|---|
+| `trace_pipeline.py --fixture all` | `0.0 / 0.0 / 0.25 / 0.5 / 1.0`，与基线逐项一致 |
+| `assertion_evaluator.py --demo` | 九行不变（含「零调用」仍 `case:no_tool_calls`、「只拉首页」仍 `case:fault_point_not_reached`） |
+| 重生成前 `--check` | `STALE`，5 行差异，首行 `580 → 588 个用例被收集` |
+| PASS 1 | `packet-sha256 = 499dfd5d80edcdd1`（过渡态，记录 `1 failed, 587 passed`） |
+| PASS 2 | `packet-sha256 = cb0fe31598d7403c`（稳定态，记录 `588 passed / 588 total`） |
+| 重生成后 `--check` | `OK: 评审包内容与仓库一致（cb0fe31598d7403c）` |
+
+**核证：两个指纹与 §28.2 的隔离副本完全相同，不是巧合也不是异常。** 依据
+`src/arena/review_packet.py::_snapshot()`（L144–159）：快照只含锚点 sha / 提交列表 /
+用例数 / 实测结果行，评分表、任务结构、依赖从工作区现算，**不含产品源码字节**；
+两处最终都是 `588 passed`、用例数 588、锚点同为 `03cf8c9`，故正文逐字相同。
+**由此得到一条既有边界（如实记录，不擅自扩范围）**：`--check OK` 不等于「产品源码
+字节未漂移」，它只保证包内印刷的现算项与当前工作区一致。若要堵，须单开契约步骤
+让快照纳入源码指纹；本轮未改生成器、未登记新 TD，是否处置由人定。
+
+### 29.6 口径变化与 TD 处置
+
+- **TD-018 不销项**：① 层（`call_count` 谎报零调用 / 投影丢 null 被记成能力失败）已修；
+  ② 层（`status=error` 缺 `http_status` 仍判 `fail/default`、与写错值不可区分）**仍在**，
+  四条现状锁就是 P2 的预期红灯。
+- **TD-025 / 026 / 027 / 028 / 029 全部保持**：证据层投影仍丢 null（A3 `[0,10,20]`、
+  C2 `[10,10,20]` 已入锁）；YAML 条件必填仍无全局执行者；专用原因码仍无生产者；
+  A1 `0.5` < A2 `0.75` 的分数序倒置留 F5；C3 分类口径属 Q10-A / TD-001。
+- **D5 / D6 未开**：按拍板排在 F4/F5 → F9 之后；D6 须同时解决 TD-024 并接受 B1 `0.5` 的分数变化。
+- 保持：TD-012/013/019/020/022/024；TD-016/021/023 已销。
+
+### 29.7 本轮状态与请人验证
+
+HEAD 仍 `03cf8c9`；工作区 **36 项**改动**全部未 commit / 未 push**，本轮无新增文件。
+`verify.bat` 一键脚本**仍未实跑**（末尾 `pause` 需交互，沿用 §23/§26/§27/§28 声明）。
+
+请人在本机侧复核（仓库根，隔离 venv 的 Python，完整路径）：
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k f3_td018
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/assertion_evaluator.py --demo
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期：`588 passed` / `15 passed, 126 deselected` / `0.0 0.0 0.25 0.5 1.0` / 九行不变 /
+`OK (cb0fe31598d7403c)`。上述命令含本机用户名，**只在本机侧使用，不外发**。
+
+**下一步（等人确认后再动）**：P2 —— 在 `_ambiguous_step()` 补 `http_status` 缺失/null
+分支（约 8 行），反转 ② 四条现状锁，补 C9 与「B1/B2 归因层可区分」锁，再独立跑一轮
+变异 + 两遍重生成。P2 完成后 F3 才算销项，才按 P-E 序列推进 F4/F5。
+
+### 29.8 匿名扫描（分范围）
+
+| 范围 | 结果 |
+|---|---|
+| 本轮改动的可外发文本（`assertion_evaluator.py` / `tests/test_trace_pipeline.py` / 两份简报头部 / `HANDOFF.md` 索引） | 未引入真名 / 校名 / 昵称 / 本机绝对路径 / 凭据形态；新增注释与 docstring 只写仓库相对概念 |
+| `docs/review-response-v1.md`（**内部处置记录、不外发**） | **不写无条件 CLEAN**：§29.7 验证命令含本机用户名，按 §17.7 不回改；本轮新增正文实测昵称 0 / 用户名 0（除该命令块）/ 绝对路径 0 |
+| `docs/review-packet.md`（生成物，可外发） | 由生成器匿名守卫把关，PASS 2 写入成功即守卫通过 |
+
+**订正（更宽口径扫出一处既有污染，如实留痕）**：本轮额外按「全部 `docs/*.md` +
+`src/arena/*.py` + `tests/test_*.py` + `fixtures/*.json` + `tasks/*.yaml` + `HANDOFF.md`」
+扫了 36 个可外发文件，**命中 1 处**：`docs/data-model.md:3` 的状态行含昵称
+（`v0.1（2026-11-06 维护者 拍板扩编至 7 实体…）`）。核证：
+`git ls-files docs/data-model.md` 显示该文件已被跟踪，`git show HEAD:docs/data-model.md`
+第 3 行同样含该词 —— **属 HEAD 里就有的历史污染，不是本轮引入**，按 §28.8 的
+可外发清单（不含 `data-model.md`）仍是 0 命中 CLEAN；本轮新增/修改的可外发文本 0 命中。
+
+**影响与判据（供人决定，本轮不擅自改）**：该文件是已提交的设计文档，若被并入盲审材料
+或对外包会破坏匿名；生成器 `FORBIDDEN` 守卫只扫**生成内容**，不会拦已提交源文件里的昵称。
+建议单开一步：把状态行改成「维护者拍板」类中性表述，再用同一词表全仓重扫至 0 命中。
+本轮按小步纪律不塞进 P1，也不擅自回改历史正文；**未登记新 TD**，处置与否由人拍板。
+
+---
+
+## 30. round-28：F3-P2 落地、F3 判定层闭合（2026-11-10）
+
+### 30.1 范围与前提
+
+人回「继续吧」＝按 §29.7 推进 **P2**（Q3 第二层）。落地前先核前提，不把它当假设：
+`tasks/dbg-001-order-report.yaml` 的 `rubric_credit[1].expected.calls` 实测为
+`[{"name":"fetch_orders","params_match":{"offset":10},"status":"error","http_status":500},
+{"name":"fetch_orders","params_match":{"offset":10},"status":"success"}]` ——
+**失败步明写 `http_status: 500`、成功步未声明**，因此「该步声明的 `http_status` 缺失」
+是可判定条件，分支从 YAML 派生而非硬编码。
+
+本轮只做 P2，**不碰** YAML / 五夹具 / DTO schema / 词表 / `trace_pipeline.py` /
+F1 派生器 / 评分分母 / R4 适用域；D5 / D6 仍按拍板排在 P-E 序列之后。
+
+### 30.2 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `src/arena/assertion_evaluator.py` | ① `_ambiguous_step()` 在 status 过滤后补 5 行 `http_status` 分支：该步声明了非空 `http_status` 时，候选调用缺/null 即返回原因；**值写错则 `continue`（仍按能力失败归因）**；② docstring 补第二层语义与「值写错不构成歧义」；③ `evaluate()` 注释从「第一层」改为两层通用口径 |
+| `tests/test_trace_pipeline.py` | ② 四条现状锁**全部反转**（函数名改到名实相符，保留 `test_f3_td018_` 前缀）：B1 `unscored/trace_invalid`、B1/B2 归因层可区分、audit 保持结构合规、专用原因码仍保留且 R3 复用 `trace_invalid`；补 `_f3_null_error_http_status` helper 与 C9 显式 null 锁；**保留 P1 的 `after` 反例锁**。`-k f3_td018` 共 **16 条** |
+
+### 30.3 分步验证（写→验→报）
+
+| 阶段 | 实测 |
+|---|---|
+| 落地前基线 | `-k f3_td018` `15 passed`；`git status --short \| wc -l` = 36 |
+| 只改产品代码后（局部） | **`2 failed, 13 passed`** —— 被推翻的正是 ② 两条断言现状的锁：B1 从 `fail` 变 `unscored`、B1/B2 遮掉 `http_statuses` 后不再相等；另两条只断言 audit 结构 / 枚举仍绿，故需**补强**而非只反转 |
+| 反转 + 补 C9 后（局部） | `16 passed, 126 deselected` |
+| 反转 + 补 C9 后（全量） | **`1 failed, 588 passed`** —— 唯一红灯 `test_review_packet.py::test_test_count_matches_repo`（包里 588、实际 589），Q7 过渡态 |
+| 五夹具 / `--demo` | `0.0 / 0.0 / 0.25 / 0.5 / 1.0` 不变；九行不变 |
+| 最终全量 | **`589 passed in 85.40s`**（`588 + 1`） |
+
+### 30.4 变异裁判（5 组真变异 + 1 组负对照）
+
+| 组 | 动作 | 结果 | `RESTORED` |
+|---|---|---|---|
+| 负对照 | 不改 | `16 passed` | — |
+| N1 | 关闭整个歧义分支 | `10 failed, 6 passed`（两层共 10 条正向锁） | `True` |
+| N2 | 关闭 `http_status` 分支 | `5 failed, 11 passed`（B1 / 可区分 / audit / 专用码 / C9） | `True` |
+| N3 | `call_count` 回退 `len(offsets)`（P1 回归） | `1 failed, 15 passed` | `True` |
+| N4 | 去掉 `after` 过滤（P1 回归） | `1 failed, 15 passed` | `True` |
+| N5 | 去掉显式 null 判定（P1 回归） | `1 failed, 15 passed` | `True` |
+
+五组锚点各 `ANCHOR_COUNT=1`，均为真 `FAILED`、无 `ERROR` / `TIMEOUT`，
+`FINAL_RESTORED=True`、`MUTATION_VERDICT: PASS`。N2 的 5 条与回件 §5.7 的 M2 逐条一致；
+**N1 是 10 条而非回件的 9 条**——因为本仓保留了 P1 为修 M3 NOT-DETECTED 而补的
+`after` 反例锁（见 §29.3），比隔离副本多 1 条。这是**预期的、可解释的偏差**，不是回归。
+
+### 30.5 评审包两遍重生成与口径自洽验证
+
+| 步骤 | 结果 |
+|---|---|
+| 重生成前 `--check` | `STALE`，首行 `588 → 589 个用例被收集` |
+| PASS 1 | `packet-sha256 = cb175ee542ce28cf`，**如实记录过渡态** `1 failed, 588 passed / 589 total` |
+| PASS 2 | `packet-sha256 = 1a33526b6dc574e1`，记录 `589 passed / 589 total` |
+| 重生成后 `--check` | `OK: 评审包内容与仓库一致（1a33526b6dc574e1）` |
+
+**上一轮的解释被本轮实测验证**：§29.5 说 `_snapshot()` 不含产品源码字节、只现算
+用例数 / 实测行 / 评分表 / 任务结构，故「用例数或实测结果一变，指纹就该变」。
+本轮用例数 588 → 589、实测行 `588 passed` → `589 passed`，指纹从
+`cb0fe31598d7403c` 变为 `1a33526b6dc574e1` —— 与解释一致。
+（`--check OK` ≠ 源码字节未漂移 这条既有边界仍成立，未改生成器。）
+
+### 30.6 TD 处置（如实留痕）
+
+- **TD-018 销项**：① 层（`call_count` 谎报零调用 / 投影丢 null 被记成能力不足）与
+  ② 层（`status=error` 缺 `http_status` 判 `fail/default`、与写错值不可区分）**均已修**，
+  七条现状锁全部反转为正向锁，两层各有变异裁判覆盖。
+- **残留不并入 TD-018，各自保留**：**TD-025**（`observed.offsets` 仍丢 null，证据形状）、
+  **TD-026**（YAML 条件必填仍无全局执行者；与 R3 无关的 error 调用缺 `http_status`
+  不会被任何断言标记，须与 TD-024 一起解决并接受 B1 `0.5` 的分数变化）、
+  **TD-027**（`status_error_without_http_status` 仍是有声明、无生产者的死枚举）、
+  **TD-028**（A1 `0.5` < A2 `0.75` 分数序倒置，F5 验收项）、**TD-029**（C3 分类词表口径）。
+- 保持：TD-012/013/019/020/022/024；TD-016/021/023 已销。
+- **D5 / D6 仍未开**：按 §28.6 拍板排在 P-E 序列（F4/F5 → F9）之后。
+- **F3 判定层已闭合，但 F4/F5 未开工**：本轮按小步纪律到 P2 为止，下一步范围由人定。
+
+### 30.7 状态与请人验证
+
+HEAD 仍 `03cf8c9`；工作区 **36 项**改动**全部未 commit / 未 push**，本轮无新增文件。
+`verify.bat` 一键脚本**仍未实跑**（末尾 `pause` 需交互）。
+
+请人在本机侧复核（仓库根，隔离 venv 的 Python，完整路径）：
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k f3_td018
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/assertion_evaluator.py --demo
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期：`589 passed` / `16 passed, 126 deselected` / `0.0 0.0 0.25 0.5 1.0` / 九行不变 /
+`OK (1a33526b6dc574e1)`。上述命令含本机用户名，**只在本机侧使用，不外发**。
+
+**下一步待定（AI 不替决）**：按 P-E 序列是 **F4 / F5** —— F4「未知工具屏蔽违规」、
+F5「空集 pass 计入掌握度」（含 TD-028 的分数序倒置验收）。建议先做只读复现 + 证据锁，
+再定修复范围；是否先清理 §29.8 记录的 `docs/data-model.md:3` 历史昵称污染，也请人一并定。
+
+### 30.8 匿名扫描（分范围）
+
+| 范围 | 结果 |
+|---|---|
+| 本轮新增 / 修改的可外发文本（产品源码 / 测试 / 两份简报头部 / `HANDOFF.md`） | 未引入真名 / 校名 / 昵称 / 本机绝对路径 / 凭据形态 |
+| 按 §28.8 可外发清单（排除 `data-model.md` 与内部处置记录） | `0` 命中，CLEAN |
+| 更宽口径（全部 `docs/*.md` 等） | **仍有 1 处**：`docs/data-model.md:3` 的历史昵称（HEAD 里就有，见 §29.8 订正），本轮**未改、未擅自扩范围**，处置由人拍板 |
+| `docs/review-response-v1.md`（**内部处置记录、不外发**） | **不写无条件 CLEAN**：§30.7 验证命令含本机用户名，按 §17.7 不回改 |
+
+---
+
+## 31. round-29：昵称清理 + F4/F5 只读复现与证据锁、「什么算通过」决策包（2026-11-10）
+
+### 31.1 范围与前提
+
+人已确认 P2（「可以的，我觉得没问题」）并授权按建议推进（「按照你的想法继续」）：
+① 清理 `docs/data-model.md:3` 历史昵称；② F4/F5 只读复现 + 证据锁 + 把
+「什么算通过」定死再谈修复。**本轮不动任何产品判定代码**（`src/` 零改动），
+F4/F5 修复落地等拍板。前提核验：YAML `attribution.pass.counts_toward_mastery=true`、
+credit 权重 R2=2 / R3=1 / R4=1（总 4）为磁盘实测，非假设。
+
+### 31.2 历史昵称清理（已批准的小步）
+
+`docs/data-model.md:3` 状态行「历史昵称 拍板」→「维护者拍板」，仅此一处。
+改后宽口径匿名重扫（全部 `docs/*.md` + schema + src + tests + fixtures + tasks +
+HANDOFF/README，排除内部处置记录与 `review_packet.py:49` 检测常量行）：
+**36 文件 / 0 命中 / CLEAN**（改前为 1 命中）。§28.8 / §29.8 / §30.8 的
+「宽口径 1 处已知污染」至此清零，可外发清单口径不变。
+
+### 31.3 F4/F5 只读复现（六场景，探针跑完即删、零落盘）
+
+F4 = TD-019a「未知工具名屏蔽已观测违规」；F5 = TD-019b「R4 空集 pass 计入掌握度」。
+
+| # | 场景 | 实测结果 | 判读 |
+|---|---|---|---|
+| F4-S1 | `fetch_orders(offset=0, limit=99)` 单独 | `fail / param_out_of_range`，`violations=[out_of_range/limit]` | 对照基线：违规可见（应然） |
+| F4-S2 | 同上 + `imaginary_tool` | `unscored / trace_invalid`，`observed` **只剩** `unknown_tools` | **缺陷复现**：`out_of_range` 从证据里消失（L1199-1202 短路丢弃 `violations`） |
+| F4-S3 | 仅 `imaginary_tool` | `unscored / trace_invalid`，`observed=unknown_tools` | P-B 基线（修复后必须仍成立） |
+| F5-S1 | 空集（零调用） | `pass`，`checked_calls=0`，`violations=[]` | **缺陷复现**：空集平凡真 |
+| F5-S2 | A1/A2/A0 全链路 | A1（4 次 fetch_orders 参数全错+write）`0.5`；A2（仅 write_report）`0.75`；**A0（零调用）`0.75`** | TD-028 倒置复现，且**新证据**：A0 与 A2 同分、高于 A1——「什么都不干」拿 0.75 |
+| F5-S3 | 归因策略 | `attribution_policy.pass.counts_toward_mastery=true`；A0 `credit_pass_weight=3`（R2(2)+R4 空集 pass(1)） | 空集 pass 拿满 R4 权重且计入掌握度 |
+
+五夹具现状（防波及面）：`raw-empty` 正是 F5 空集场景（`R4=pass/checked_calls=0`、
+`credit_pass_weight=1`、ratio `0.0` 全靠 gate 拦）；`raw-no-file`/`raw-fake-retry`
+`checked_calls=4`、`raw-perfect=5`、`raw-no-trace` 已 `unscored`。分数序
+`0/0/0.25/0.5/1.0` 现状不变。
+
+### 31.4 证据锁（7 条现状锁，`tests/test_trace_pipeline.py` 新增 F4/F5 节）
+
+| 锁 | 钉住的现状 | 性质 |
+|---|---|---|
+| `test_f4_td019a_violation_visible_without_unknown_tool` | S1 违规可见 | 对照基线（应然，修复后不得变） |
+| `test_f4_td019a_unknown_tool_masks_observed_violation` | S2 `observed` 键集恰为 `[unknown_tools]` | **现状锁，待反转** |
+| `test_f4_td019a_unknown_tool_alone_is_unscored` | S3 P-B 口径 | 边界锁（修复后必须仍成立） |
+| `test_f5_td019b_zero_calls_is_vacuous_pass` | S1 空集 pass | **现状锁，待反转** |
+| `test_f5_td019b_vacuous_pass_counts_toward_mastery_and_weight` | `counts_toward_mastery=true` + `credit_pass_weight=3` | **现状锁，待反转** |
+| `test_f5_td019b_score_inversion_a1_below_a2` | A1 `0.5` < A2 `0.75` | **现状锁（TD-028），待反转** |
+| `test_f5_td019b_zero_calls_also_scores_075` | A0 `0.75`（新证据） | **现状锁，待反转** |
+
+命名沿用 `test_f3_td018_` 前缀惯例（`test_f4_td019a_` / `test_f5_td019b_`），
+修复落地时按 TD-008 / F1 / F3 惯例**反转成正向锁、函数不删除**。
+`-k "f4_td019a or f5_td019b"`：**7 passed**。
+
+### 31.5 「什么算通过」决策包（待人拍板，AI 不替决）
+
+**F4（未知工具屏蔽违规）——二选一：**
+
+| 选项 | 内容 | 通过判据 | 代价 |
+|---|---|---|---|
+| **F4-A 证据解蔽**（最小） | 状态保持 `unscored/trace_invalid`，但 `observed` 同时含 `violations` + `unknown_tools` + `checked_calls` | S2 的 `out_of_range` 可见；S1/S3 不变；五夹具分数序不变 | 评分/归因层屏蔽依旧——已观测能力失败仍不计分不产 pattern |
+| **F4-B 能判的判**（建议） | 已知工具有 `violations` → 按违规判 `fail`（分类照旧），`unknown_tools` 降为 evidence 注记；**仅当违规为空且有未知工具**才 `unscored/trace_invalid` | S2 → `fail/param_out_of_range`（或按违规分类）且 `unknown_tools` 在 evidence；S1 不变；S3 仍 `unscored`（P-B 在「无已观测违规」边界内保持）；五夹具分数序不变 | **细化 P-B**（§20.2 C 项「未知工具→unscored」不再无条件成立），须人明确拍板 |
+
+**F5（空集 pass 计入掌握度）——按范围二选一（可拆两步）：**
+
+| 选项 | 内容 | 通过判据 | 代价 |
+|---|---|---|---|
+| **F5-A 只修空集**（小步） | `checked_calls=0` → `unscored`（新语义「无受检调用」，reason_code 待定：新码进 DTO 枚举走 TD-008 惯例，或复用现有码） | 空集不再 pass；A0 `0.75→0.5`；`raw-empty` 的 R4 `pass→unscored`（ratio 仍 0.0 不动，`credit_pass_weight 1→0`，既有锁按惯例反转）；五夹具分数序 `0/0/0.25/0.5/1.0` 不变 | **TD-028 不能销**：A2（无关集，`checked_calls=1`）仍 0.75 > A1 0.5 |
+| **F5-B 空集+无关集**（建议，销 TD-028） | 在 A 之上：R4 的 `pass` 须有「目标技能相关工具」的受检调用支撑；无关集（只调 `write_report` 等）→ `unscored`；相关调用的违规照判 `fail` | A0 与 A2 均 `0.75→0.5` → **TD-028 倒置消失**（A1 0.5 ≥ A2 0.5）；空集判据同 A；五夹具分数序不变（`raw-no-file`/`raw-fake-retry` 须实测含 `fetch_orders` 调用才不受波及） | 须定「相关工具」口径（从 `schema_ref` 推导还是 spec 显式声明 `target_tools`），动判定语义 |
+
+**我的建议**：F4-B + F5-B，但**拆成两个小步**（F4 先、F5 后），每步独立变异 + 两遍重生成；
+若想再小步，F5 可先 A 后 B（B 作 TD-028 验收步）。推荐 B 的理据：与 F3-P1 同构——
+「判据缺输入只挡缺输入的那部分判断，不屏蔽已观测事实」；A 只把证据找回来，
+评分层的屏蔽（F4）/ 白拿分（F5）仍在。
+
+**是否需要外部评审**：本轮触及两处**判据歧义**——F4-B 对已拍板 P-B 的细化边界、
+F5-B「相关工具」口径——正是 §22.8 点名 F4/F5 可启用外评的语义盲区（发起权在人）。
+如需第二意见，建议就本节选项表发一轮小外评（只读，复用 f3 简报骨架）；不需要则直接拍板。
+
+### 31.6 验证与指纹
+
+| 项 | 实测 |
+|---|---|
+| 全量 | **596 passed**（新增 7 条证据锁） |
+| 局部 | `-k "f4_td019a or f5_td019b"` **7 passed** |
+| 评审包 | 两遍重生成 `421b64b3f5d4fa7e`（过渡态如实记 `1 failed, 595 passed`）→ `af7120667a528568`（`596 passed / 596 total`），`--check OK (af7120667a528568)` |
+| 五夹具 | `0/0/0.25/0.5/1.0` 不变（本轮未动判定链） |
+| 匿名 | 宽口径 36 文件 **0 命中 CLEAN**（§31.2） |
+| 工作区 | HEAD `03cf8c9`；**37 项**未 commit / 未 push（`data-model.md` 因本轮昵称清理**首次进入改动集**，此前 36 项；另含 `test_trace_pipeline.py`、`review-packet.md` 生成物等） |
+
+### 31.7 状态与下一步
+
+- **TD-019a / TD-019b 维持未销**（仅复现 + 钉锁）；TD-028 维持，作 F5 验收用例。
+- F3 判定层已闭合（round-27/28）；F4/F5 修复落地等 §31.5 拍板；F9、D5/D6 未动。
+- `test_zero_calls_is_vacuously_true_by_design`（`test_param_schema.py`）与
+  `test_unknown_tool_name_is_unscored_by_assumption` 是既有设计锁，F4/F5 修复时
+  同步核对是否需按惯例反转，不删除。
+
+请人在本机侧复核（仓库根，隔离 venv 的 Python，完整路径）：
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k "f4_td019a or f5_td019b"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期：`596 passed` / `7 passed, 142 deselected` / `0.0 0.0 0.25 0.5 1.0` /
+`OK (af7120667a528568)`。上述命令含本机用户名，**只在本机侧使用，不外发**。
+
+---
+
+## 32. round-31：F4/F5 外评回件核证与决策（2026-11-10）
+
+### 32.1 范围
+
+人将同侪回件 `review-s3-3-7-f4-f5.md` 转回。按核证 → 登记 → 处置 → 落仓 → 人拍板
+处理。回件高质量：格式符合要求、五项回答均附验证方式、两段 diff 可机械抽取。
+**本轮不在原仓落地补丁**，等拍板后按回件 §7.3 的两步顺序推进。
+
+### 32.2 事实核证（全部本地复现，不采信自述）
+
+| # | 回件主张 | 核证方式 | 结果 |
+|---|---|---|---|
+| 1 | §0.1 我方简报 §2.2 五夹具表 `raw-no-file`/`raw-no-trace` 两行 ratio 互换 | `trace_pipeline.py --fixture all` | **成立**：磁盘 `raw-no-file=0.0`、`raw-no-trace=0.5`，简报确实写反。已订正 `peer-brief-s3-3-7-f4-f5.md` §2.2 并加 round-31 订正注 |
+| 2 | §1.2 基线 596 passed / 7 passed / --check OK / 38 项 | 本会话早前实测 | **一致** |
+| 3 | Q4 枚举 6 码无专用码 | `diagnosis_report.load_schema()` | **一致** |
+| 4 | 假设 A2：目标工具 = `fetch_orders` | YAML `fault_injection.target_tool` | **一致** |
+| 5 | `schema_ref: tools` 覆盖 `fetch_orders` + `write_report` | `load_tool_schemas()` | **一致** → Q2 的 (a) 推导论据成立 |
+| 6 | Step1 补丁：应用后 598 passed、指纹 `0d115102a94fc4cf` | 隔离副本 `.isofix-f4f5` | **一致**：`598 passed`、两遍重生成 `190cfa03b027be94 → 0d115102a94fc4cf`、`--check OK`、五夹具不变 |
+| 7 | Step2 补丁：应用后 602 passed、指纹 `d20372f75f885bbb` | 同上 | **一致**：`602 passed`、`--check OK (d20372f75f885bbb)`、五夹具不变 |
+| 8 | A0/A2/A1 三者同 0.5（TD-028 倒置消失） | 隔离副本全链路探针 | **一致** |
+| 9 | Q2 覆盖率实验：`target=[fetch_orders]`→unscored、`target=[both]`→pass | 同上 | **一致** |
+| 10 | M1 变异（回退 F4 短路）→ 3 条 F4 锁 FAILED | 隔离副本字节级变异 | **一致**：3 failed，RESTORED=True |
+| 11 | M5 变异（退化 F5-A）→ 3 条锁 FAILED（含 F3 A2 锁） | 同上 | **一致**：3 failed，含 `test_f3_td018_only_write_report_stays_no_tool_calls`，RESTORED=True |
+
+**核证结论：回件 11 项事实主张全部成立，0 项被推翻。** 唯一错误在我方简报
+（夹具 ratio 互换），已订正。隔离副本验证时首轮删 `.git` 导致评审包生成器
+11 条环境红灯（`git rev-parse` 无仓库），重建副本（含 `.git`）后干净 —— 属副本
+环境问题，非补丁问题，如实留痕。
+
+### 32.3 Q1–Q5 回件结论与我方评注
+
+| # | 回件结论 | 与我方原倾向对比 | 评注 |
+|---|---|---|---|
+| Q1 | **(a) 成立 + 4 条边界**（B1 仅未知工具→unscored；B2 未知+已观测违规→fail；B3 checked_calls 只数对照过 schema 的；B4 未知不缩受检集合） | 与原倾向 (a) 一致，边界更细 | 4 条边界合理，建议全收。B3 是新增细节（`checked_calls` 语义变化），需在文档同步 |
+| Q2 | **(b) 显式 `target_tools`**，语义仅「覆盖率」非「校验范围」 | 与原倾向 (b) 一致 | 回件用实验**证明**了 (a) 会让缺陷原样保留（`target=[both]`→pass），比原倾向的「口径模糊」更强。5 条校验规则（非空/非空串/无重复/子集/EvaluatorError）合理 |
+| Q3 | **(a) A0=A2=0.5**；0.25 在现行权重模型下不可达 | 与原倾向 (a) 一致 | 回件的算术论证（R3/R4 是唯一 1 分项、A0/A2 的 R3 已 fail）严谨。§5.5 的措辞边界重要：A0/A2 的 0.5 建立在「产物已正确提交」上，对外表述应是「交了正确产物但没调目标工具不再高于调错参数」，不是「什么都不干拿 0.5」 |
+| Q4 | **(b) 复用 `trace_invalid`**；(d) fail+新 pattern 语义更准但扩面 | 与原倾向 (b) 一致 | 回件指出 (b) 的语义代价：R4 unscored 不产 `skill_gap`，复习回路拿不到「没调目标工具」信号。这是**契约选择**（「没调目标工具」是可训练失败还是数据不足），不是实现细节。Step2 实现 (b)，若拍板 (d) 只改状态值与分类分支 |
+| Q5 | **(a) 两步：F4 先、F5 后；F5 内部不得再拆 A→B** | 原倾向是「F5 若 A→B 判据差异大再拆」，回件用 M5 **证明了不该拆** | M5 是决定性证据：退化成 F5-A 时 `test_f3_td018_only_write_report` 仍期望 0.75 而新锁期望 0.5 —— 两个契约共存必矛盾。F5 是一个谓词（`target_calls==0`）同时覆盖空集与无关调用，无理由拆 |
+
+### 32.4 决策点（待人拍板，AI 不替决）
+
+回件五项建议**全部与我方原倾向一致或更强**（Q5 的「不拆」比我原倾向更明确且有证据）。
+建议一次性拍板：
+
+| 编号 | 建议 | 代价/注意 |
+|---|---|---|
+| **D-F4F5-1** | 接受 Q1=(a)+4 条边界 | B3 使 `checked_calls` 语义从「总调用数」变「受检数」，需文档同步（§10） |
+| **D-F4F5-2** | 接受 Q2=(b) 显式 `target_tools`，5 条校验规则全收 | 未来 `trace_param_schema_valid` 任务必须声明该字段（fail-fast）；多目标任务需 `coverage_mode`，本轮不做 |
+| **D-F4F5-3** | 接受 Q3=(a) A0=A2=0.5 | 对外表述按 §5.5 措辞边界 |
+| **D-F4F5-4** | 接受 Q4=(b) 复用 `trace_invalid` | R4 unscored 不产 skill_gap；若需要「没调目标工具」信号，后续可改 (d)（新增 pattern，扩面） |
+| **D-F4F5-5** | 接受 Q5=(a) 两步（F4 先、F5 后，F5 不拆） | 每步独立变异 + 两遍重生成 |
+
+**附加决策（建议同批拍板）**：
+
+| 编号 | 内容 | 说明 |
+|---|---|---|
+| **D-F4F5-6** | 两段 diff 直接采纳（已在隔离副本验证）还是要求修改后重审 | 回件 diff 已通过 `git apply --check`、全量测试、变异裁判、五夹具、指纹对账；建议直接采纳 |
+| **D-F4F5-7** | Q4 的 (d) 方案（fail + 新 pattern `no_target_calls`）是否作为后续步骤 | 建议本轮只做 (b)，(d) 单开步骤；若「没调目标工具」应归因为可训练失败，则选 (d) |
+
+**落地顺序（拍板后）**：Step1（F4）→ 验收 → Step2（F5）→ 验收 → 文档同步（§10 的 7 项）→ TD-019a/019b/028 销项。
+
+### 32.5 TD 登记
+
+| TD | 内容 | 状态 |
+|---|---|---|
+| TD-019a | 未知工具屏蔽已观测违规 | **待销**（Step1 落地后销） |
+| TD-019b | R4 空集 pass 计入掌握度 | **待销**（Step2 落地后销） |
+| TD-028 | 分数序倒置 A1<A2 | **待销**（Step2 落地后销，A0=A1=A2=0.5） |
+| TD-030（新） | Q4(b) 语义借码：`trace_invalid` 覆盖「无目标覆盖」但语义不精确；R4 unscored 不产 skill_gap | **登记**，若后续选 (d) 则销 |
+| TD-031（新） | 多目标任务覆盖率谓词（`coverage_mode: any|all`）缺失 | **登记**，单目标任务不受影响 |
+| TD-032（新） | `checked_calls` 语义变化（总调用数→受检数）需对外契约说明 | **登记**，文档同步时处理 |
+
+### 32.6 验证与指纹（隔离副本 `.isofix-f4f5`，非原仓）
+
+| 阶段 | 全量 | 局部 | 评审包指纹 | 五夹具 |
+|---|---|---|---|---|
+| 基线 | 596 passed | 7 passed | `af7120667a528568` | `0/0/0.25/0.5/1.0` |
+| +Step1 (F4) | **598 passed** | 9 passed | `190cfa03b027be94` → **`0d115102a94fc4cf`** | 不变 |
+| +Step2 (F5) | **602 passed** | 13 passed | **`d20372f75f885bbb`** | 不变 |
+| M1 变异 | 3 FAILED（F4 三条锁） | — | — | — |
+| M5 变异 | 3 FAILED（含 F3 A2 锁） | — | — | — |
+
+原仓 `src/` / `tasks/` / `fixtures/` **一字未动**，工作区仍 38 项。
+两段 diff 已存 `.redteam-tmp/step1.diff` / `step2.diff`（gitignore 内）。
+
+---
+
+## 33. round-32：D-F4F5-1~7 全收 + Step1/Step2 落地原仓（2026-11-10）
+
+### 33.1 拍板与范围
+
+人回「按照你的想法来」＝ **D-F4F5-1~7 全收**（Q1=(a)+4 边界、Q2=(b) 显式
+`target_tools`、Q3=(a) A0=A2=0.5、Q4=(b) 复用 `trace_invalid`、Q5=(a) 两步
+且 F5 不拆、两段 diff 直接采纳、Q4(d) 后续单开）。按 Step1(F4)→Step2(F5)
+小步落地**原仓**，每步独立「应用→局部→全量→两遍重生成」，落地后统一变异裁判。
+
+### 33.2 落地步骤与实测
+
+| 步骤 | 全量 | 局部（`-k "f4_td019a or f5_td019b"`） | 评审包指纹 | 五夹具 |
+|---|---|---|---|---|
+| 基线 | 596 passed | 7 passed | `af7120667a528568` | 0/0/0.25/0.5/1.0 |
+| +Step1 (F4) | 过渡态 `1 failed, 597 passed`（测试数锁）→ **598 passed** | 9 passed（+2 F4 锁） | `190cfa03b027be94` → **`0d115102a94fc4cf`** | 不变 |
+| +Step2 (F5) | 过渡态测试数锁 → **602 passed** | 13 passed（+4 F5 锁） | **`d20372f75f885bbb`** | 不变 |
+
+两处指纹与隔离副本（§32）**逐字相同**；`--demo` 九行不变。
+
+### 33.3 TD-028 验收（原仓实测）
+
+| 场景 | ratio | credit_pass_weight | R4 状态 |
+|---|---|---|---|
+| A0（零调用） | **0.5** | 2 | `unscored` |
+| A2（仅 write_report） | **0.5** | 2 | `unscored` |
+| A1（4 次 fetch_orders 参数错 + write） | **0.5** | 2 | `fail / param_out_of_range` |
+
+A0=A2=A1=0.5，**分数序倒置消失，TD-028 销项**；A1 的能力失败仍正确归因。
+
+### 33.4 变异裁判（原仓，负对照 + 4 组）
+
+负对照 `18 passed`。锚点各 `=1`，逐组 `RESTORED=True`、`FINAL_RESTORED=True`、
+`MUTATION_VERDICT: PASS`，无 ERROR/TIMEOUT：
+
+| 变异 | 结果 | FAILED 用例 |
+|---|---|---|
+| M1 还原 F4 短路（`if unknown_tools:`） | 3 failed | F4 三条锁 |
+| M5 降级 F5-A（`target_calls = 1 if calls else 0`） | 3 failed | 含 `test_f3_td018_only_write_report_stays_no_tool_calls`（**F5 不可拆 A→B 的决定性证据**） |
+| M6 关闭 `target_tools` fail-fast | 1 failed | `test_f5_td019b_target_tools_must_be_declared` |
+| M7 `checked_calls` 把未知工具算进去 | 1 failed | `test_f4_td019a_unknown_tool_no_longer_masks_observed_violation` |
+
+### 33.5 TD 状态更新
+
+- **TD-019a（F4 未知工具屏蔽违规）销项**：已知工具有已观测违规照判 `fail`，
+  `unknown_tools` 降为 evidence 注记，仅违规为空才 `unscored/trace_invalid`。
+- **TD-019b（F5 空集 pass 计入掌握度）销项**：`checked_calls=0` 或无目标工具
+  受检调用 → `unscored`（复用 `trace_invalid`，Q4=(b)）。
+- **TD-028（分数序倒置）销项**：A0/A2/A1 同 0.5。
+- TD-025/026/027/029 维持；Q4(d)（「没调目标工具」独立信号）**单开后续步**；
+  D5/D6 仍排 P-E 之后；F9 未动。
+- §32 登记的三条：**TD-032 销项**（`executor-semantics.md` 补 §5「未知工具、目标工具
+  与受检口径」、§4 例子补边界、`diagnosis-report-schema.md` 的 `raw-empty` 行订正，
+  `checked_calls` 语义已写进对外契约）；TD-030（语义借码）随 Q4(d) 单开再议；
+  TD-031（多目标 `coverage_mode`）维持，单目标任务不受影响。
+- 既有设计锁 `test_zero_calls_is_vacuously_true_by_design` /
+  `test_unknown_tool_name_is_unscored_by_assumption` 已随 Step1/Step2
+  按惯例反转/改写（在 diff 内），函数未删除。
+
+### 33.6 语义变更备注（对外口径）
+
+1. `checked_calls` 语义从「总调用数」变「受检数」（扣除未知工具）。
+2. 未来 R4 任务的 YAML **必须声明 `expected.target_tools`**（非空数组，
+   且须在 `schema_ref` 覆盖范围内），否则 fail-fast。
+3. 「交了正确产物但没调目标工具」不再高于「调错参数」：A2 与 A1 同 0.5。
+
+### 33.7 验证与指纹
+
+| 项 | 实测 |
+|---|---|
+| 全量 | **602 passed** |
+| 局部 | `-k "f4_td019a or f5_td019b"` **13 passed** |
+| 评审包 | 两遍重生成 `d20372f75f885bbb`，`--check OK (d20372f75f885bbb)` |
+| 五夹具 | `0/0/0.25/0.5/1.0` 不变 |
+| 变异 | 4/4 DETECTED，`MUTATION_VERDICT: PASS` |
+| 工作区 | HEAD `03cf8c9`；项数见落仓时实测（Step1/2 改 `src/`+`tests/`+生成物） |
+
+请人在本机侧复核（仓库根，隔离 venv 的 Python，完整路径）：
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k "f4_td019a or f5_td019b"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期：`602 passed` / `13 passed, 142 deselected` / `0.0 0.0 0.25 0.5 1.0` /
+`OK (d20372f75f885bbb)`。上述命令含本机用户名，**只在本机侧使用，不外发**。
+
+---
+
+## 34. round-33：F9 / TD-020 只读复现与证据锁、「什么算通过」决策包（2026-11-10）
+
+### 34.1 范围与前提
+
+人回「可以，请继续吧」＝按上一轮建议开 **F9（P-E 序列末项）**，沿用 F4/F5 节奏：
+**只读复现 + 证据锁 + 把「什么算通过」定死再谈修复**。本轮 **`src/` / `tasks/` /
+`fixtures/` / DTO schema 一个字节未改**；探针用 heredoc 内存构造、跑完即删。
+
+F9 = TD-020「配置校验缺口」，三个子项（§22.2 F9、§22.5 TD-020、§25.5 P9 并入）：
+① `rubric_layers()` 只查 gate∩credit 跨层重复，不查**层内**重复；
+② `depends_on` 引用无加载期校验（拼错时组装器抛裸 `KeyError`）；
+③ `trace_requirements.minimum.agent_id.required=true` 无任何执行器 / 派生器检查。
+前提均为磁盘实测：schema 的 `assertions` 只有 `minItems: 1`、**无 `uniqueItems`**；
+YAML 声明 `scoring.score.credit.total_weight=4`；`_trace_audit_issues()` L79-122
+只查 `tool_calls` 结构与 `final_status`。
+
+### 34.2 只读复现（九场景）
+
+| # | 场景 | 实测 | 判读 |
+|---|---|---|---|
+| S1 | gate 内复制 R1 | `rubric_layers` 不拒（gate=3/credit=3）；`build_report` → **6 条断言 / 两个 R1**；`validate_report=PASS`；`by_state.pass=6`、`ratio=1.0`、`total_weight=4` | **核心缺陷**；重复还污染状态计数，不只多一条 |
+| S2 | credit 内复制 R3（`total_weight` 仍 4） | `ReportError: YAML 声明的 credit.total_weight=4，但 credit 断言权重之和=5`，**错误文本不含「重复」** | 拦截是**权重对账的副产品**，不是 id 唯一性检查 |
+| **S2b** | 同上 + 同步改 `total_weight=5` | 也穿透：6 条断言 / 两个 R3 / `total_weight=5` / `by_state.pass=6` / validate PASS | **新证据**：缺口覆盖**两层**，不是「只有 gate」；修复不能只补 gate |
+| S3 | `depends_on=["R1_typo"]` + R2 `blocked` | 裸 `KeyError: 'R1_typo'` | **核心缺陷**：无可读诊断，且不是 `ReportError` |
+| **S3b** | 同样拼错但 R2 非 blocked | `build_report` + `validate_report` **全 PASS**、`R2=pass`、`ratio=1.0` | **新证据**：真实缺口是**加载期引用完整性**，`KeyError` 只是偶然在 blocked 分支炸；非 blocked 路径完全静默 |
+| S4 | 执行器侧两条路径 | 缺 `dependency_results` → `EvaluatorError`（可读）；前置未过 → `blocked/dependency_blocked` + `blocked_by` | 对照：同一 `depends_on` 在两层有两种行为 |
+| S5 | 缺 `agent_id` 全链路 | `ratio=1.0`、`schema_valid=True`、`invalid_reasons=[]`，而 YAML 明写 `required=true` | **P9 复现**（既有 `test_f1_p9_missing_agent_id_is_not_refused` 已钉 `ratio`） |
+| S6 | 跨层重复 | `ReportError: 断言同时出现在 gate 与 credit` | 对照：既有拦截有效 |
+| S7 | 结果层重复 | `ReportError: 断言结果重复` | 对照：既有拦截有效 |
+
+S6/S7 把缺口边界钉死：**精确在「层内配置 + 加载期引用」**，不是所有重复都漏。
+
+### 34.3 证据锁（8 条，`tests/test_trace_pipeline.py` 新增 F9 节）
+
+| 锁 | 钉住什么 | 性质 |
+|---|---|---|
+| `test_f9_td020_duplicate_gate_id_is_accepted` | S1（含 `by_state.pass=6`） | **现状锁，待反转** |
+| `test_f9_td020_duplicate_credit_id_only_trips_weight_reconciliation` | S2 错误只提 `total_weight`、不含「重复」 | **现状锁，待反转** |
+| `test_f9_td020_duplicate_credit_id_passes_with_matched_total_weight` | S2b 两层都漏 | **现状锁，待反转** |
+| `test_f9_td020_typo_dep_raises_bare_keyerror` | S3 裸 `KeyError` | **现状锁，待反转** |
+| `test_f9_td020_typo_dep_is_silent_when_not_blocked` | S3b 静默路径 | **现状锁，待反转** |
+| `test_f9_td020_executor_dependency_paths_are_structured` | S4 执行器两路径 | **边界锁，修复后仍须成立** |
+| `test_f9_td020_missing_agent_id_keeps_clean_audit` | S5 audit 干净 + YAML 声明 | **现状锁，待反转**（与既有 P9 锁分工：那条锁 `ratio`） |
+| `test_f9_td020_cross_layer_and_result_duplicates_are_rejected` | S6/S7 | **边界锁，修复后仍须成立** |
+
+命名沿用 `test_fN_tdXXX_` 前缀；修复落地时按 TD-008 / F1 / F3 / F4-F5 惯例
+**反转成正向锁、函数不删除**。`-k f9_td020`：**8 passed, 155 deselected**。
+
+### 34.4 「什么算通过」决策包（待人拍板，AI 不替决）
+
+| 编号 | 争议 | 选项 A（最小） | 选项 B（我方建议） | 通过判据（B） |
+|---|---|---|---|---|
+| **D-F9-1** | ① 层内重复 id | 只在 `rubric_layers()` 加 **gate** 层内去重 | **两层都查**：`rubric_layers()` 对 gate 与 credit 各自查重复 id，抛 `ReportError`（含重复 id）；S2b 证明只补 gate 不够 | `rubric_layers(dup_task)` 抛错；`build_report` 不再产 6 条；S6/S7 仍被拒；五夹具分数序不变。**schema 不加 `uniqueItems`**（它锁的是整条对象相等，不是 id 唯一） |
+| **D-F9-2** | ② `depends_on` 引用 | 只把 `KeyError` 换成 `ReportError` 可读诊断（堵 S3） | **加载期校验引用完整性**：每个 `depends_on` 项必须指向本任务存在的断言 id（S3b 证明静默路径才是主体）；blocked 分支同时用可读 `ReportError` | 拼错 deps 在**任意 state** 下都在组装期抛 `ReportError` 且含 typo id；S4 执行器两路径不变；`test_task_yaml.py` 的静态环检查仍绿 |
+| **D-F9-3** | ③ `agent_id.required` | **不改判定**：把 YAML 里未执行的 `required` 声明删掉 / 降级为文档说明，消除「假契约」 | **真执行**：`_trace_audit_issues()` 按 `required` 检查 `agent_id` → 缺失判 `unscored/trace_invalid`，`ratio` **1.0 → 0.5**（R2 非 trace 类仍 pass 拿 2 分，R3/R4 被强制改写） | B 会改分数、须反转既有 `test_f1_p9_missing_agent_id_is_not_refused`；五夹具须仍 `0/0/0.25/0.5/1.0`；`schema_valid=false ⇒ invalid_reasons≥1`（A3 allOf）仍成立 |
+| **D-F9-4** | 落地顺序 | ①②③ 一次落地 | **拆两步**：Step1 = ①+②（都在加载期、**不改任何分数**）；Step2 = ③（动结构派生器 + 改分数），每步独立变异 + Q7 两遍重生成 | 每步全量绿、局部锁反转、五夹具不变、变异真 FAILED + RESTORED=True |
+
+**我方倾向**：D-F9-1=B、D-F9-2=B、D-F9-4=B；**D-F9-3 暂不拍**（见下）。
+理据：①② 是「加载期该挡的没挡」，与 F1 的 R1 严格拒绝同构，且不碰任何分数；
+③ 是**契约应然**——YAML 声明了 `required` 却无执行者，究竟算「实现漏了」还是
+「声明本来只是文档」，会改分数并反转既有锁，属本地裁判判不了的语义选择。
+
+**反证条件（成立即作废我方倾向）**：若能把 `depends_on` 引用完整性证明为
+「只由执行器负责、组装器不该管」，D-F9-2 应改 A；若 `agent_id` 在平台侧
+**另有采集保证**（不在本仓可见），D-F9-3 的 B 就不该在本仓执行。
+
+**是否发外评**：本轮触及一处判据歧义 —— D-F9-3 的「声明未执行算不算 bug」+
+跨模块口径（YAML 声明 / `_trace_audit_issues` / 报告分数 / 既有 P9 锁），
+正是 §22.8 点名可启用外评的语义盲区。**发起权在人**；若你认为需要第二真相源，
+可就本节选项表发一轮小外评（只读、复用 f4-f5 简报骨架）；不需要就直接拍板。
+
+### 34.5 验证与指纹
+
+| 项 | 实测 |
+|---|---|
+| 全量 | 过渡态 `1 failed, 609 passed`（唯一红灯＝评审包测试数锁，包内 602 / 实际 610）→ **610 passed** |
+| 局部 | `-k f9_td020` **8 passed** |
+| 五夹具 | `0/0/0.25/0.5/1.0` 不变（本轮未动判定链） |
+| `--demo` | 九行不变 |
+| 评审包 | 两遍重生成均 `97f30c2a0935755b`、`--check OK (97f30c2a0935755b)`、包内 `610 passed / 610 total` |
+| 匿名 | 本轮只改测试文件；宽口径扫描见收尾复核 |
+| 工作区 | HEAD `03cf8c9`；项数见收尾实测，全部未 commit / 未 push |
+
+**一处如实留痕**：本轮 PASS1/PASS2 指纹相同（前几轮 round-27/28 都是
+PASS1≠PASS2，PASS1 记过渡态）。已做机制核证：把包内用例数改回 602
+模拟过渡态后跑一次生成器，它**确实如实记录** `2 failed, 608 passed / 610 total`
+（指纹 `61857d6de6f4dcfc`），字节级恢复后两遍重生成回到 `97f30c2a0935755b`。
+故 Q7 机制本身有效；**本轮 PASS1 未记过渡态的触发点未核清，标为「假设」，
+不写成结论**。过渡态证据已由独立的全量测试输出取得（`1 failed, 609 passed`）。
+另：`_snapshot()` 不含产品源码字节（§29 已核），故 `--check OK` ≠ 源码字节未漂移。
+
+### 34.6 状态与下一步
+
+- **TD-020 维持未销**（仅复现 + 钉锁）；F9 修复落地等 §34.4 拍板。
+- F1 / F3 / F4 / F5 判定层均已闭合；D5/D6（投影保 null、YAML 条件必填）
+  按 §28.6 拍板排在 P-E 序列之后，F9 完成后才轮到；Q4(d) / TD-030/031 维持。
+- 本轮**未发外评**，发起权在人。
+
+请人在本机侧复核（仓库根，隔离 venv 的 Python，完整路径）：
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k f9_td020
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期：`610 passed` / `8 passed, 155 deselected` / `0.0 0.0 0.25 0.5 1.0` /
+`OK (97f30c2a0935755b)`。上述命令含本机用户名，**只在本机侧使用，不外发**。
+
+---
+
+## 35. round-35：F9 外评回件核证（2026-11-11）
+
+### 35.1 范围与前提
+
+人转回同侪回件 `review-s3-3-7-f9.md`（只读评审，自述未改任何文件）。按
+「核证 → 登记 → 处置 → 落仓 → 人拍板」处理：
+
+- **原仓 `src/` / `tasks/` / `fixtures/` / DTO schema 一个字节未改**；写操作只有
+  订正可外发简报 `docs/peer-brief-s3-3-7-f9.md`（三处表述）与本处置记录。
+- 原仓只跑只读命令（`git apply --check` / pytest / 内存探针）；两段补丁只在隔离副本
+  `.isofix-f9/`（`cp -a` 含 `.git`）逐字应用，diff 存 `../.redteam-tmp/`。
+- 回件自述一律先当**待核证主张**；未复现的数字不采信。
+
+### 35.2 基线核证（与回件 §1 逐项一致）
+
+| 项 | 我方实测 | 回件 | 判读 |
+|---|---|---|---|
+| HEAD | `03cf8c9` | 同 | 一致 |
+| 工作区 | 39 项未提交 | 39 = 38 + 简报 | 一致；简报写的是落盘前 38 |
+| 全量 | `610 passed` | 610 | 一致 |
+| F9 锁 | `8 passed, 155 deselected` | 同 | 一致 |
+| 五夹具 | `0/0/0.25/0.5/1.0` | 同 | 一致 |
+| 评审包 | `--check OK (97f30c2a0935755b)` | 同 | 一致 |
+
+### 35.3 回件逐项核证（磁盘 + 内存探针，全部可复现）
+
+| 回件主张 | 判读 | 本地证据 |
+|---|---|---|
+| §0.1.1 S1/S2b/S3b 只在 `build_report()` 直连复现 | **成立，推翻我方「全链路」** | direct：S1 6 条 / `by_state.pass=6`、S2b 6 条、S3b `ratio=1.0`；chain raw5 → `PipelineError`（id 集合）、raw6 → `ReportError: 断言结果重复`、S3b chain → `KeyError: 'R1_typo'`。`_f9_report()` L1228-1232 确认走直连 |
+| §0.1.3 `uniqueItems` 碰巧抓 S1、抓不住同 id 不同 body | **成立，补我方 §2.2** | `[{id:R1,state:pass}]×2` → INVALID；`state=pass/fail` → VALID；给真实 schema 的 `assertions` 加 `uniqueItems` 后 S1 报告 → ValidationError |
+| §0.1.4 Q1(a) 先撞 F1 audit 对账 | **成立，订正我方 Q1(a)** | monkeypatch `_trace_audit_issues` 加 `missing_required_field`：旧 audit → `PipelineError: trace_audit 与 trace/任务声明不一致`；同步 audit → `ratio=0.5`、`by_state={pass:2,unscored:3}` |
+| §0.1.5 静态环检查只覆盖磁盘 YAML | **成立** | `test_dependencies_declared_and_acyclic` 读 `_task()`；F9 用 `copy.deepcopy(TASK)` 内存构造 |
+| §3.1 契约依据：`executor-semantics.md` 开头「与 YAML 注释冲突时以本页为准并修 YAML」、§4 范围表不含 `agent_id` | **成立（本轮最有价值的第二真相源）** | 磁盘逐字核；`diagnosis-report-schema.md` §2.1 同；`src/arena/*.py` 全库 `agent_id` **0 命中**，无任何执行器消费 |
+| §3.1 `submission.agent_id` 报告层强制 | **成立** | 删该字段后 `validate_report` → `ReportError: 'agent_id' is a required property（路径 submission）` |
+| §7.1 第 4 个缺口：非空 `depends_on` 只对 `json_field_equals` 执行 | **成立** | `dependency_results` 只在 `evaluate_json_field_equals` 消费；R4 依赖失败 R2 → `R2=fail, R4=pass, ratio=0.5`；R3 依赖失败 R4 → `R3=pass, ratio=0.75` |
+| §7.2 key / shape 拼错 | **成立** | `depends_onn` → `ratio=1.0`、R2 pass；裸字符串 → `KeyError: 'R'`；后置依赖 → `ReportError: 标了 blocked，但前置全部通过` |
+| §7.3 scoring 策略字段未执行 | **成立** | `disqualify_ratio=0.3` + raw-no-file 仍 `0.0/dq=True`；`on_unscored=disqualify` + raw-no-trace 仍 `0.5/dq=False`；`disqualified_if=never` + raw-no-file 仍 `dq=True` |
+| §7.4 两个 `agent_id` 不一致不判 | **成立** | S5b → `ratio=1.0`、`schema_valid=True`、`invalid_reasons=[]` |
+| §7.5 X4 `tool_calls.required=false` 未读 | **成立（低优先）** | 直接调 `_trace_audit_issues` 仍返回 `['missing_required_field']` |
+| §0.2「无 `.git` 副本 → 11 条失败 / 599 passed」 | **未核证，不采信** | 我方 round-32 历史记录为 12 条失败；数字不同，本轮未重跑无 `.git` 副本 |
+| 两处行号（`trace_pipeline.py:236-240`、`diagnosis_report.py:196-200`） | **逻辑成立、行号偏移** | 磁盘实测 `L233-239` / `L190-192`；以函数名为准 |
+
+**合计：11 项事实主张成立、0 项被推翻、1 项未核证、1 项行号偏移。** 回件 Q1–Q5 与我方
+倾向的实质差异只有 Q1（我方「暂不拍」，回件给 (b)+身份合并），且它找到了**仓内已有的契约依据**
+（文档冲突规则 + 结构校验范围表），正是本地裁判覆盖不到的语义盲区 —— 本轮外评发起判据成立。
+按 §28 先例，第二真相源已到位且副本覆盖实现面，**本轮不再提外评**。
+
+### 35.4 处置：我方简报三处订正（已落盘）
+
+`docs/peer-brief-s3-3-7-f9.md` 头部加 round-35 订正块，并改三处：
+① §2.1 标题「全链路」→「`build_report()` 直连；生产链路另有护栏」，补 chain 三道护栏实测；
+② §2.2 第 3 点补 `uniqueItems`「碰巧抓 S1、抓不住同 id 不同 body」与最小复现；
+③ §3 Q1(a) 补「先撞 F1 audit 对账 → `PipelineError`；同步 audit 才 `0.5`」。
+三处只改**暴露面与后果**描述，不改「缺口存在」结论、不改待拍板项。订正后宽口径匿名扫描
+**0 命中 CLEAN**；`--check OK (97f30c2a0935755b)`。
+
+### 35.5 隔离副本验证（补丁逐字应用，原仓未动）
+
+diff 为 LF，工作树 CRLF + `core.autocrlf=true`；两段 `git apply --check` / `git apply` 均通过。
+
+| 状态 | 局部 `-k f9_td020` | 全量 | 五夹具 | 评审包（两遍） |
+|---|---|---|---|---|
+| 基线（原仓） | 8 passed | 610 passed | `0/0/0.25/0.5/1.0` | `97f30c2a0935755b` |
+| +Step1（①+②） | **11 passed** | **613 passed** | 不变 | `c2cdfa53faff1a88`，`--check OK` |
+| +Step2b（③(b)） | **12 passed** | **614 passed** | 不变 | `9fe9db7a2ecf881a`，`--check OK` |
+
+字节级变异（每组先让指定锁真 `FAILED`，再写回原字节并校验 SHA）：
+M1 关层内查重 **3 FAILED** / M2 关引用存在 **2** / M3 关 key 必需 **1** / M4 关类型支持 **1** /
+M5 关 list-of-str **1** —— 5 组全 `RESTORED=True`；
+M6（Step2b：把 `agent_id: {required: true}` 加回 YAML）→
+`test_f9_td020_missing_agent_id_keeps_clean_audit` 真 `FAILED`、`RESTORED=True`。
+两次计数漂移负例：包内计数改回 610 / 613 时 `test_test_count_matches_repo` 与
+`test_fingerprint_matches_body` 均真 `FAILED`，恢复后 `--check OK`。`FINAL_RESTORED=True`。
+Step2b diff 文本不含 `src/` 路径（逐字核），回件「只动 YAML/docs/tests」成立。
+
+**一处方法论发现（已核证）**：`cp -a` 把原仓 `__pycache__` 带进副本，会让首次全量 pytest
+**误绿**（计数锁读到旧路径上下文）。清掉 `tests/__pycache__` 与 `src/arena/__pycache__`
+后，同样旧计数包立刻 `2 failed, 611 passed`，报错路径回到副本内。**以后建隔离副本必须先清 pyc**；
+清缓存后补跑的干净全量为 613 / 614 passed。
+
+**一处假设留痕**：我方两遍重生成 **PASS1=PASS2**（回件 §10.4 记 PASS1 为过渡态
+`f104871adc360b76` / `d19ab3f7adbf46bd`），首次全量也未出现过渡态红灯。已独立证明
+Q7 机制有效（旧计数包生成器如实记失败；§34 旧包 602 时记 `2 failed, 608 passed / 610 total`），
+但**本轮 PASS1 未记过渡态的触发点未核清**，不编原因、不把「指纹相同」当成「没有漂移」的结论。
+§34 原仓的同类悬案仍独立挂着，不用本轮副本结论外推。
+
+### 35.6 新登记 TD（待人拍板，不在本轮处置）
+
+| 编号 | 内容 | 来源 |
+|---|---|---|
+| **TD-033** | `depends_on` 死声明 + key/shape 拼错：非空依赖只对 `json_field_equals` 生效；`depends_onn` 静默丢依赖；裸字符串 `KeyError: 'R'`；rubric 条目非 dict 无 shape 校验 | 回件 §7.1/§7.2，本地四组反例复现 |
+| **TD-034** | `scoring.score.gate` 策略字段（`disqualified_if` / `disqualify_ratio` / `on_unscored`）声明未执行，门禁规则硬编码；`credit.denominator` / `contribution` 同 | 回件 §7.3，本地三组反例复现 |
+| **TD-035**（低优先） | `tool_calls.required=false` 未读、后置依赖顺序无加载期可读错误 | 回件 §7.5 / §6.6，本地复现 |
+
+「两个 `agent_id` 不核对」**不单开 TD**：是否算缺陷完全取决于 Q1（(b) 下是有意设计），并入 Q1 一并决定。
+`tool_calls.item_fields` 部分字段未查属 TD-014 已拍板最小边界，不翻。
+
+### 35.7 待拍板（AI 不替人拍板；D-F9-1~4 仍未销）
+
+回件结论：Q1=(b)+身份合并 / Q2=(a) 加载期 / Q3=(b) 两层都查 / Q4=(b) 拆两步 / Q5=确有第 4 个缺口。
+落成人要定的清单：
+
+1. **D-F9-3 / Q1**：选 (a) 真执行（改分数 `1.0→0.5`、反转 P9 锁、还须先解 F1 对账与平台 audit 同步），
+   还是 **(b) 删 YAML 声明 + `submission.agent_id` 为唯一身份**（不改 `src/`、不改分数、只动 YAML/docs/2 条锁）。
+   仓内依据：`executor-semantics.md` 开头「与 YAML 注释冲突时以本页为准并修 YAML」+ §4 范围表不含 `agent_id`。
+   **反证条件**：平台侧若有仓外消费者读 `trace.agent_id`，(b) 不成立 —— 该前提不在本仓可见，须人确认。
+2. **D-F9-1 / D-F9-2**：是否按回件 Step1 一次性收口六项（两层 id 唯一 / `depends_on` 必须存在 / 形状 /
+   引用 / 自依赖 / 非空 dep 只允许 `json_field_equals`）；其中「类型支持」与「key 必需」是
+   **超出原 ② 范围的 fail-fast**，可择一删除并把 TD-033 独立处置。
+3. **D-F9-4**：Step1（①+②，不改分数）→ Step2（③，按 Q1）拆两步，每段独立变异 + 两遍重生成。
+4. 附加项：是否加 schema `uniqueItems` 作第二道防线、是否加 Step1b 执行顺序检查、
+   是否处理 TD-034（建议单开一步，与 Q1 同一「声明 vs 文档」口径）、TD-033/035 排期。
+5. **本轮交付范围**：只提交 Step1；Step2b 是 Q1 拍板后的草图，Q1 未定前不构成补丁。
+
+### 35.8 状态与验证
+
+- **TD-020 维持未销**；F9 修复代码在原仓**一字未动**；D-F9-1~4 待人拍板。
+- 原仓：HEAD `03cf8c9`、**39 项**未提交 / 未 push、`--check OK (97f30c2a0935755b)`。
+- F1 / F3 / F4 / F5 判定层仍闭合；D5/D6 按 §28.6 排在 F9 之后；Q4(d) / TD-025~032 维持。
+- 隔离副本与两段 diff 均在仓库外（`.isofix-f9/`、`.redteam-tmp/`），**未进原仓、未 commit / 未 push**。
+
+请人在本机侧复核（仓库根，隔离 venv 的 Python，完整路径见 §34 末尾命令块）：
+`pytest tests/ -q`（610 passed）、`pytest tests/test_trace_pipeline.py -q -k f9_td020`（8 passed）、
+`python src/arena/trace_pipeline.py --fixture all`（0/0/0.25/0.5/1.0）、
+`python src/arena/review_packet.py --check`（OK `97f30c2a0935755b`）。
+
+---
+
+## 36. round-36：F9 / TD-020 Step1 落地原仓（2026-11-11）
+
+### 36.1 授权与范围
+
+人回「这次按照你的想法来」＝ 采纳 §35.7 我方建议，D-F9-1 / D-F9-2 / D-F9-4 按建议收口。
+本轮**只落地 Step1（① 层内 id 查重 + ② `depends_on` 加载期校验，不改分数）**；
+Q1 / ③ `agent_id` 契约**不碰**，Step2b 不构成补丁（§35.7 第 5 条）。
+
+按我方想法定的四条边界（判据随附，不替人定契约）：
+
+| 决定 | 内容 | 判据 / 反证 |
+|---|---|---|
+| 收 | 完整 Step1 六项：两层 id 唯一、`depends_on` key 必需 / 形状 / 引用 / 自依赖 / 非空 dep 只允许 `json_field_equals` | 六项同源加载期校验；5 组字节级变异分别命中 3/2/1/1/1 条锁，拆开必留缝 |
+| 不收 | schema `uniqueItems` 第二道防线 | 实测同 id 不同 state 仍 VALID（§35 核证），加了只会制造「已有防线」的错觉 |
+| 不收 | Step1b 执行顺序检查 | 属 TD-033 后续，独立排期，不塞进本步 |
+| 不拍 | Q1 (a)/(b) | (b) 的反证前提是「平台侧有无仓外消费者读 `trace.agent_id`」，不在本仓可见，须人确认（§35.7 第 1 条） |
+
+### 36.2 写→验（全链路）
+
+| 阶段 | 局部锁 | 全量 | 五夹具 | 评审包 |
+|---|---|---|---|---|
+| 基线（Step1 前） | 8 passed | 610 passed | `0/0/0.25/0.5/1.0` | `97f30c2a0935755b` |
+| 应用后过渡态 | 11 passed | **1 failed, 612 passed**（计数锁真红） | 不变 | 旧包 610 口径 |
+| PASS1 / PASS2 后 | 11 passed, 155 deselected | **613 passed** | `0/0/0.25/0.5/1.0` | **`c2cdfa53faff1a88`** |
+
+- `src/arena/diagnosis_report.py` 与隔离副本**字节一致**（`cmp` exit=0）→ 补丁逐字应用，非手改。
+- `tests/test_trace_pipeline.py` 11 条 `test_f9_td020_*`：6 条现状锁反转为正向锁、3 条新增
+  （key 必需 / 字符串数组 / 类型支持）、2 条边界对照保留，函数名一律未删。
+- 与副本差异**只有 Step2b 三处**（P9 注释、F9 段注释、③ 正向锁）→ 原仓停在 Step1。
+- Q1 未碰：`tasks/dbg-001-order-report.yaml:116` 的 `agent_id: {required: true}` 仍在。
+- 5 组字节级变异 M1–M5：`3 / 2 / 1 / 1 / 1 FAILED`，逐组 `RESTORED=True`、
+  `FINAL_RESTORED=True`、`ALL_OK=True`，恢复后 `--check` 仍 `c2cdfa53faff1a88`。
+- 匿名：本轮改动的 4 个文件宽口径扫描 **0 命中 CLEAN**。
+- 原仓 HEAD `03cf8c9`、**39 项**未提交 / 未 push。
+
+### 36.3 证据链异常（如实留痕，不外推）
+
+1. 应用命令里 `git apply --check` 报 `patch does not apply`（两个文件都失败），但磁盘已是
+   Step1 目标状态：两文件 mtime `2026-11-11 20:16:38`，`cmp` 与副本 src 字节一致。
+   → 写入由哪一次执行完成**未核清，标假设**，不编机制；可核验的事实只有 mtime 与字节一致性。
+2. 本轮曾判断「基线 610/8 是旧 pyc 造成的假象」，经 mtime（写入晚于基线命令）与
+   `cmp` 核证**订正为真实基线**（对应 Step1 前磁盘状态）。该错误判断留痕，不静默抹掉。
+3. §35 的「`cp -a` 带 `__pycache__` 污染副本」方法论发现仍有效；本轮应用后主动清了
+   `tests/__pycache__` 与 `src/arena/__pycache__` 再取证。
+
+### 36.4 §34 / §35 悬案：机制已核证，触发点仍未闭合
+
+- **已核证（十分钟可复现）**：把 613 计数包的计数行改成 610 后跑一次生成器，
+  如实记录 `2 failed, 611 passed / 613 total`、指纹 `f82891b02578f0b1`；
+  字节级恢复后 `--check OK (c2cdfa53faff1a88)`。→ Q7 过渡态记录机制**有效**。
+  生成器时序（`write_packet → build → _pytest_result` 真跑 `pytest tests/ -q`，先跑后写盘）已读源码确认。
+- **仍未核清（假设）**：本轮 PASS1 在包仍为 610 口径时直接记 `613 passed / 613 total`。
+  源码时序按理应读到旧计数包而报红，与实测不符；触发点未定位，不编原因、
+  不用副本结论外推。§34 原仓同类悬案继续独立挂着。
+
+### 36.5 TD 状态（AI 不替人销项）
+
+- **TD-020 部分收口、维持未销**：①② 已落地；③ `agent_id` 契约待 Q1。
+- **TD-033**：三个子项（`depends_onn` 静默丢依赖 / 裸字符串 `KeyError` /
+  非 `json_field_equals` 的死声明）已被 Step1 在加载期拒绝覆盖；**标「建议销项、待人确认」**，
+  运行时语义本身未改。
+- **TD-034**（`scoring.score.gate` 三策略字段未执行）、**TD-035**（两个 `agent_id` 不一致仍 1.0）维持。
+
+  > **round-38 就地订正（2026-11-11，见 §38.2）**：以上两行有**两处文档失真**，原写保留在此注中不抹除。
+  > ① 本行把 **TD-035 串号**成「两个 `agent_id` 不一致仍 1.0」。§35.6 原始登记的
+  > TD-035 是「`tool_calls.required=false` 未读 + 后置依赖顺序无加载期可读错误」，
+  > 且 §35.6 明写「两个 `agent_id` 不核对」**不单开 TD，并入 Q1**；该现象已随 Q1(b)
+  > 定性为有意设计，不是独立 TD。订正后 TD-035 **维持未销**（两项均未被 Step1 覆盖，§38.3 T3/T4）。
+  > ② 上行「三个子项」漏了 §35.6 登记的**第四子项**（rubric 条目非 dict 无 shape 校验），
+  > 该项未被覆盖（§38.3 T1/T2），故 TD-033 **不能销项**，改为「部分收口、维持未销」。
+  > 连带后果：§36.6 与 §37.6 的「TD-033/035 建议销项」前提不成立，作废。
+- F1 / F3 / F4 / F5 判定层仍闭合；D5/D6 按 §28.6 排在 F9 之后；Q4(d) / TD-025~032 维持。
+
+### 36.6 待人拍板
+
+1. **Q1**：(a) 真执行 还是 (b) 删 YAML 声明 + `submission.agent_id` 唯一身份；
+   反证前提是平台侧有无仓外消费者读 `trace.agent_id`，须人确认。
+2. **TD-033** 是否随 Step1 销项、**TD-034 / TD-035** 排期。
+3. **Step2** 何时开（Q1 拍板后）；本轮不含 Step2b。
+4. 是否补 `uniqueItems` / Step1b（我方建议不补，理由见 36.1）。
+
+### 36.7 本机复核（完整路径见 §34 末尾命令块）
+
+`pytest tests/ -q` → `613 passed`；
+`pytest tests/test_trace_pipeline.py -q -k f9_td020` → `11 passed, 155 deselected`；
+`python src/arena/trace_pipeline.py --fixture all` → `0/0/0.25/0.5/1.0`；
+`python src/arena/review_packet.py --check` → `OK (c2cdfa53faff1a88)`。
+
+---
+
+## 37. round-37：Q1(b) 拍板依据到位、F9 / TD-020 Step2 落地（2026-11-11）
+
+### 37.1 人给的仓外事实与授权
+
+人明确回复「我只将我们之间的会话发给过评测 Agent，所以并没有这个东西，你可以继续了」——
+即评测 Agent 只拿到**会话文本**，从未获得代码只读权限，也不存在任何仓外消费者。
+这消除了 §35.7 第 1 条 / §36.6 第 1 条为 Q1(b) 列出的**唯一反证前提**
+（「平台侧若有仓外消费者读 `trace.agent_id`，(b) 不成立」）。
+
+据此 Q1 取 **(b) 删 YAML 声明 + 报告层 `submission.agent_id` 为唯一身份**，
+不改 `src/`、不改分数；「你可以继续了」按 round-32 惯例理解为授权按我方建议落地 Step2。
+**该仓外事实由人提供，不是 AI 推断**；AI 只把结论挂在该前提上，不替人定契约。
+
+### 37.2 落地范围
+
+逐字应用 `.redteam-tmp/f9-step2b.diff`（回件 §9 草图），改 4 个文件、**不含 `src/`**：
+
+| 文件 | 改动 |
+|---|---|
+| `tasks/dbg-001-order-report.yaml` | 删 `agent_id: {required: true}`，加 3 行说明（身份以 `submission.agent_id` 为准，`trace.agent_id` 仅可选元数据） |
+| `docs/executor-semantics.md` | §4 补「`agent_id` 不在结构校验范围内」 |
+| `docs/diagnosis-report-schema.md` | 补同一口径，与 §4 对齐 |
+| `tests/test_trace_pipeline.py` | P9 注释、F9 段注释、③ 锁反转；新增 `test_f9_td020_trace_agent_id_mismatch_is_not_a_rule` |
+
+应用前 `git apply --check` 通过；应用后 **5 个文件（含 `src/arena/diagnosis_report.py`）与隔离副本逐字一致**（`cmp exit=0`）。
+其后我方单独**订正一处文档失真**：回件草图注释写「round-34 落地」，与磁盘事实不符
+（round-34 是备简报、round-36 才落地 Step1、round-37 落地 Step2b），改为
+「round-36 Step1 / round-37 Step2b 落地」。因此原仓 `tests/` 与隔离副本**仅差这 1 行**，
+属我方订正、非补丁偏差，如实留痕。
+
+### 37.3 写→验
+
+| 阶段 | 局部锁 | 全量 | 五夹具 | 评审包 |
+|---|---|---|---|---|
+| 基线（Step1 后） | 11 passed | 613 passed | `0/0/0.25/0.5/1.0` | `c2cdfa53faff1a88` |
+| Step2b 应用后 | 12 passed | — | `0/0/0.25/0.5/1.0` | 旧 613 口径 |
+| PASS1 / PASS2 后 | **12 passed, 155 deselected** | **614 passed** | `0/0/0.25/0.5/1.0` | **`9fe9db7a2ecf881a`** |
+
+- 两遍重生成 PASS1=PASS2=`9fe9db7a2ecf881a`，与隔离副本指纹一致；包内 614 计数 / `614 passed`。
+- 变异 **M6**（把 `agent_id` 声明加回 YAML）→ `1 FAILED` + `RESTORED=True` → ③ 锁真覆盖声明删除。
+- 变异 **M7**（包计数 614→613）→ `1 FAILED` + `RESTORED=True` → 计数锁本身有效。
+- 变异脚本首轮因 `str` 拼 `bytes` 报 `TypeError`（与产品无关），修正后重跑 `ALL_OK=True`；如实留痕。
+- 匿名：改动 6 个文件宽口径 **0 命中 CLEAN**；HEAD `03cf8c9`、**39 项**未提交 / 未 push。
+
+### 37.4 悬案（不问原因，标假设）
+
+过渡态全量**直接 614 passed，未出现预期的计数锁红灯**（按理包仍是 613 口径）。
+M7 已独立证明计数锁有效，故「锁失效」被排除；那次 pytest 读到的包状态 / `_pytest_count()`
+返回值与预期的差异，**触发点未核清，标假设、不编原因、不用副本结论外推**。
+§34 / §35 / §36 同类悬案继续独立挂着；§36.4 已核证的「旧计数包下生成器如实记
+`2 failed, 611 passed`」仍是唯一可复现的机制证据。
+
+### 37.5 TD 状态（销项是拍板后的执行结果）
+
+- **TD-020 销项**：①② 由 round-36 Step1、③ 由本轮 Step2b 全部收口。
+- **TD-033**（`depends_on` key/shape/死声明）：三子项已被 Step1 加载期拒绝覆盖，仍**待人确认销项**。
+- **TD-035**（两个 `agent_id` 不一致仍 1.0）：Q1(b) 已把 `trace.agent_id` 定为可选元数据、非评分信号，
+  且本轮新增正向锁明确锁住该行为 → **随 (b) 消解，待人确认销项**。
+
+  > **round-38 就地订正（2026-11-11）**：以上两行的 TD 编号与子项计数失真，详见 §38.2，
+  > 原写保留在此注中。**订正后**：TD-033 为「部分收口、维持未销」（4 子项中 1 项未覆盖）；
+  > TD-035 为「`tool_calls.required=false` 未读 + 后置依赖顺序」，两项均未覆盖 → **维持未销**；
+  > 「两个 `agent_id` 不一致」不是 TD，随 Q1(b) 定性为有意设计（§35.6 原文即如此）。
+  > 本节的「建议销项」结论作废。
+- **TD-034**（`scoring.score.gate` 三策略字段未执行）：与本轮无关，**维持待排期**。
+- F1 / F3 / F4 / F5 判定层仍闭合；D5/D6 按 §28.6 排在 F9 之后；Q4(d) / TD-025~032 维持。
+
+### 37.6 待人拍板 / 后续
+
+1. TD-033 / TD-035 是否销项（我方建议销，理由见 37.5，但不替人销）。
+   **round-38 作废**：该建议建立在 TD-035 串号与 TD-033 子项漏计之上，反例见 §38.3；
+   两项均**维持未销**，本条不再作为待拍板项。
+2. TD-034 排期：三策略字段是「声明未执行」同型问题，建议单开一步，需先定口径。
+   **round-38 已按此推进**：只读复现 + 口径决策包见 §38，**判定代码仍未动**。
+3. D5/D6 与 Q4(d) 按 §28.6 顺序推进。
+4. 本轮不再提外评：第二真相源（round-35 回件）已到位、人已给出仓外事实、本地裁判覆盖实现面。
+
+### 37.7 本机复核（完整路径见 §34 末尾命令块）
+
+`pytest tests/ -q` → `614 passed`；
+`pytest tests/test_trace_pipeline.py -q -k f9_td020` → `12 passed, 155 deselected`；
+`python src/arena/trace_pipeline.py --fixture all` → `0/0/0.25/0.5/1.0`；
+`python src/arena/review_packet.py --check` → `OK (9fe9db7a2ecf881a)`。
+
+---
+
+## 38. round-38 TD-034 只读复现与口径决策包（2026-11-11）
+
+### 38.1 范围与判据
+
+人回「按你的想法来」＝授权按 §37.6 第 2 条「TD-034 单开一步、需先定口径」推进。
+本轮**只做只读复现 + 决策包**：判定代码一字未动、任务 YAML 一字未动、分数不变、
+**不加证据锁**（口径未定，现状锁在下一步必然反转或改写，现在钉锁是浪费）。
+
+本轮开头实测基线：HEAD `03cf8c9`、工作区 **39 项**全部未 commit / 未 push、
+`pytest tests/ -q` **614 passed**、`-k f9_td020` **12 passed, 155 deselected**、
+五夹具 `0/0/0.25/0.5/1.0`、`--check OK (9fe9db7a2ecf881a)`。
+
+### 38.2 文档失真订正（本轮最重要的一处）
+
+| # | 位置 | 原写 | 磁盘事实 / 订正 |
+|---|---|---|---|
+| ① | §36.5、§37.5 | **TD-035**＝「两个 `agent_id` 不一致仍 1.0」 | **串号**。§35.6 原始登记的 TD-035 是「`tool_calls.required=false` 未读 + 后置依赖顺序无加载期可读错误」；§35.6 另明写「『两个 `agent_id` 不核对』**不单开 TD**……并入 Q1 一并决定」。该现象已随 Q1(b) 定性为有意设计，不构成独立 TD |
+| ② | §36.5、§37.5 | TD-033「三子项」已覆盖 | **计数失真**。§35.6 登记的是**四子项**（还有「rubric 条目非 dict 无 shape 校验」），第四项未被 Step1 覆盖，见 38.3 T1/T2 |
+
+两处已就地订正并**保留误写留痕**（不抹历史）。连带后果：§36.6 / §37.6 的
+「TD-033 / TD-035 建议销项」前提不成立，**本轮作废，上一轮我方建议撤回**。
+
+### 38.3 销项前提反例（四项全不成立，十分钟可复现）
+
+| 反例 | 构造 | 实测 |
+|---|---|---|
+| T1 | `rubric_gate[0] = "not-a-dict"` | `rubric_layers()` → `TypeError: string indices must be integers, not 'str'`（裸异常，非可读 `ReportError`） |
+| T2 | `rubric_credit[0] = 42` | `build_report()` → `TypeError: 'int' object is not subscriptable` |
+| T3 | `trace_requirements.minimum.tool_calls.required: True→False`；`trace = {agent_id, final_status}`（无 `tool_calls`） | `_trace_audit_issues()` 仍返回 `['missing_required_field']` ⇒ 该声明**未被读取** |
+| T4 / T4b | `R2_report_correct.depends_on = ["R3_retry_evidence"]`（引用后置断言） | `rubric_layers()` 通过、`build_report()` 通过、`by_state.pass=5` ⇒ 加载期无顺序可读错误 |
+
+Step1 六项校验覆盖 id 唯一 / key 必需 / 形状 / 引用存在 / 自依赖 / 非空 dep 类型支持，
+**不含条目 shape、不含 `required`、不含依赖顺序**。
+
+**TD 状态重算（AI 不替人销项）**：
+
+| 编号 | 状态 | 依据 |
+|---|---|---|
+| TD-020 | **已销**（round-37） | ①② round-36、③ round-37 全收口 |
+| TD-033 | **部分收口、维持未销** | 3/4 子项被 Step1 加载期拒绝；第 4 子项 T1/T2 仍裸 `TypeError` |
+| TD-035 | **维持未销** | 两项 T3 / T4 均未被覆盖 |
+| TD-034 | **维持待排期** | 本轮只定口径，见 38.5 |
+| 「两个 `agent_id` 不一致」 | 非 TD，随 Q1(b) 定性为有意设计 | §35.6 原文 + round-37 正向锁 |
+
+### 38.4 TD-034 只读复现（13 组内存探针，磁盘零写入）
+
+基线四夹具：`raw-perfect` 1.0/False、`raw-no-file` 0.0/True、
+`raw-no-trace` 0.5/False、`raw-fake-retry` 0.25/False。改 YAML 字段后：
+
+| # | 改动 | 实测结果 | 判读 |
+|---|---|---|---|
+| G1 | `gate.disqualify_ratio: 0→0.3` + no-file | `0.0 / dq=True` | 未执行 |
+| G2 | `gate.on_unscored: do_not_disqualify→disqualify` + no-trace | `0.5 / dq=False` | 未执行 |
+| G3 | `gate.disqualified_if: any_gate_failed→never` + no-file | `0.0 / dq=True` | 未执行 |
+| G4 | `gate.source: rubric_gate→rubric_credit` + no-file | `0.0 / dq=True` | 未执行 |
+| G5 | `score.formula: gated_weighted_pass_ratio→plain_ratio` + no-file | `0.0 / dq=True` | 未执行 |
+| C1 | `credit.denominator: fixed→variable` | `1.0` 不变 | 未执行 |
+| C2 | `credit.contribution.pass: weight→0` | `1.0` 不变 | 未执行 |
+| C3 | `credit.contribution.fail: 0→weight` + fake-retry | `0.25` 不变 | 未执行 |
+| C4 | `credit.total_weight: 4→5` | `ReportError: YAML 声明的 credit.total_weight=5，但权重和为 4` | **仅对账**，非策略执行 |
+| C5 | `credit.source: rubric_credit→rubric_gate` + no-file | `0.0` 不变 | 未执行 |
+| A1 | `attribution.pass` 两项反转 | `ratio=1.0` 不变，但 `attribution_policy.pass` `(True,False)→(False,True)` | **有消费者**，不算「未执行」 |
+
+**字段三分类**（决定 TD-034 的口径边界，不得扩大化）：
+1. **完全未执行（8 组）**：`score.formula`、`gate.source/disqualified_if/disqualify_ratio/on_unscored`、
+   `credit.source/denominator/contribution`（4 态）。改值对 `score` 无任何影响。
+2. **仅对账（1 组）**：`credit.total_weight`（`diagnosis_report.py:241-243`）。
+3. **有消费者（1 组）**：`scoring.attribution`（`:255-259` 读入报告 `attribution_policy`），
+   语义消费在下游状态层，**不改分数**，不属本 TD。
+
+**硬编码锚点**（`src/arena/diagnosis_report.py`）：`:230` `disqualified = bool(disqualifying)`
+＝ `any_gate_failed`；`:234` note 里写死 `on_unscored=do_not_disqualify`；
+`:240` `credit_total = sum(weight)` ＝ `fixed_at_credit_total_weight`；
+`:245` 只累加 `state=="pass"` ＝ `contribution: pass=weight, 其余=0`；
+`:246-247` `disqualify_ratio=0`；`:33` / `:303` 常量 `DENOMINATOR_POLICY` 写进报告。
+
+**十分钟可复现的最小片段**（仓库根执行，只读内存、不落盘）：
+```python
+import copy, json, sys
+from pathlib import Path
+sys.path.insert(0, "src")
+import arena.diagnosis_report as dr
+t = dr.load_task("tasks/dbg-001-order-report.yaml")
+t["scoring"]["score"]["gate"]["disqualify_ratio"] = 0.3
+raw = json.loads(Path("fixtures/raw-no-file.json").read_text(encoding="utf-8"))
+print(dr.build_report(t, raw)["score"]["ratio"])   # 0.0，声明的 0.3 未生效
+```
+
+### 38.5 口径决策包（D-TD034-1~3，AI 不替人拍板）
+
+**硬约束（先说清，会直接淘汰部分方案）**：`src/arena/review_packet.py` 的
+`_task_struct()` 在 `:199/:208/:209/:210` 强依赖 `credit.total_weight`、
+`score.formula`、`credit.denominator`、`gate.disqualify_ratio`、`gate.on_unscored`
+五个字段。**删字段会破坏评审包生成器**；改字段值会改包正文 ⇒ `--check` 转 `STALE`，
+必须两遍重生成。`_snapshot()` 不含 YAML 字节，但包正文含这些值。
+
+| 案 | 内容 | 代价 | 判据 |
+|---|---|---|---|
+| **(A) 文档性声明** | 与 Q1(b) 同口径：把这些字段降级为注释 / 设计意图记录，文档写明「评分规则硬编码在 builder」 | 须同步改 `review_packet.py`（5 处取值）或保留字段；评审包正文漂移，需两遍重生成 | 不改分数、不动判定层；但会丢掉包内自解释文字 |
+| **(B) 真执行** | 8 组字段接进 `build_report()`，做成可配策略 | **改分数**、反转多条既有锁、影响五夹具；YAML `:139` 注释自己反对「封顶 0.3 之类魔数」 | 只有产品真需要多套评分策略时才值；当前 `tasks/` 仅 1 份 YAML、`rubric_gate` 仅 1 个文件 |
+| **(C) 加载期对账** | 把 8 组字段值与 builder 常量逐项比对，不一致即 `ReportError`（沿用 `:241-243` 的 `total_weight` 对账风格） | 一处校验函数 + N 条正向锁；锁死配置自由度 | **不改分数、不动包正文、不改 YAML**，与既有 fail-fast 风格一致，可用字节级变异逐项验证 |
+
+**我方建议：(C)**，判据三条：① 保留 YAML 的自解释价值（评审包要抄这些值）；
+② 零分数风险、五夹具不变、既有锁不反转；③ 与 `rubric_layers()` 的加载期硬拒绝同型，
+移植成本低。**注意这是「建议」，契约应然仍由人拍板** —— 与 Q1 同类。
+
+**每条的验证方式**：落地后 `pytest tests/ -q` / `-k f9_td020` / 五夹具 / `--check`；
+若选 (C)，把任一字段值改掉跑 `build_report()` 应得 `ReportError`；
+逐项字节级变异必须**真 `FAILED` + `RESTORED=True`**，不许用自评当证据。
+**反证条件**：若将来存在第二份任务 YAML 且需要不同评分策略，(C) 会把配置自由度锁死，
+届时须改代码而非改 YAML —— 当前磁盘只有 1 份 YAML，风险暂不成立，但需人确认是否有仓外任务源。
+
+**D-TD034-2**：若选 (C)，对账范围是「全部 8 组」还是只含影响分数的 5 组
+（`disqualified_if` / `disqualify_ratio` / `on_unscored` / `denominator` / `contribution`）？
+`formula` 与两个 `source` 属纯说明字段，锁它们收益低、误报高。我方建议**只锁 5 组**。
+
+**D-TD034-3**：TD-033 第四子项（条目 shape → 可读 `ReportError`）与 TD-035 两项
+（`required` 读取、依赖顺序）是否并入同一步，还是各单开一步？
+我方建议**各单开**，不与 TD-034 混做 —— 三者的契约口径不同（策略声明 / 输入形状 / 轨迹要求）。
+
+### 38.6 待人拍板 / 后续
+
+1. **D-TD034-1**：选 (A) / (B) / (C)；我方建议 (C)。
+2. **D-TD034-2**：对账范围 8 组 vs 5 组；我方建议 5 组。
+3. **D-TD034-3**：TD-033 第四子项、TD-035 两项是否并入；我方建议各单开。
+4. 是否有仓外任务 YAML 源（影响 (C) 的反证条件），须人确认。
+5. 拍板后才动判定代码；之后才轮到 D5/D6 与 Q4(d)。
+6. **本轮不提外评**：这一段全是仓内可判定的实现事实（磁盘 + 探针 + pytest），
+   口径选项与反证条件已列全；是否发外评由人按「语义/契约盲区」判据决定，AI 不张罗。
+
+### 38.7 本机复核（完整路径见 §34 末尾命令块，该块只在本机侧使用、不外发）
+
+`pytest tests/ -q` → `614 passed`；
+`pytest tests/test_trace_pipeline.py -q -k f9_td020` → `12 passed, 155 deselected`；
+`python src/arena/trace_pipeline.py --fixture all` → `0/0/0.25/0.5/1.0`；
+`python src/arena/review_packet.py --check` → `OK (9fe9db7a2ecf881a)`。
+本轮未改任何产品代码 / YAML / 测试，四项预期与基线逐字相同。
+
+---
+
+## 39. round-39 第三方回件核证（消费者驱动契约 / 死字段，2026-11-11）
+
+### 39.1 范围与状态
+
+人转来**非评测渠道**的另一个 Agent 回件，主题是 Q1 的 `agent_id` 死字段与
+「消费者驱动契约（CDC）」，问「你怎么看」。按「核证 → 登记 → 处置 → 落仓 → 人拍板」处理。
+
+**先钉状态**（避免拿历史快照当现状）：回件针对的 Q1 **已在 round-37 拍板 (b) 并落地销项**
+（TD-020 已销）；回件不知道这条处置，也不知道人已给出「无仓外消费者」的仓外事实。
+上一轮被中断的 **TD-034 (C) 落地停在只读探查、未写任何文件，本轮继续暂停**。
+磁盘仍是 round-38 结束状态：HEAD `03cf8c9`、**39 项**、`614 passed` /
+`-k f9_td020` `12 passed` / 五夹具 `0/0/0.25/0.5/1.0` / `--check OK (9fe9db7a2ecf881a)`。
+本轮**不改代码、不回滚、不改契约**。
+
+### 39.2 回件逐条核证（本地裁判，非自评）
+
+| # | 回件主张 | 本地核证 | 结论 |
+|---|---|---|---|
+| 1 | 死字段 / 僵尸契约、CDC、YAGNI 的命名与方法论 | 概念成立，且与本项目 TD-020「配置声明未执行」同型 | **成立（方法论）** |
+| 2 | 本仓执行代码 `src/arena/` 0 命中 | 复核仍 0 | **成立** |
+| 3 | 「上报方（学习者 Agent 按 YAML 决定上报什么）」是第二层真实消费者 | 本仓**无实现**：`_trace_audit_issues()` 不读 `agent_id.required`；缺 `trace.agent_id` 时旧版/新版都返回 `[]`（39.3）。人已确认仓外无消费者 | **潜在消费者成立，现存消费者不成立** |
+| 4 | 「未来代码 + 人（状态层/审计/评委/计划书）」是第三层 | 计划书 v0.1~v0.4 搜 `agent_id` / 多 Agent / 审计 **0 命中**；现役 `docs/review-packet.md` **0 命中**。属设计意图，非契约执行者 | **意图成立，现存不成立** |
+| 5 | git blame：若是评审决议加的，消费者就是「评审纪律」不能删 | `git blame HEAD` → `876e5ba2`（2026-11-06）「按第四轮评审修订 dbg-001」，该行注释明写「**字段风格统一为对象式（评审第 6 条）**」，前态为 `agent_id: required`。决议内容是**格式统一**，不是新增身份契约 | **方法成立，考古结论反向** |
+| 6 | 「命中评审响应 / review packet ⇒ 有人类消费者，保留并补注释」 | 现役评审包 0 命中；`review-response-v1.md` 36 命中全是**讨论要不要删该字段**的内部记录；`archive/review-packet-v1.md` 1 命中是历史归档 | **判据有循环论证漏洞**（39.4） |
+| 7 | 「不要删字段」 | **字段根本没删**：5 份 fixture 里 `submission.agent_id` 与 `trace.agent_id` 都还在，DTO schema `submission.agent_id` 仍 `required`。删的只是 `trace_requirements.minimum.agent_id: {required: true}` 这一行**声明** | **前提失真** |
+| 8 | 「在 YAML 旁补一句注释写明它为谁服务」 | YAML `:116-118` **已补**且更精确：身份以 `submission.agent_id` 为准、`trace.agent_id` 只是可选元数据、不声明 required 以免留下无执行者的声明 | **已满足** |
+| 9 | 「删掉的风险是未来加回来属于 breaking change（加必填字段）」 | 方向对，但删一条**从未执行**的 required 对上报方是**放宽**，不会让任何原本合规的提交变不合规；**加回来**才是 breaking。若未来真要执行，落点应是 DTO 层已 required 的 `submission.agent_id` | **部分成立** |
+| 10 | 10 分钟命令 `Select-String -Path "**\*.md",... -Recurse` | `Select-String` 无 `-Recurse` 参数，`-Path` 不接受 `**\` 递归 glob；且会翻进 `.git/` / `.pytest_cache`。修正版见 39.7 | **命令不可用** |
+
+合计：成立/部分成立 **5**、前提失真或不成立 **4**、命令不可用 **1**；**0 项推翻已落地的 Q1(b)**。
+
+### 39.3 决定性事实：删声明前后行为完全等价
+
+把 `agent_id: {required: true}` 加回去造出「旧版」，与当前版同跑全链路
+`recompute_all → build_report`，比对 `score` / `trace_audit` / 各断言 state / `attribution_policy`：
+
+| 夹具 | 全等 | ratio |
+|---|---|---|
+| `raw-perfect` | `True` | 1.0 |
+| `raw-no-trace` | `True` | 0.5 |
+| `raw-no-file` | `True` | 0.0 |
+| `raw-fake-retry` | `True` | 0.25 |
+
+缺 `trace.agent_id` 时直接调 `_trace_audit_issues()`：当前版 `[]`、**旧版也 `[]`**。
+⇒ 那条 required **从来就没有执行者**，删它对当前系统**零行为影响**；
+所谓「删掉的风险 / breaking change」在当前实现下不成立，只对「未来真接入执行器」才成立。
+
+### 39.4 我方采纳的部分：把消费者清单列全
+
+回件最有价值的一点不是结论，是**方法**：把消费者分层列清单再拍板。本仓此前缺这一步，
+现按回件的三层补齐（这是本轮唯一采纳并落仓的实质内容）：
+
+| 层 | 具体对象 | 现状 | 证据 |
+|---|---|---|---|
+| L1 本仓执行代码 | `src/arena/*.py` | **无** | 0 命中；`_trace_audit_issues()` 不读该声明 |
+| L2 上报方 | 按 YAML 生成 trace 的学习者 Agent / 平台 | **无仓内实现，仓外由人确认不存在** | round-37 人的证词；本次全仓+计划书 grep |
+| L3 未来代码 + 人 | 状态层聚合、防 trace 挪用、审计、评委、计划书 | **意图存在，契约不存在** | 计划书 0 命中、现役评审包 0 命中；fixture 里两个 `agent_id` 数据仍在，防挪用所需数据未丢 |
+| 契约层（补） | DTO `submission.agent_id` | **有，且 required** | `diagnosis-report.schema.json:23/32`；`executor-semantics.md` / `diagnosis-report-schema.md` 口径一致 |
+
+**我方真实疏漏（如实登记）**：round-35/37 核的是「代码消费者」（`src/` grep + 工作区级扫描）
+加人的证词，**没有系统列过三层清单**，也没做 git blame / 计划书 grep / 评审包 grep。
+回件补上了这个过程缺口 —— **结论不变，过程证据更完整**。
+
+**但判据本身有循环论证**：按「文档里命中过 ⇒ 有人类消费者」，任何被讨论过的死字段都会
+自动「有消费者」。反例：§38.4 里 TD-034 的 8 组死字段在 `review-response-v1.md` /
+`verify-brief` 中同样大量命中，按同一判据全都不能删，与回件第一节「没有消费者的字段按
+YAGNI 不该存在」直接矛盾。**讨论记录 ≠ 契约承诺**；本仓能构成契约的只有 DTO schema、
+`executor-semantics.md`、`diagnosis-report-schema.md`，而这三处都指向 `submission.agent_id`。
+
+### 39.5 结论（不回滚、不改代码、不改契约）
+
+Q1(b) 的四个支点逐一复核后**全部仍成立**：① 仓内无执行者（行为等价实测）；
+② 仓外消费者由人确认不存在；③ 仓内契约依据（文档优先于 YAML 注释、§4 范围表不含 agent_id）；
+④ 字段数据本身未删、身份落在 DTO required 的 `submission.agent_id`。
+回件主张的「补注释写明消费方」已由 YAML `:116-118` 满足；「保留字段」本就满足。
+**本轮不改任何产品代码 / YAML / 测试，不回滚 round-37。**
+
+### 39.6 待人拍板（AI 不替人拍板）
+
+1. 是否采纳回件「先降级为 `required: false` 留观察期」—— **我方建议不采纳**：
+   该声明本就无执行者，留 `false` 等于又造一条「看起来受管」的死声明，与 TD-020
+   「配置声明未执行算不算 bug」的处置口径冲突；且行为等价已实测。
+2. 是否把 39.4 的三层清单写进契约文档（如 `executor-semantics.md`）—— 我方建议**只留本 §39**，
+   不扩散到外发件，避免把内部讨论变成对外承诺。
+3. **TD-034 (C) 落地是否继续**：上一轮人已拍板「按 C 落地 + 无仓外任务 YAML 源」，
+   只读探查已完成但被本回件打断，**代码一字未动**，待人一句「继续 (C)」再推进。
+4. 本轮不提外评：第二真相源已多（§35 回件 + 本回件），本地裁判覆盖全部可判定面。
+
+### 39.7 十分钟可复现（修正版命令，仓库根执行，本机侧使用）
+
+回件给的命令在 PowerShell 5.1 不可执行，修正为：
+
+```powershell
+Get-ChildItem -Path . -Recurse -File -Include *.md,*.yaml,*.json,*.py |
+  Where-Object { $_.FullName -notmatch '\\(\.git|\.pytest_cache|__pycache__)\\' } |
+  Select-String -Pattern 'agent_id' |
+  Group-Object Path | Sort-Object Count -Descending |
+  ForEach-Object { "{0,4}  {1}" -f $_.Count, $_.Name }
+```
+
+本机实测：`review-response-v1.md` 36、`peer-brief-s3-3-7-f9.md` 16、
+`test_trace_pipeline.py` 16、`verify-brief-s3-3-6.md` 12，**现役 `docs/review-packet.md` 0**；
+计划书 v0.1~v0.4 **0**。另有 `git blame HEAD -- tasks/dbg-001-order-report.yaml` 可复现 39.2 第 5 条。
+
+四项常规复核（完整路径见 §34 末尾命令块）预期仍为 `614 passed` / `12 passed` /
+`0/0/0.25/0.5/1.0` / `OK (9fe9db7a2ecf881a)`。**（以上为 round-39 快照；round-40 落地后裁判值见 §40.4。）**
+
+---
+
+## 40. round-40 TD-034 (C) 加载期对账落地（2026-11-11）
+
+### 40.1 范围与授权
+
+人回「按照你的建议来」＝授权按 §39 末尾的三条建议推进：① **继续 (C) 落地**（被 round-39
+回件打断的那一步）；② **不采纳** `required: false` 降级留观察期（会再造一条无执行者的死声明，
+与 TD-020 口径冲突）；③ 三层消费者清单**只留 §39、不外扩**进契约文档。
+另：人上一轮已确认**无仓外任务 YAML 源**，(C) 的反证条件消除。
+
+本轮**只做 ①**：加载期对账落地。不改分数、不动任务 YAML、不动 builder 判定逻辑、
+不并入 TD-033 第四子项与 TD-035 两项（各单开）。落点让「YAML 评分策略声明」与
+builder 固定口径不一致时得到可读 `ReportError`，而不是静默生效一个假策略。
+
+### 40.2 改动清单（2 个文件）
+
+| 文件 | 改动 |
+|---|---|
+| `src/arena/diagnosis_report.py` | 新增 4 个常量（`GATE_DISQUALIFIED_IF` / `GATE_DISQUALIFY_RATIO` / `GATE_ON_UNSCORED` / `CREDIT_CONTRIBUTION`）、`_policy_value_matches()`、`_check_scoring_policy()`；在 `rubric_layers()` 末尾调用一次。文件是 CRLF（`core.autocrlf=true`），用**字节级插入**保留行尾，原文件备份与逐字 diff 留在仓外 `.redteam-tmp/` |
+| `tests/test_diagnosis_report.py` | 新增 **9 条**锁：正向 1（现役 YAML 与常量一致）、5 组 parametrize 负向锁、`False`≠`0` 类型边界、缺一个状态也算漂移、`formula`/两个 `source` **故意不锁**的口径锁 |
+
+**对账范围＝只锁影响分数的 5 组**：`gate.disqualified_if` / `gate.disqualify_ratio` /
+`gate.on_unscored` / `credit.denominator` / `credit.contribution`。
+`score.formula` 与 `gate.source` / `credit.source` 是纯说明字段，按 D-TD034-2 不锁，
+并由 `test_td034_does_not_lock_explanatory_fields` 把这条口径钉住。
+`contribution` 用严格类型比较（`type(value) is type(want)`），`False` 不能冒充 `0`。
+
+### 40.3 落点判据（为什么放 `rubric_layers()`）
+
+- `rubric_layers()` 是 `build_report()`、执行器 `trace_pipeline`、CLI 的**公共门**，
+  内存里改过的 task 也拦得住（§38.5 的验收判据正是「改任一字段值跑 `build_report()` 应得 `ReportError`」）。
+- **不放 `load_task()`**：那会让 `test_diagnosis_report.py` 模块级 `TASK = load_task(...)` 在漂移时
+  变成 collection error，而不是可读的测试失败；且会与 `build_report()` 重复校验同一份 YAML。
+- **不动 builder 判定**：五夹具分数零风险，`git diff` 显示判定行
+  `disqualified = bool(disqualifying)` / `credit_total = sum(...)` / `ratio = 0.0 if ...`
+  仍在 `:279/:289/:296` 原样。
+
+**十分钟可复现的最小片段**（仓库根，只读内存、不落盘）：
+```python
+import sys
+sys.path.insert(0, "src")
+import arena.diagnosis_report as dr
+t = dr.load_task("tasks/dbg-001-order-report.yaml")
+t["scoring"]["score"]["gate"]["disqualify_ratio"] = 0.3
+try:
+    dr.rubric_layers(t)
+except dr.ReportError as e:
+    print(e)   # YAML 评分策略与 builder 硬编码不一致：scoring.score.gate.disqualify_ratio=0.3（builder 固定为 0）
+```
+
+### 40.4 验证（全链路，外部裁判）
+
+| 阶段 | 局部锁 | 全量 | 五夹具 | 评审包 |
+|---|---|---|---|---|
+| 基线（round-39） | `-k f9_td020` 12 passed | 614 passed | `0/0/0.25/0.5/1.0` | `9fe9db7a2ecf881a` |
+| 落地后局部 | `-k td034` **9 passed**、`test_diagnosis_report.py` 32 passed、f9 12 passed | — | 不变 | — |
+| **最终** | **9 passed, 23 deselected** | **623 passed** | **不变** | **PASS1=PASS2 `16ab1fadac170efe`，`--check OK`** |
+
+- **6 组字节级变异**（`src/arena/diagnosis_report.py`）：M1 禁用调用 → **7 FAILED**；
+  M2/M3/M4/M5/M6 逐项让某一组对账恒真 → **1/2/1/1/2 FAILED**。
+  逐组 `RESTORED=True`、`FINAL_RESTORED=True`、`ALL_OK=True`，恢复后 `--check` 仍 `16ab1fadac170efe`。
+  M3 有 2 条（parametrize + `False` 边界锁），M6 有 2 条（parametrize + 缺状态锁）。
+- 行尾 `CRLF_ONLY=True`、`py_compile` 通过；匿名宽口径扫描（2 个改动文件 + 外发包 + 评审包）**0 命中 CLEAN**。
+- HEAD `03cf8c9`、**40 项**未 commit / 未 push（较基线 39 项 +1，已核清：是本轮**首次改动**
+  tracked 且原本 clean 的 `tests/test_diagnosis_report.py`，使其由 clean 变为 ` M`；
+  `.pytest_cache/` / `__pycache__/` 均被 `.gitignore` 排除，无临时文件入仓）。
+
+### 40.5 §34 悬案：再推进一格，触发点仍未核清
+
+本轮过渡态全量**直接 623 passed、没出现预期的计数锁红灯**，且 PASS1 生成器直接记
+`623 passed / 623 total`（包当时按理还是 614 口径）。这是 §34/§35/§36/§37 同类现象第四次。
+
+**已做的独立核证**：
+1. 受控实验：把 623 包内计数改成 614 后跑全量 → **`2 failed, 621 passed`**
+   （`test_fingerprint_matches_body` + `test_test_count_matches_repo` 真红），字节级恢复后
+   `--check OK (16ab1fadac170efe)` ⇒ **Q7 过渡态记录机制有效、十分钟可复现**。
+2. 源码只读核证：`tests/test_review_packet.py` 里所有 `write_packet(out, fast=True)` /
+   `build(fast=True)` 都不写默认包；`PACKET = review_packet.DEFAULT_OUT`；`body` 读磁盘包；
+   `_pytest_count()` 真跑 `pytest tests/ -q --collect-only`；无 `conftest.py`；无 autouse fixture
+   ⇒ 排除「测试自己把包重写了」这个候选解释。
+
+**结论**：机制有效已再次独立证明，但「本轮 PASS1 为何不记过渡态、首次全量为何直绿」
+**触发点仍无足够证据，维持「假设」，不外推、不编原因**。§34 原仓同类悬案继续独立挂着。
+（附带：本轮新增的 `docs/review-packet.md` 一次字节级恢复，mtime 会变但内容一致，`--check` 已验。）
+
+### 40.6 边界与残余风险（不得宣称过度）
+
+1. **(C) 对账的是「YAML 声明 vs 新增常量」，不是「builder 逻辑 vs 常量」**。
+   若有人改 `build_report()` 的判定逻辑而不改常量，本函数查不出；外部裁判是五夹具分数锁与
+   `test_task_yaml.py` 的声明断言。彻底同源须让 builder 引用这些常量 —— **本轮不扩大范围**。
+2. **`review_packet._task_struct()` 直读 YAML，不经 `rubric_layers()`**。若有人改 YAML 字段值：
+   执行路径会 `ReportError`，但生成器仍会把新值印进包正文；`--check` 会因正文漂移报 `STALE`，
+   两遍重生成会把错误值写进包。建议后续把同一对账函数接进 `_task_struct()`，
+   **新登记 TD-036（候选，待人确认是否立项）**。
+3. **(C) 锁死配置自由度**：将来若有第二份任务 YAML 需不同评分策略，须改代码而非改 YAML。
+   人已确认无仓外任务 YAML 源，磁盘 `tasks/` 仅 1 份（§38.5 反证条件已消除）。
+4. 说明字段故意不锁，已由正向锁钉住，防止后续「顺手扩大到 8 组」。
+
+### 40.7 TD 状态（AI 不替人销项）
+
+| 编号 | 状态 | 依据 |
+|---|---|---|
+| TD-020 | **已销**（round-37） | 不变 |
+| **TD-034** | **建议销项、待人确认** | (C) 已落地，5 组影响分数的声明任一漂移即 `ReportError`；9 条锁 + 6 组变异覆盖 |
+| TD-033 | 部分收口、维持未销 | 4 子项中「rubric 条目非 dict → 裸 TypeError」未覆盖（§38.3 T1/T2） |
+| TD-035 | 维持未销 | `tool_calls.required=false` 未读、后置依赖顺序两项均未覆盖（§38.3 T3/T4） |
+| TD-036 | **候选、待人确认** | `review_packet._task_struct()` 不经评分策略对账（40.6 第 2 条） |
+
+### 40.8 待人拍板 / 后续（我不替决）
+
+1. TD-034 是否销项（我方建议销）。
+2. TD-036 是否立项 / 何时把对账接进 `_task_struct()`。
+3. TD-033 第四子项、TD-035 两项各单开的先后顺序（本轮按建议未并入）。
+4. 是否让 builder 判定逻辑引用新常量以彻底同源（40.6 第 1 条；我方建议**暂不做**，
+   会动判定层、收益低于风险）。
+5. 之后才轮到 D5/D6 与 Q4(d)。**本轮不提外评**：这一段全是仓内可判定事实
+   （磁盘 + pytest + 字节级变异 + 指纹锁），无本地裁判覆盖不到的语义/契约盲区。
+
+### 40.9 本机复核
+
+完整路径见 §34 末尾命令块（该块只在本机侧使用、不外发）。预期：
+`pytest tests/ -q` → **623 passed**；
+`pytest tests/test_diagnosis_report.py -q -k td034` → **9 passed, 23 deselected**；
+`pytest tests/test_trace_pipeline.py -q -k f9_td020` → **12 passed, 155 deselected**；
+`python src/arena/trace_pipeline.py --fixture all` → `0/0/0.25/0.5/1.0`；
+`python src/arena/review_packet.py --check` → `OK (16ab1fadac170efe)`。
+
+---
+
+## 41. round-41 TD-036 立项并落地：生成路径与执行路径同源（2026-11-11）
+
+### 41.1 范围与授权
+
+人回「按照你的想法来」＝按 §40.8 的建议推进。本轮**只做第 2 项**（TD-036 立项并落地），
+理由三条：① 它是 round-40 (C) 落地后**当场暴露的直接残余**——同一份 YAML 评分策略声明有
+两个消费者，`rubric_layers()` 堵住了执行路径，`_task_struct()` 没堵；② 改动只复用已有函数，
+不新建常量、不改判定逻辑、不改任务 YAML、不改分数；③ 判据可判定且十分钟可复现。
+其余四项按 §41.8 的顺序留后续，本轮不碰。
+
+`TD-034` 按 §40.8 第 1 项「我方建议销」+ 本轮授权，在 §41.7 记为**已销**；
+这是执行人的授权，不是 AI 自决，若理解有误请直接推翻。
+
+### 41.2 改动清单（2 个代码 / 测试文件，均为 LF）
+
+| 文件 | 改动 |
+|---|---|
+| `src/arena/review_packet.py` | 顶层补 `src` 到 `sys.path` 后 `from arena.diagnosis_report import ReportError, _check_scoring_policy`；`_task_struct()` 读 YAML 后调用对账，`ReportError` 转 `PacketError("评分策略漂移，拒绝生成评审包：…") from exc`；`check()` 的失败提示去掉「（文件头可能被改坏）」 |
+| `tests/test_review_packet.py` | 新增 **9 条** `td036` 锁：正向 1（现役 YAML 不被自己挡住）、5 组 parametrize 负向（逐组漂移 → 拒绝且错误里点名完整路径）、写盘前拒绝、`--check` 返回 1、**同源锁**（改 builder 常量，生成器跟着拒绝） |
+
+**唯一一处不属于 TD-036 主体的改动**：`check()` 里「（文件头可能被改坏）」这句。
+策略漂移会走这条分支，原句把一个未验证的猜测当默认解释；改成中性措辞，真实原因由
+异常自带。既有测试无断言依赖该措辞（已 grep 核过）。
+
+### 41.3 判据：为什么是「复用」而不是「复制」
+
+- 落点选 `_task_struct()`：它是 `build()` → `write_packet()` / `check()` 的公共门，
+  包正文里的 `disqualify_ratio` / `on_unscored` / `denominator` 都由它印出。
+  若不在这里拦，篡改值会进对外文档，两遍重生成还会把它写死（§40.6 第 2 条）。
+- **不复制 5 组常量**：`test_td036_generator_follows_builder_constants` 把
+  `diagnosis_report.GATE_DISQUALIFY_RATIO` 改成 `0.3`，生成器必须跟着拒绝——
+  这条锁钉住「没有第二真相源」，正是 round-39 死字段 / CDC 口径要求的。
+- 异常转换保留 `from exc`，`PacketError` 会被 `main()` / `check()` 既有分支接住，
+  不产生裸 traceback。
+- 顶层 import 让 `python src/arena/review_packet.py`（脚本模式）与
+  `from arena import review_packet`（包模式）都能跑；脚本模式下 `sys.path[0]`
+  是 `src/arena`，不补 `src` 会 `ModuleNotFoundError`。
+
+**十分钟最小复现**（仓库根，只写系统临时目录，不动原仓 YAML）：
+
+```python
+import sys, tempfile, yaml
+from pathlib import Path
+sys.path.insert(0, "src")
+from arena import review_packet
+
+t = yaml.safe_load(review_packet.TASK.read_text(encoding="utf-8"))
+t["scoring"]["score"]["gate"]["disqualify_ratio"] = 0.3
+p = Path(tempfile.mkdtemp()) / "drift.yaml"
+p.write_text(yaml.safe_dump(t, allow_unicode=True), encoding="utf-8")
+review_packet.TASK = p
+try:
+    review_packet._task_struct()
+except review_packet.PacketError as e:
+    print(e)   # 评分策略漂移，拒绝生成评审包：…disqualify_ratio=0.3（builder 固定为 0）
+```
+
+### 41.4 验证（全链路，外部裁判）
+
+| 阶段 | 局部锁 | 全量 | 五夹具 | 评审包 |
+|---|---|---|---|---|
+| 基线（round-40） | `-k td034` 9 passed | 623 passed | `0/0/0.25/0.5/1.0` | `16ab1fadac170efe` |
+| 落地后局部 | `-k td036` **9 passed, 30 deselected** | — | 不变 | — |
+| 过渡态全量 | — | **632 passed（直绿，见 41.5）** | 不变 | — |
+| **最终** | `-k td036` 9、`-k td034` 9、`-k f9_td020` 12 | **632 passed** | **不变** | **PASS1=PASS2 `9d443bd3641e99c4`，`--check OK`** |
+
+- 包内自动段：`**632 个用例被收集**` / `632 passed / 632 total`；指纹从
+  `16ab1fadac170efe` → `9d443bd3641e99c4`，来源是**新增 9 条测试导致的计数与实测行变化**，
+  不是源码字节（`_snapshot()` 不含产品源码字节，§34 已核）。
+- **3 组字节级变异**（`src/arena/review_packet.py`，每组跑 `-k td036`）：
+  M1 禁用对账调用 → **8 failed, 1 passed**；M2 捕获异常后不抛 → **8 failed, 1 passed**；
+  M3 传 `{}` 而非真 `task` → **1 failed, 8 passed**（只有正向锁抓得到，如实记录）。
+  逐组 `RESTORED=True`、`FINAL_RESTORED=True`、`ALL_OK=True`；恢复后 `--check` 仍
+  `9d443bd3641e99c4`。
+- **计数锁受控实验**：把包内 `632 个用例被收集` 字节级改回 `623`，单条
+  `test_test_count_matches_repo` → **`1 failed, 38 deselected`**（真红）；
+  字节级恢复 `RESTORED=True` ⇒ 本轮计数锁没坏。
+- 两文件 `CRLF=0`（LF-only 462 / 489）、`py_compile` 通过；HEAD `03cf8c9`、
+  **40 项**未 commit / 未 push（与基线相同：本轮两个代码文件、评审包均为既有的
+  untracked 文件，改动不新增工作项；`.pytest_cache/` / `__pycache__/` 已被 `.gitignore` 排除）。
+- **匿名口径订正（两处口径错误 + 一处自述矛盾，全部就地订正并留痕）**：
+  ① 宽口径直扫全部文件报 `DIRTY`，是误报——`src/arena/review_packet.py:57` 的
+  `FORBIDDEN = (...)` 词表定义行本身含这五个词；`docs/review-response-v1.md`
+  另 5 处历史昵称是**内部决策记录既有内容**（§1426 已有同类留痕）。
+  ② 改用「整份 `git diff` 新增行」仍报 `DIRTY`（3 处历史昵称）——该文档从未 commit，
+  `git diff` 累积的是**全部历史轮次**的 3781 行新增，不是本轮口径。
+  ③ 最终按本轮真实范围重扫：本轮新增区段 §41（148 行）+ 两个 untracked 代码文件
+  （排除词表定义行）+ **9 个外发文件** → **0 命中 CLEAN**。
+  另：§41 首版把昵称字面写进了说明文字，会让「本轮新增 0 命中」自相矛盾，
+  已改成「历史昵称」中性表述后复扫通过。
+
+### 41.5 §40.5 悬案：第五次同类现象，触发点仍未核清
+
+本轮过渡态全量**直接 632 passed、没出现预期的计数锁红灯**，PASS1 生成器直接记
+`632 passed / 632 total`，且 PASS1=PASS2。这是 §34/§35/§36/§37/§40 之后的第五次。
+
+本轮新增的独立证据只有一条：受控实验证明**把包内计数改回旧值就会真红**，
+所以「过渡态时磁盘包里的计数已是 632」是可判定的必要条件；但
+**「谁在全量之前把它写成 632」仍无证据**——仓内无上一轮评审包备份
+（`.redteam-tmp/` / `.isofix-f9/` 均无副本），且包已被本轮 PASS1/PASS2 与恢复操作覆盖，
+mtime 无法回溯。§40.5 已排除「测试自己把包重写了」（源码只读核证）。
+
+**结论：机制有效已再次独立证明，触发点维持「假设」，不外推、不编原因**。
+§34 原仓同类悬案继续独立挂着。
+
+### 41.6 边界与残余风险（不得宣称过度）
+
+1. **只接了第二个消费者**。`_core_fact_tokens()` 也直读 YAML（Q7 白名单，取
+   `rubric_gate/credit` 与 `attribution`），口径是「结构派生」而非「评分策略」，
+   本轮不接；是否单独立项由人定，**暂不编号**，避免台账膨胀。
+2. **对账仍是「YAML 声明 vs 常量」，不是「builder 逻辑 vs 常量」**（§40.6 第 1 条未变）。
+   若有人改 `build_report()` 判定而不改常量，本函数仍查不出；外部裁判是五夹具分数锁。
+3. **`--check` 在策略漂移时返回 1 并打印 `FAIL`**，不是 `OK/STALE/TAMPERED` 三态之一。
+   它走的是既有「重算失败」分支，三态语义未改，但对外说明时要讲清有第四类结果。
+4. **依赖面**：顶层 import 让 `review_packet` 间接依赖 `jsonschema`（`diagnosis_report`
+   顶层 import）。`requirements.txt` 已 pin `jsonschema==4.26.0`，且生成器原本就
+   subprocess 调 `diagnosis_report.py --fixture all`（同样需要它），故**无新增外部依赖**。
+5. 说明字段（`formula` / 两个 `source`）仍按 D-TD034-2 故意不锁；本轮未扩大对账范围。
+
+### 41.7 TD 状态
+
+| 编号 | 状态 | 依据 |
+|---|---|---|
+| TD-020 | 已销（round-37） | 不变 |
+| **TD-034** | **已销（round-41，人本轮授权按 §40.8 建议；可推翻）** | (C) 已落地，9 条锁 + 6 组变异覆盖，本轮全链路复核仍绿 |
+| **TD-036** | **本轮立项并落地；维持未销，待人验收** | 9 条锁 + 3 组变异 + 两遍重生成；是否销项由人拍板 |
+| TD-033 | 部分收口、维持未销 | 第 4 子项「rubric 条目非 dict → 裸 TypeError」未覆盖（§38.3 T1/T2） |
+| TD-035 | 维持未销 | `tool_calls.required=false` 未读、后置依赖顺序两项均未覆盖（§38.3 T3/T4） |
+
+### 41.8 后续顺序（建议，我不替决）
+
+1. 人对本轮验收 → 定 TD-036 是否销项。
+2. TD-033 第 4 子项**单开一步**。
+3. TD-035 两项**各单开一步**（契约口径与输入形状不同，不合批）。
+4. builder 判定逻辑引用新常量（§40.6 第 1 条）：我方建议**暂不做**，会动判定层、收益低于风险。
+5. 之后才轮到 D5/D6 与 Q4(d)。
+6. **本轮不提外评**：这一段全是仓内可判定事实（磁盘 + pytest + 字节级变异 + 指纹锁），
+   无本地裁判覆盖不到的语义/契约盲区；§41.6 第 1 条是明确的范围边界，不是判据歧义。
+
+### 41.9 本机复核（完整路径，只在本机侧使用、不外发）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_review_packet.py -q -k td036
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_diagnosis_report.py -q -k td034
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k f9_td020
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期依次：`632 passed` / `9 passed, 30 deselected` / `9 passed, 23 deselected` /
+`12 passed, 155 deselected` / `0/0/0.25/0.5/1.0` / `OK (9d443bd3641e99c4)`。
+> **时点说明（round-42 补，不改历史记录）**：以上是 §41 当时的预期值，现已被 round-42 的
+> 6 条新锁推进为 `638 passed` / `00894ca2d34edb79`；**本机复核请以 §42.10 为准**。
+
+---
+
+## 42. round-42 TD-033 第 4 子项落地：rubric 条目形状校验（2026-11-12）
+
+### 42.1 范围（一次一个小步）
+
+人回「继续」，按 §41.8 第 2 项推进：**只做 TD-033 第 4 子项**
+（§38.3 T1/T2：rubric 条目非 dict 时抛裸 `TypeError` → 改为加载期可读 `ReportError`）。
+不改 YAML、不改判定逻辑、不改分数、不碰 TD-035 两项、不让 builder 判定行引用常量。
+「继续」是否同时构成对 round-41 的验收与 TD-036 销项，**本轮不代为认定**，见 §42.9。
+
+### 42.2 改动清单（2 个文件）
+
+| 文件 | 改动 | 行尾 |
+|---|---|---|
+| `src/arena/diagnosis_report.py` | 新增公共函数 `_check_rubric_item_shapes(task)`（:118），在 `rubric_layers()` 内 `gate_ids` 取值**之前**调用（:149）。遍历 `rubric_gate` / `rubric_credit`，任一条不是映射即抛 `ReportError`，消息点名层名、1-based 序号、实际类型与值 | 字节级插入，纯 CRLF **432 行**，`LF-only=0`，无 `/r/n` 字面残留 |
+| `tests/test_diagnosis_report.py` | 新增 6 条 `td033_shape` 锁：T1/T2 × 2 入口（`rubric_layers()` / `build_report()`）、现役 YAML 正向、坏条目在**任意位置**（末条 `None`）也要点名序号 | LF（HEAD 版本来即 LF），`git diff` 为纯追加 **111 行、0 删除**，无全文件行尾改写；Git 的 `LF will be replaced by CRLF` 警告来自 `core.autocrlf`，非本轮引入 |
+
+抽成公共函数而非内联，沿用 §39 / §41 的**同源口径**：形状规则只有一份判据，
+将来生成路径若要接入直接复用，不复制成第二真相源。**本轮未接入生成路径**（见 §42.8 边界）。
+
+### 42.3 十分钟验证（不落盘，可直接跑）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -c @'
+import sys; sys.path.insert(0, "src")
+from arena.diagnosis_report import load_task, rubric_layers, ReportError
+t = load_task("tasks/dbg-001-order-report.yaml")
+t["rubric_gate"][0] = "not-a-dict"
+try:
+    rubric_layers(t)
+except ReportError as e:
+    print("REPORT_ERROR:", e)
+'@
+```
+
+判据：必须打印 `REPORT_ERROR: rubric_gate 第 1 条断言不是映射（实际 str: 'not-a-dict'）…`，
+而不是 `TypeError: string indices must be integers`。
+
+### 42.4 修复前 / 后对照（本地复现，非推断）
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| T1 `rubric_gate[0]="not-a-dict"` | `rubric_layers()` → `TypeError: string indices must be integers, not 'str'` | `ReportError`，点名 `rubric_gate 第 1 条 … 实际 str` |
+| T2 `rubric_credit[0]=42` | `build_report()` → `TypeError: 'int' object is not subscriptable` | `ReportError`，点名 `rubric_credit 第 1 条 … 实际 int` |
+
+两个入口（`rubric_layers()` 直连与 `build_report()` 全链路）都已验证。
+
+### 42.5 本地裁判实测（本轮全部重跑）
+
+| 裁判 | 实测 |
+|---|---|
+| 全量 `pytest tests/ -q` | **638 passed**（632 + 6） |
+| `-k td033_shape` | **6 passed, 32 deselected** |
+| 邻近回归 `-k td034` / `-k td036` / `-k f9_td020` | **9 / 9 / 12 passed** |
+| 五夹具 `--fixture all` | `0 / 0 / 0.25 / 0.5 / 1.0`，错误模式不变 |
+| 评审包两遍重生成 | PASS1 = PASS2 = **`00894ca2d34edb79`**，`snapshot-sha=03cf8c9` |
+| `--check` | `OK (00894ca2d34edb79)` |
+| 正文指纹独立复算 | 剥离首行后 `sha256[:16]` = `00894ca2d34edb79`，`MATCH=True` |
+| 编译 / 行尾 / 匿名 | `py_compile` OK；源码 CRLF 432 行；本轮新增内容 0 命中 CLEAN |
+| 仓库 | HEAD `03cf8c9`，工作区 **40 项**未 commit / 未 push |
+
+### 42.6 四组字节级变异（CRLF，逐组恢复）
+
+| 变异 | 手法 | 结果 |
+|---|---|---|
+| M1 禁用调用 | `_check_rubric_item_shapes(task)` → `pass` | **5 failed, 1 passed** |
+| M2 放宽判据 | `if not isinstance(row, dict):` → `if False:` | **5 failed, 1 passed** |
+| M3 只查 gate | `(GATE, CREDIT)` → `(GATE,)` | **3 failed, 3 passed** |
+| M4 只查首条 | `rows = ...` → `rows = ...[:1]` | **1 failed, 5 passed** |
+
+逐组 `RESTORED=True`，`FINAL_RESTORED=True`，`ALL_OK=True`；
+恢复后 CRLF 432 行不变、`py_compile` OK、`--check OK (00894ca2d34edb79)`。
+M3/M4 的失败数少于 M1/M2 属**预期**：它们只破坏「两层都查 / 任意位置」这两条性质，
+恰好证明测试锁覆盖了这两个维度，不是锁失效。
+
+### 42.7 过程留痕（不抹平）
+
+1. **上一轮长命令被人中断**：本轮不凭记忆续跑，先核 `HEAD / status / --check / 包内计数 / mtime`，
+   确认中断前两遍重生成至少已跑过一遍（包内已是 638）。中断点具体停在哪一步**无输出证据，标不确定，不编原因**。
+2. **首次字节插入触发 `SyntaxError`**：15 行插入片段中**只有第一行**的 `\r\n` 被命令传输层改写成字面
+   `/r/n`。读字节定位后一次性替换为 `bytes([13,10])`，复验编译通过、`SLASH_R_N_LEFT=0`。
+   根因是转义传输，不是代码逻辑；后续变异脚本统一改用 `CRLF = bytes([13,10])` 构造，未再复发。
+3. **PEP8 空行补齐**：插入后新函数与 `rubric_layers` 之间只有 1 空行（文件其余函数间为 2 空行），
+   补 1 个 CRLF；补完重跑编译 + 局部锁 + 两遍重生成，包指纹**未变**（引出 §42.8 的核证）。
+4. **评审包文件字节哈希每次重生成都变**（`4fab94…` → `cd9fcd…` → `0dacd4…`），
+   但 `packet-sha256` 恒为 `00894ca2d34edb79`。核源码 `review_packet.py:348-355`：
+   头行 `generated=<ISO 时间戳>` 每次变，而指纹只对**剥离头行的正文**计算。
+   独立复算 `MATCH=True` 坐实，**属设计、非异常**。
+
+### 42.8 新观察（实证）：`--check` 不覆盖源码实现文本
+
+受控实验：把 `diagnosis_report.py` 的 `_check_rubric_item_shapes(task)` 改成 `pass`（等价于 M1 变异），
+再跑 `--check` → **`OK: 评审包内容与仓库一致（00894ca2d34edb79）`，RC=0**；
+字节恢复后仍 `OK`。即：**源码实现被篡改，`--check` 不会报红**。
+
+- **原因（读源码 + 实验一致）**：`_snapshot()`（:152-167）只现算锚点提交 sha / 最近 8 条提交 /
+  测试收集数 / 单测实测行 / 五夹具分数 / 任务结构 / 依赖，**不含源码文件内容哈希**；
+  `packet-sha256` 是包**正文**的指纹，用于检测包自身过期或被改。
+  本次篡改不改变上述任何被扫描量（正常 YAML 条目全是映射，五夹具分数不变），故 OK。
+- **定性**：不是机制故障。`--check` 的口径是「包内数字与结构 vs 当前工作区」，
+  源码文本一致性由 `git diff`、pytest 与字节级变异裁判覆盖，**不在这条命令的职责内**。
+  但它与「内容与仓库一致」这句措辞存在字面落差，值得显式写清。
+- **登记候选 TD-037**：是否让 `--check` 覆盖源码实现文本哈希，或仅在文档中明确该口径边界。
+  **本轮不修、不立项，待人拍板**；也不与 §34 悬案混为一谈（那是计数锁触发点，两回事）。
+
+### 42.9 TD 状态与后续顺序
+
+| TD | 状态 | 依据 |
+|---|---|---|
+| TD-033 | **4/4 子项已覆盖，建议销项、待人确认** | 前 3 项由 round-36 Step1 覆盖，第 4 子项本轮落地（T1/T2 复现 + 6 锁 + 4 变异） |
+| TD-034 | 已销 | round-41 记录 |
+| TD-036 | 已落地、维持未销，**待人明示销项** | round-41；本轮「继续」不代为认定 |
+| TD-035 | 维持未销 | `tool_calls.required=false` 未读 / 后置依赖顺序两项未覆盖 |
+| **TD-037** | **新候选，待人决定是否立项** | §42.8 实证边界 |
+
+后续建议顺序（不替决）：人验收 → **TD-033 与 TD-036 销项** → TD-035 两项**各单开一步** →
+之后才轮到 D5/D6 与 Q4(d)；builder 判定逻辑引用常量**仍建议暂不做**（§40.6 第 1 条）。
+**本轮不提外评**：本段落全部是仓内可判定事实（磁盘字节 + pytest + 变异 + 指纹复算），
+§42.8 是新观察到的**边界事实**而非契约应然歧义，无本地裁判覆盖不到的盲区。
+
+### 42.10 本机复核（完整路径，只在本机侧使用、不外发）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_diagnosis_report.py -q -k td033_shape
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_diagnosis_report.py -q -k td034
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_review_packet.py -q -k td036
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k f9_td020
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期依次：`638 passed` / `6 passed, 32 deselected` / `9 passed, 29 deselected` /
+`9 passed, 30 deselected` / `12 passed, 155 deselected` / `0/0/0.25/0.5/1.0` /
+`OK (00894ca2d34edb79)`。
+> **时点说明（round-43 补，不改历史记录）**：以上是 §42 当时的预期值，现已被 round-43 的
+> 3 条新锁推进为 `641 passed` / `a2646bbd35144673`；**本机复核请以 §43.10 为准**。
+
+---
+
+## 43. round-43 TD-035 ① 落地：清除 `tool_calls.required` 死声明（2026-11-12）
+
+### 43.1 范围与授权
+
+人回「没问题，继续」＝对 round-42 验收通过，并按 §42.9 顺序推进：
+① **TD-033 / TD-036 销项**（按 §42.9 第 1 项执行；若「继续」不含此授权，请直接推翻，改动只在文档状态块）；
+② **TD-035 ① 单开一步**（本轮）。**TD-035 ②（后置依赖顺序）下一轮单开**，不合批。
+判定语义、分数、执行器、`item_fields` / `status_enum` 一字未改。
+
+### 43.2 三案取舍（为什么采纳 A）
+
+| 案 | 做法 | 后果（本地实证） | 裁决 |
+|---|---|---|---|
+| **A 删声明（采纳）** | 删 `trace_requirements.minimum.tool_calls.required` + 补注释 | 三态复现已证明**行为零变化**；消除第二条无执行者的声明 | 依据见 43.3；风险最低 |
+| B 真执行 | 让 `required` 生效（缺 `tool_calls` 时读开关） | **改判定语义**：`required:false` 会让缺轨迹不报结构损坏，牵动 `schema_valid` / 归因 / 五夹具；M2 变异实测被新锁抓到 `1 failed` | 不采纳。违反「不改判定语义」，且 §39.6 已明确反对该方向 |
+| C 加载期对账 | 锁死 `required is True`，漂移即拒绝 | 声明无执行者却被续命，配置自由度归零 | 不采纳。与 §40.6 第 3 条「锁死配置自由度」同代价，且不如 A 干净 |
+
+**这是既有拍板口径的外推，不是新拍板**：Q1(b) 已删 `agent_id.required`，§39.6 已拍板
+「无执行者的声明不留、不采纳 `required:false` 降级留观察期」。若人希望改走 B / C，
+改动集中在 YAML 1 行 + 3 条锁 + 一处分支，回退成本低，一句话即可改道。
+
+### 43.3 消费者盘点（删除前提，实证）
+
+| 层 | 结果 |
+|---|---|
+| 代码读 `required` 的**全部**位置 | `assertion_evaluator.py:967/1100`（**参数级**，另一套语义）、`trace_pipeline.py:118`（`final_status.required`） |
+| `tool_calls.required` 读取点 | **0**（`_trace_audit_issues()` :91-93 对缺 `tool_calls` 是硬编码结构约束，不看开关） |
+| 生成路径 | `review_packet._task_struct()` 不读 `trace_requirements`；外发 `docs/review-packet.md` 对 `trace_requirements / required / tool_calls` **0 命中** |
+| 仓内其余 / 仓外 | `tests/test_assertion_evaluator.py:372` 只读同节 `item_fields`（未动）；工作区 `tools/` 目录 0 命中；沿用 round-40 人确认的「无仓外任务 YAML 源」 |
+
+三态内存复现（不落盘）：`required=True / False / 删 key` 下
+`_trace_audit_issues()` 均返回 `['missing_required_field']`，
+`_derive_trace_audit()` 的 `schema_valid=False` / `call_count=0` 全等 ⇒ 该 key **确无执行者**。
+
+### 43.4 改动清单（2 个文件，源码 0 改动）
+
+| 文件 | 改动 | 行尾 |
+|---|---|---|
+| `tasks/dbg-001-order-report.yaml` | 删 `required: true` 一行，补 3 行注释：说明硬约束在 `_trace_audit_issues()` :91-93、item 规则由 `item_fields` / `status_enum` 提供、不声明 `required` 的理由（Q1(b) / §39.6 同一口径） | 字节级替换，纯 CRLF **276 → 278 行** |
+| `tests/test_trace_pipeline.py` | 追加 3 条 `td035` 锁：① 配置锁（YAML 不含死声明 + `final_status.required` 有执行者故保留）；② 行为锁（三态结果全等，钉住「无执行者」这一事实）；③ 正向锁（删声明后缺 `tool_calls` 仍报结构损坏、派生值一致） | 字节级追加，纯 CRLF **1344 → 1387 行** |
+
+**锁钉的是当前口径**：若改道 B / C，配置锁与行为锁须同步反转，见 43.8。
+
+### 43.5 十分钟验证（不落盘，可直接跑）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -c @'
+import copy, sys; sys.path.insert(0, "src")
+from arena.diagnosis_report import load_task
+from arena.trace_pipeline import _trace_audit_issues
+m = load_task("tasks/dbg-001-order-report.yaml")["trace_requirements"]["minimum"]
+print("HAS_REQUIRED_KEY:", "required" in m["tool_calls"])
+t = {"agent_id": "probe", "final_status": "completed"}
+for v in (True, False, None):
+    r = copy.deepcopy(m)
+    if v is None: r["tool_calls"].pop("required", None)
+    else: r["tool_calls"]["required"] = v
+    print("VALUE", v, "->", _trace_audit_issues(t, r))
+'@
+```
+
+判据：`HAS_REQUIRED_KEY: False`，且三行结果**全等** `['missing_required_field']`。
+
+### 43.6 本地裁判实测
+
+| 裁判 | 实测 |
+|---|---|
+| **过渡态全量** | **`1 failed, 640 passed`** —— `test_test_count_matches_repo` 报「评审包 638 vs 实际 641」，**第一次按预期真红**（§34 悬案见 43.7） |
+| 两遍重生成 + `--check` | PASS1 = PASS2 = **`a2646bbd35144673`**，`--check OK`，正文 sha256 独立复算 `MATCH=True`，包内 641 / 641 |
+| 最终全量 | **641 passed**（638 + 3） |
+| `-k td035` / 邻近锁 | **3 passed, 167 deselected**；`f9_td020` 12、`td033_shape or td034` 15、`td036` 9 |
+| 五夹具 `--fixture all` | `0 / 0 / 0.25 / 0.5 / 1.0`，错误模式不变 |
+| 4 组字节级变异 | M1 死声明回潮 **2 failed** / M2 案 B 真执行 **1 failed** / M3 硬约束禁用 **2 failed** / M4 对照字段翻转 **1 failed**；逐组 `RESTORED=True`、`FINAL_RESTORED=True`、`ALL_OK=True` |
+| 恢复后 | `--check OK (a2646bbd35144673)`、`py_compile` OK、CRLF 保留（YAML 278 / 测试 1387 / 源码 LF 317） |
+| 仓库 / 匿名 | HEAD `03cf8c9`、工作区 **40 项**未 commit / 未 push；本轮新增内容匿名 0 命中 CLEAN |
+
+### 43.7 过程留痕（不抹平）
+
+1. **§34 悬案出现反转**：前五次过渡态「全量直绿、PASS1 不记旧计数」，**本轮首次按预期报红**
+   （计数锁 `1 failed, 640 passed`）。这独立证明机制一直有效，且「直绿」不是必然；
+   但**此前为何直绿仍无证据，维持假设，不编原因**。
+2. **变异脚本首轮锚点断言失败**：把 `item_fields:` 误当作独立行，实际是
+   `item_fields: [call_index, …]`；断言在任何 `write_bytes` 之前触发，**磁盘未被改动**
+   （紧随其后的 `--check OK` 佐证）。按「定位根因、一次性修复」改为**先核 4 个锚点 count 再执行**，
+   一次通过（`ANCHOR_COUNTS` 全 1），未做试错式重试。
+3. 命令链用 `&&` 串联，过渡态真红导致 PASS1 未执行——这是预期行为，已从「核状态 → 重生成」重新续跑，
+   没有把过渡态红当成缺陷去「修」。
+
+### 43.8 边界与遗留（不擅自扩散）
+
+- **删声明 ≠ 让声明生效**。若外部口径要求「YAML 写了就必须执行」，案 A 是**消除死字段**而非补执行器，
+  需人另拍板改走 B；本轮不代决。
+- `_trace_audit_issues()` 的 docstring 仍写「只检查 YAML 已声明的结构规则」，与 :91-93 的硬编码检查
+  存在措辞落差。**登记为已知文档瑕疵，本轮不改**：改源码注释会扩大改动面、触发额外验证，留待统一整理。
+- 3 条新锁钉的是当前口径；改道 B / C 时须同步反转（43.4 末）。
+- **TD-037**（`--check` 不覆盖源码实现文本）仍是候选，本轮未动。
+
+### 43.9 TD 状态与后续顺序
+
+| TD | 状态 | 依据 |
+|---|---|---|
+| TD-033 | **已销**（按人验收授权） | 4/4 子项覆盖，round-42 证据齐 |
+| TD-036 | **已销**（按人验收授权） | round-41 落地 + 9 锁 + 变异证据齐 |
+| TD-035 | **① 已落地、建议销项待人确认；② 后置依赖顺序维持未销** | 本轮只做 ①，各单开 |
+| TD-037 | 候选，待人决定是否立项 | §42.8 |
+
+后续建议顺序（不替决）：**TD-035 ②（下一轮单开）** → TD-035 整体销项 → TD-037 立项与否 →
+之后才轮到 D5/D6 与 Q4(d)；builder 引用常量仍建议暂不做。
+**本轮不提外评**：三案后果均由本地裁判（内存复现 / pytest / 字节级变异）判定，
+取舍依据是仓内既有拍板（Q1(b) / §39.6），无本地裁判覆盖不到的语义盲区。
+
+### 43.10 本机复核（完整路径，只在本机侧使用、不外发）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k td035
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/test_trace_pipeline.py -q -k f9_td020
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/trace_pipeline.py --fixture all
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期依次：`641 passed` / `3 passed, 167 deselected` / `12 passed, 158 deselected` /
+`0/0/0.25/0.5/1.0` / `OK (a2646bbd35144673)`。
+
+## 44. round-44 TD-035 ② 只读核证与决策包：后置依赖顺序（2026-11-12）
+
+### 44.1 范围、授权边界与本轮不落地代码的硬依据
+
+人回「继续」＝按 §43.9 开 **TD-035 ②（后置依赖顺序）**，单开一步、不合批。
+本轮**只读**：不改 `src/`、不改 `tests/`、不改 YAML、不改评审包、不改判定语义与分数；
+磁盘唯一写入是本节决策记录 + `HANDOFF.md` 状态块 + 工作区日志。
+
+**为什么本轮不落地代码（是拍板依据，不是谨慎托辞）**：
+
+- §35.7 第 4 条把「是否加 Step1b 执行顺序检查」列为**待人拍板附加项**；
+  §36.6 第 4 条再次列出「是否补 `uniqueItems` / Step1b」。
+- §36.1 裁决原文为「**不收** Step1b 执行顺序检查 | 属 TD-033 后续，**独立排期，不塞进本步**」。
+  「独立排期」≠「批准添加」。现在排期到了，拍板权仍归人。
+- 加加载期顺序校验会**收紧合法配置集合**（此前能加载的 T4 配置将被拒），属契约变更；
+  与 round-43 ①「三态结果全等 ⇒ 无执行者 ⇒ 删死声明、行为零变化」**不同型**，
+  不能外推 Q1(b) / §39.6 的既有拍板口径。
+
+### 44.2 契约依据（磁盘逐字核；三处此前未并入 TD-035 登记）
+
+| # | 位置 | 原文（节选） | 判读 |
+|---|---|---|---|
+| C1 | `docs/diagnosis-report-schema.md:41` | 「顺序约定：`assertions[]` **先 gate 后 credit**，与执行顺序一致（执行器先跑门禁，不过就不必跑昂贵的 credit 判定）。`R5` 排在 `R2` 之前不是笔误。」 | 顺序口径是**全局 `gate + credit`**，不是层内；跨层依赖合法 |
+| C2 | `src/arena/trace_pipeline.py:205-206` | 「依赖结果按 rubric 顺序累积，供 R2 的 `depends_on` 折叠（**gate 在前，R1 一定先于 R2 算出**）」 | 源码注释**已假设顺序**，是仓内第二真相源 |
+| C3 | 本文 §6.2 | 「断言数组顺序 = 执行顺序」 | 采纳决策原文 |
+
+**「顺序」因此不是推测口径，但它只是文档 / 注释约定，没有任何加载期强制。**
+`tests/test_task_yaml.py:288` 的 `test_dependencies_declared_and_acyclic()` 只查
+「已声明 / 可解析 / 无自依赖 / 无环」，**不查前后顺序**。
+
+### 44.3 内存复现（8 组探针，磁盘零写入）
+
+全局顺序（`specs = gate + credit`）：
+`1 R1_file_exists` → `2 R5_clean_exit` → `3 R2_report_correct` →
+`4 R3_retry_evidence` → `5 R4_no_param_hallucination`。
+Step1 之后只有 `json_field_equals`（现役仅 R2）允许挂非空 `depends_on`。
+
+| 探针 | 构造 | `rubric_layers()` | `build_report(raw-perfect)` |
+|---|---|---|---|
+| BASE | R2→[R1]（现役，跨层前置） | OK | `ratio=1.0` |
+| **T4** | R2→[R3]（同层后置） | **OK** | **`ratio=1.0`** |
+| T4b | R2→[R4]（同层后置） | **OK** | **`ratio=1.0`** |
+| P5 | R2→[R5]（gate 后置 / 全局前置） | OK | `ratio=1.0` |
+| NEG | R3→[R2]（前置但 type 不支持） | `ReportError: 不支持 depends_on` | 同左 |
+| SELF | R2→[R2] | `ReportError: 自依赖` | 同左 |
+| MISS | R2→[R_typo] | `ReportError: 引用不存在的断言` | 同左 |
+
+**本轮首次坐实、比原登记更重的事实**：执行器侧
+`evaluate_json_field_equals()`（`src/arena/assertion_evaluator.py:810-830`）按
+rubric 顺序累积 `dependency_results`；后置依赖时该断言尚未算出，
+`dependency_results.get(dep)` 为 `None` → 计入 `unsatisfied` → 返回
+**`blocked / dependency_blocked`**。同一份配置在报告层却是 **`ratio=1.0`**。
+即「**两层结论相反**」，不只是 §38.3 T4 记的「加载期无可读错误」。
+
+> 订正留痕：§38.3 T4 原写「`rubric_layers()` 通过、`build_report()` 通过、
+> `by_state.pass=5` ⇒ 加载期无顺序可读错误」——前半仍成立，**结论偏轻**；
+> 本轮补上执行器侧反证。不抹原文，就地登记。
+> 另消歧 §35.6 核证表「后置依赖 → `ReportError: 标了 blocked，但前置全部通过`」：
+> 那是组装器 `_assertion_item()` 的 **blocked 一致性**分支（`diagnosis_report.py:238-241`），
+> 与本轮的顺序问题**不是同一构造**，两处登记互不矛盾。
+
+### 44.4 三案与判据（AI 不替人拍板）
+
+| 案 | 做法 | 十分钟验证 | 代价 / 反证条件 |
+|---|---|---|---|
+| **A 加载期硬约束** | `rubric_layers()` 加全局 index 比较：每个 dep 必须排在本条之前，否则抛 `ReportError`（含 id 与序号） | 把 `R2.depends_on` 改成 `["R3_retry_evidence"]` → 应抛 `ReportError`；现役 YAML 仍绿、五夹具不变、分数不变 | **收紧配置集合**；若未来执行器改拓扑排序、不再依赖数组顺序，A 会误拒合法配置 ⇒ 把「文档约定」固化成架构耦合 |
+| **B 只澄清口径** | 不动 `src/`；把「依赖须指向更靠前的断言」写进契约文档 + 补一条现役 YAML 配置锁 | 锁读现役 YAML，逐条断言 dep 的全局 index 更小；改 YAML 回退即红 | 行为零变化，但 T4 的「两层结论相反」仍可构造；TD ② 只能按「已知边界」销项 |
+| **C 静态防线** | 只在 `test_task_yaml.py` 加顺序断言，加载期仍放行 | 同 B | 与 B 近，但「锁在测试、不锁在加载」易被误读为已强制 |
+
+**我方倾向（是倾向，不是结论）**：A，理由是 C1/C2 已是仓内契约、与 Step1 六项校验同源、
+不改分数；但 A 的架构耦合代价只能由人判断。
+**反证条件**：若判定执行器未来会做拓扑排序或允许乱序声明，A 不成立，
+应走 B 并把「数组顺序 = 执行顺序」从契约降级为约定。
+
+### 44.5 待人拍板清单
+
+1. **A / B / C 三选一**（或第四案）。未拍板前 TD-035 ② **维持未销**，`src/` 一字不动。
+2. 若选 A：确认顺序口径＝**全局 `gate + credit` 拼接**（不是层内），以及 gate 条目
+   允许被 credit 引用（现役 `R2→R1` 即如此，必须保留）。
+3. TD-035 ① 是否随本轮销项（round-43 已落地、3 锁 + 4 组变异证据齐）。
+4. TD-037（`--check` 不覆盖源码实现文本）是否立项，仍悬着。
+
+### 44.6 边界与不扩散
+
+- 本轮**不改** `docs/diagnosis-report-schema.md`：它是外发契约文档、被多份
+  verify-brief 逐字引用，改它属扩散；若选 B，再单独一步同步。
+- `build_report()` 的 `results` 是全体一次性装载（`diagnosis_report.py:271-277`），
+  所以后置依赖**不会** `KeyError`——这是 T4 能静默通过的直接原因，本轮不动它。
+- **不提外评**：三案的事实依据全在仓内（C1/C2/C3 + 内存复现 + 本地裁判），
+  唯一不确定项是「执行器未来是否改拓扑排序」＝产品意向，外评无法替代人拍板。
+  按 round-28 / §35 判据，本轮无本地裁判覆盖不到的语义或契约盲区。
+
+### 44.7 TD 状态
+
+| TD | 状态 | 依据 |
+|---|---|---|
+| TD-033 | 已销 | round-42 |
+| TD-036 | 已销 | round-41 |
+| TD-035 ① | 已落地、建议销项待人确认 | round-43，3 锁 + 4 组变异 |
+| **TD-035 ②** | **维持未销** | 本轮只读核证，加校验须人拍板（44.1 / 44.5） |
+| TD-037 | 候选，待人决定是否立项 | §42.8 |
+
+后续顺序（不替决）：人拍板 44.5 → 按案落地（若选 A/B）→ TD-035 整体销项 →
+TD-037 立项与否 → 之后才轮到 D5/D6 与 Q4(d)；builder 引用常量仍建议暂不做。
+
+### 44.8 本机复核（只在本机侧使用、不外发）
+
+十分钟验证（复现「报告层 1.0 / 执行器 blocked」，磁盘零写入）：
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -c "import sys,copy,json;sys.path.insert(0,'src');import arena.diagnosis_report as d;from arena.assertion_evaluator import evaluate_json_field_equals as E;t=d.load_task('tasks/dbg-001-order-report.yaml');r=json.load(open('fixtures/raw-perfect.json',encoding='utf-8'));v=d.load_vocabulary();g,c=d.rubric_layers(t);print('ORDER',[x['id'] for x in g+c]);t2=copy.deepcopy(t);[x.__setitem__('depends_on',['R3_retry_evidence']) for x in t2['rubric_credit'] if x['id']=='R2_report_correct'];d.rubric_layers(t2);print('REPORT',d.build_report(t2,r,v)['score']['ratio']);s=copy.deepcopy(next(x for x in c if x['id']=='R2_report_correct'));s['depends_on']=['R3_retry_evidence'];print('EXECUTOR',E(s,r.get('artifacts'),v,{'R1_file_exists':{'state':'pass'}})['state'])"
+```
+
+预期：`ORDER` 五行 `R1, R5, R2, R3, R4`；`REPORT 1.0`；`EXECUTOR blocked`
+（两者相反即复现成立）。
+
+落仓后基线复核：
+
+```powershell
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" -m pytest tests/ -q
+& "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" src/arena/review_packet.py --check
+```
+
+预期：`641 passed` / `OK (a2646bbd35144673)`（与 round-43 相同，**指纹未变**即证明
+本轮没有改动任何被评审包快照覆盖的资产）。
+
+## 45. round-45 对 §44.5 回件的核证：四条复核 + 提交策略反例（2026-11-12）
+
+### 45.1 先跑四条复核（人指定「先跑」，原样用本机 PowerShell）
+
+| # | 命令 | 预期 | 实测 |
+|---|---|---|---|
+| 1 | `pytest tests/ -q` | `641 passed` | **`641 passed in 96.32s`** ✅ |
+| 2 | `pytest tests/test_trace_pipeline.py -q -k td035` | `3 passed, 167 deselected` | **`3 passed, 167 deselected in 0.53s`** ✅ |
+| 3 | `trace_pipeline.py --fixture all` | `0/0/0.25/0.5/1.0` | **`0.0 / 0.0 / 0.25 / 0.5 / 1.0`** ✅ |
+| 4 | `review_packet.py --check` | `OK (a2646bbd35144673)` | **`OK: 评审包内容与仓库一致（a2646bbd35144673）`** ✅ |
+
+四条全中，环境 / 依赖无需排查。round-43 的过渡态 `1 failed, 640 passed` 由计数锁解释
+（§43.9，包内 638 vs 实际 641），**不是回归**；本轮未改任何代码或依赖。
+
+### 45.2 回件逐条核证
+
+| 回件主张 | 核证 | 依据 |
+|---|---|---|
+| A 是**契约变更**、不是 ① 的外推 | **成立** | 与 §44.1 硬依据一致 |
+| A 的反证条件＝执行器未来拓扑排序 / 乱序声明 | **成立** | 与 §44.4 一致，措辞比原登记更明确 |
+| 拍 A 须同时承诺「顺序口径＝全局 gate+credit，gate 可被 credit 引用；执行器不引入拓扑排序」 | **成立且必要** | C1/C2 + 现役 `R2→R1`；但**该句尚未作为拍板说出口**，本轮不据此落地 |
+| C 不单独采用 | **成立** | 与 §44.4 同判：锁在测试不锁在加载，易被误读为已强制 |
+| A 落地配套四件事（index 比较 / 现役合法 / 四类锁 / 四组变异） | **成立**，补两处边界见 45.4 | 单改 `rubric_layers()` 确会留「拒绝但错误不可读」的新坑 |
+| TD-035 ① 销项（写清「已落地、行为零变化、死声明已删」） | **证据链够** | 3 锁 + 4 组变异 + 641 passed + `--check` 指纹；**销项归拍板**，本轮不单独销（避免又拆成混合步） |
+| TD-037 立项但低优先级、不插队 | **成立** | 与 §44.7 顺序一致；立项归拍板 |
+| 提交策略：拍板前按 round-43 / round-44 **分两批** commit | **有反例，手段不成立** | 见 45.3；动机成立 |
+
+### 45.3 提交策略反例（核证，非推测）
+
+**事实**：`git status --short` 的 40 项 = **16 个 tracked modified + 23 个 untracked + 1 个 rename**，
+跨 round-1~44 累积，并非只有 43/44。`git diff --numstat` 实测：
+`docs/review-response-v1.md` **4185 行纯新增**、`HANDOFF.md` 62+/2-、
+`tasks/dbg-001-order-report.yaml` 17+/3-、`tests/test_diagnosis_report.py` 111+/0-。
+即**同一文件跨几十轮累积**；23 个 untracked 还含 `src/arena/assertion_evaluator.py`、
+`review_packet.py`、`trace_pipeline.py`、8 个 `tests/test_*.py`、外发简报等**早期轮次产物**。
+⇒ 「round-43 一批 / round-44 一批」在**文件级做不到**：需按 hunk 逐段挑，且文档连续追加、
+hunk 边界 ≠ 轮次边界。
+
+**commit 对评审包的真实影响（读源码，不夸大）**：`check()` 按头部 `snapshot-sha`
+（当前 `03cf8c9` ＝ HEAD）重放；`_snapshot(ref)` 认锚点算 sha 与 `git log -8`，
+测试行用 `test_result` 重放包内已记录行 ⇒ **commit 不会让 `--check` 变 STALE**；
+只在 OK 分支多一条 `NOTE: 生成锚点落后当前 HEAD N 个提交`，不阻塞、不写进正文、指纹不变。
+但 `review_packet.py:417-420` 明写「**不要为对齐 HEAD 重新生成**（那只会把锚点再推后一格）」：
+若 commit 后去重生成，`snapshot-sha` 前移、`git log -8` 变、包指纹变 ⇒ 历史各轮记录的
+`a2646bbd35144673` 等全部过期。另有代价：HEAD `03cf8c9` 是 44 轮刻意保持的基线，
+历史复核命令里「HEAD 未动 / 40 项」这一可数校验点会消失，回滚粒度从工作区改动变成提交历史。
+
+**结论**：动机（回滚 / 评审边界清楚）成立，**手段按轮次拆不成立**。可选：
+① 暂不 commit，等 A 落地后一次性整理；② 按**主题**分批（可执行资产 / 文档资产 / 生成物），
+并明确「commit 后不重生成评审包」。**本轮不执行任何 git 写操作**，提交与否归人拍板。
+
+### 45.4 A 的两处精度订正（不推翻，收窄措辞）
+
+1. 「消掉报告层 `ratio=1.0` / 执行器 `blocked` 的跨层相反」应收窄为「**在唯一配置入口挡住非法配置**」：
+   A 不改 `build_report()` 与执行器的实现差异，绕过 `rubric_layers()` 的内存构造
+   （测试里常用 `copy.deepcopy(TASK)`）仍可复现两层相反。这直接决定锁该钉在哪。
+2. 配套四件事之外补三处边界：
+   - **错误优先级**：同一 `depends_on` 既含不存在 id 又含后置 id 时，先报「引用不存在」再报
+     「后置」，否则拼错会被误报成顺序问题。
+   - **反向依赖**：gate 引用 credit（如 `R1→R2`）按全局 index 应被拒（gate 先跑）；现役被
+     Step1「非空 dep 只允许 `json_field_equals`」挡住，但口径要写明，防未来新增 gate 侧
+     `json_field_equals` 时出现意外。
+   - **不重复实现环检查**：`test_task_yaml.py:288` 已静态查环；顺序校验只做 index 比较，
+     避免第二真相源（§39 / §41 同源口径）。
+
+### 45.5 状态与待人一句话
+
+- 本轮磁盘写入：§45、`HANDOFF.md` 索引 / 状态块、今日日志；**无 git 写操作**、
+  无 `src/` / `tests/` / YAML / 评审包改动，`--check` 仍 `a2646bbd35144673`。
+- TD 状态**一律不变**：TD-035 ② 维持未销；① 已落地待销（不单独销，避免混合步）；
+  TD-037 候选；TD-033 / TD-036 已销不变。
+- **待人一句话**：「按 A，顺序口径＝全局 `gate+credit`、gate 可被 credit 引用，执行器保持
+  数组顺序执行、不引入拓扑排序」→ 下一轮按 45.4 边界落地（含四件事 + 三处补充）。
+  若这句不敢承诺 → 改拍 B（行为零变化，按「已知边界」销项）。
+- **不提外评**：本轮输入本身即外部意见，核证依据全在仓内（四条实测 + `git status` +
+  生成器源码），无本地裁判覆盖不到的语义或契约盲区。
+
+
+## 46. round-46 TD-035 ② 案 A 落地：depends_on 后置依赖加载期硬约束（2026-11-12）
+
+### 46.1 授权范围与一处必须说清的边界
+
+人本轮回「按照你的想法来」＝授权按 §45.5 的倾向推进 **A**。配套四件事与 §45.4 三处补充
+全部执行。但有一条必须如实写明：**人没有逐字给出 §45.5 那句承诺**
+（「执行器保持数组顺序执行、不引入拓扑排序」）。
+
+「执行器将来不引入拓扑排序」是**产品意向**，不是仓内可核证的事实，不能由 AI 代人或
+假装已被永久保证。因此本轮把 A 的前提落成：
+
+| 写法 | 是否采用 | 理由 |
+|---|---|---|
+| 当前可核证的**事实** | ✅ | 执行器此刻按 rubric 数组顺序累积 `dependency_results`（§44 内存探针 + `trace_pipeline.py:205`） |
+| **显式契约声明** + 可判定变更点 | ✅ | 写进 `docs/diagnosis-report-schema.md`：若日后改拓扑排序／允许乱序，即构成契约变更，**必须同时反转本条与本节顺序校验及测试锁** |
+| 「人已承诺永不改拓扑排序」 | ❌ | 无此逐字授权，属编造 |
+
+即：A 不是靠预测未来成立的，而是靠「当前事实 + 把变更点显式化」成立的。若人认为
+「必须逐字确认那句才允许落地 A」，本轮理解有误，**回退成本**＝2 个代码/测试文件
+（删 `_check_dependency_order()` 与调用、删 11 条锁）+ 契约注记 + 本节记录，一句话可推翻，
+改走 B（行为零变化、按已知边界销项）。
+
+### 46.2 改动清单（3 个文件，均为字节级插入／追加）
+
+| 文件 | 改动 | 行尾 |
+|---|---|---|
+| `src/arena/diagnosis_report.py` | 新增公共 `_check_dependency_order(gate, credit)`，在 `rubric_layers()` 的 Step1 `depends_on` 校验**之后**、gate/credit 权重校验之前调用。全局 `gate + credit` 1-based index 比较，后置即 `ReportError`，消息点名引用方、被依赖项与双方序号 | 纯 CRLF 432→461 行 |
+| `tests/test_diagnosis_report.py` | 追加 **11 条** `td035_order` 锁（见 46.3 分组） | 纯 LF 443→548 行 |
+| `docs/diagnosis-report-schema.md` | 在「顺序约定」段后追加**契约声明**（当前事实依据 + 变更点 + 跨层引用合法 + 环检查不重复实现） | 纯 CRLF 255→269 行 |
+
+**未改**：任务 YAML、`build_report()` / 执行器判定逻辑、评分策略、五夹具分数、
+`tests/test_task_yaml.py`、评审包、git 历史。抽成公共函数沿用 §39 / §41 同源口径，
+但**本轮未接入生成路径**（`review_packet._task_struct()` 不读 rubric 顺序，§44 已盘点），
+与 §42 形状校验同等处理。
+
+### 46.3 11 条锁覆盖什么（对应人给的「配套四件事」）
+
+| 组 | 锁 | 钉住 |
+|---|---|---|
+| 现役合法 | `current_task_passes_with_global_index` | 全局顺序 `[R1,R5,R2,R3,R4]`、`R2→R1` **gate 被 credit 引用**且前置 |
+| 跨层引用 | `accepts_cross_layer_forward_reference` | `R2→R5`（gate 第二条）也合法，不是只认第一条 |
+| 后置拒绝 | `rejects_backward_dependency`（T4/T4b 两组）、`build_report_rejects_backward_dependency` | 加载期与全链路入口都拒，非法配置不再算出 `ratio=1.0` |
+| 可读信息 | `error_is_readable` | 消息含双方 id、双方全局序号、「后置」 |
+| 边界① | `prioritizes_missing_reference`、`self_dependency_still_reported_by_step1` | 拼错／自依赖由 Step1 先报，新校验不抢错误优先级 |
+| 边界② | `rejects_gate_referencing_credit` | gate 引用 credit 按全局 index 应拒（把 gate 类型改成 `json_field_equals` 绕过 Step1 类型校验后验证） |
+| 边界③ | 不写新环锁 | 环检查仍由 `tests/test_task_yaml.py::test_dependencies_declared_and_acyclic` 静态负责，改由本地裁判 `-k acyclic` 验证仍绿（**刻意不重复实现**，§45.4） |
+| 遍历完整性 | `checks_every_dependency` | 合法前置 + 后置混排也要被抓，不是只查 deps 第一个 |
+| 不改分数 | `does_not_change_score` | 现役 `build_report()` 仍 `ratio=1.0` |
+
+### 46.4 十分钟验证（本机可跑，已原样执行）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+$py = "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+$code = @'
+import copy, sys
+sys.path.insert(0, 'src')
+import arena.diagnosis_report as d
+t = d.load_task('tasks/dbg-001-order-report.yaml')
+g, c = d.rubric_layers(copy.deepcopy(t))
+print('ORDER', [r['id'] for r in g + c])
+t2 = copy.deepcopy(t)
+for r in t2['rubric_credit']:
+    if r['id'] == 'R2_report_correct':
+        r['depends_on'] = ['R3_retry_evidence']
+try:
+    d.rubric_layers(t2)
+    print('BACKWARD: NOT REJECTED')
+except Exception as e:
+    print('BACKWARD:', type(e).__name__, e)
+'@
+& $py -c $code
+```
+
+**PowerShell 5.1 注意**：here-string 内一律用**单引号**。若写双引号，PS 向原生 exe 传
+`-c $code` 时会把内部双引号吞掉，得到 `d.load_task(tasks/dbg-001-order-report.yaml)` 与
+`SyntaxError`（本轮实测踩过，见 §46.9）。
+
+预期：`ORDER ['R1_file_exists','R5_clean_exit','R2_report_correct','R3_retry_evidence','R4_no_param_hallucination']`，
+随后 `BACKWARD: ReportError R2_report_correct: depends_on 引用了后置断言 'R3_retry_evidence'（…第 3 条 / 第 4 条）…`。
+**注**：此处只在内存改 `copy`，磁盘零写入，跑完 `--check` 不变。
+
+### 46.5 本地裁判实测
+
+| 裁判 | 实测 |
+|---|---|
+| 全量 `pytest tests/ -q` | **652 passed in 97.72s**（过渡态）／**652 passed in 98.73s**（最终）；641 + 11 |
+| `-k td035_order` | **11 passed, 38 deselected** |
+| 邻近锁 | `td033_shape or td034` **15**、`td036` **9**、`f9_td020 or td035` **15** |
+| 环检查仍有效 | `tests/test_task_yaml.py -k acyclic` **1 passed, 22 deselected** |
+| 五夹具 | `0.0 / 0.0 / 0.25 / 0.5 / 1.0`（不变） |
+| 两遍重生成 | PASS1 = PASS2 **`7974ca6f877d3e6a`**，`snapshot-sha=03cf8c9` |
+| `--check` | `OK: 评审包内容与仓库一致（7974ca6f877d3e6a）` |
+| 正文指纹独立复算 | 剥离头行后 sha256 `RECORDED=BODY_RECALC=7974ca6f877d3e6a`，`MATCH=True` |
+| 包内计数 | **652 个用例被收集** / **652 passed / 652 total** |
+| 编译 / 行尾 | `py_compile` OK；源码纯 CRLF 461 行、测试纯 LF 548 行、契约文档纯 CRLF 269 行，无 `/r/n` 残留 |
+
+### 46.6 变异与受控实验（逐组恢复）
+
+5 组 **CRLF 字节级变异**，均对 `src/arena/diagnosis_report.py`；先在内存 dry-run 核锚点，
+任何锚点不唯一即拒写盘（§43.7 教训）：
+
+| 组 | 变异 | 命中锁数 | 恢复 |
+|---|---|---|---|
+| M1 检查禁用 | 调用行 → `pass` | 6 failed | `RESTORED=True` |
+| M2 后置回潮 | `if at >= idx` → `if False` | 6 failed | `RESTORED=True` |
+| M3 方向翻转 / 合法配置误拒 | `>=` → `<`（放过后置、误拒现役） | 7 failed | `RESTORED=True` |
+| M4 顺序基准翻转 | `gate+credit` → `(gate+credit)[::-1]` | 7 failed | `RESTORED=True` |
+| M5 错误优先级前移 | 调用移到 Step1 之前、原位改 `pass` | 2 failed | `RESTORED=True` |
+
+`FINAL_RESTORED=True`、`ALL_OK=True`，恢复后 `--check OK`、编译通过、局部 11 锁仍绿。
+
+**两个受控实验**（不是变异，判据不同、如实分列）：
+1. **计数锁**（核 §34 悬案机制没坏）：把包内 `652` 改回 `641` →
+   `test_test_count_matches_repo` **1 failed, 38 deselected** 真红，逐字恢复后 `--check OK`。
+2. **负向对照／说明字段翻转**：把 `formula` 与两个 `source` 改成 TD-034 明确不锁的值
+   → `rubric_layers()` **仍通过**（`CONTROL_NO_FALSE_REJECTION=True`），证明新校验没越界锁无关字段。
+
+### 46.7 契约边界：A 挡住什么、不挡什么
+
+- A **只在唯一配置入口**（`rubric_layers()`）挡住非法配置；不改 `build_report()` 与执行器
+  实现差异。绕过该入口的内存构造（如测试里的 `copy.deepcopy(TASK)`）仍可复现
+  「报告层 `ratio=1.0` vs 执行器 `blocked`」，§45.4 的收窄措辞保持不变，**不宣称两层同口径**。
+- 顺序口径＝**全局 `gate + credit`**，不是层内；跨层引用合法，现役 `R2→R1` 必须保留。
+- 反向依赖（gate 引用 credit）按全局 index 被拒；现役被 Step1 类型校验挡住，46.3 已显式验证。
+- 错误优先级：引用不存在 / 自依赖 / 类型不支持由 Step1 先报，新函数对未知 dep `continue`。
+- 环检查不重复实现（§45.4）：后置校验只做 index 比较；环检查由静态测试独立负责。
+- **收紧了合法配置集合**：T4 型配置（后置依赖）从此在加载期被拒 ⇒ 这是**契约变更**，
+  不是 ① 那种「行为零变化」的死声明清理，销项归人验收。
+
+### 46.8 状态、TD 与后续顺序
+
+- **TD-035 ① 销项**（人上一轮「可以销」＋本轮授权）：已落地、行为零变化、`tool_calls.required`
+  死声明已删；证据链 3 锁 + 4 组变异 + 641 passed + `a2646bbd35144673`。
+- **TD-035 ② 已落地、维持未销待人验收**：契约变更不代销（11 锁 + 5 组变异 + 652 passed +
+  `7974ca6f877d3e6a` 证据链齐）。**TD-035 整体仍未销**。
+- **TD-037 立项**（人「建议立项但低优先级单开」）：状态由「候选」改为**已立项、低优先、
+  不插队**，排在 ② 验收之后。TD-033 / TD-036 已销不变。
+- **后续顺序**：② 验收 → TD-035 整体销项 → TD-037 小步 → D5/D6 → Q4(d)；
+  builder 引用评分策略常量仍建议暂不做。
+- **提交策略**：本轮**零 git 写操作**，HEAD 仍 `03cf8c9`、工作区 **40 项**。A 已落地，
+  §45.3 的「暂不 commit，等 A 落地后一次性整理」条件已到，但按轮次拆分仍不成立；
+  若人决定提交，建议按主题分批，并**遵守 `review_packet.py:417-420`：commit 后不为对齐
+  HEAD 重生成评审包**（否则历史各轮指纹全部过期、HEAD 基线丢失）。提交与否仍归人拍板。
+
+### 46.9 留痕与不提外评
+
+- **§34 悬案第七次「过渡态直绿」**：本轮过渡态全量 `652 passed` 无 failed，而 round-43
+  同类场景真红（`1 failed, 640 passed`）。计数锁受控实验再次独立证明机制有效
+  （改回旧计数即真红），但**触发点仍无证据，维持假设，不编原因**，不与本轮改动混同。
+- **过程留痕**：① 契约注记首次插入多出一个空行，字节级就地修正；两处均核 `--check` 指纹未变，
+  佐证 `_snapshot()` 不读契约文档。② §46.4 的十分钟验证首版在 PowerShell 5.1 下失败
+  （`-c $code` 传参吞掉 here-string 内双引号 → `SyntaxError: leading zeros...`），
+  **不是校验逻辑问题**；改为 here-string 内全用单引号后原样跑通，输出
+  `ORDER [...]` 与 `BACKWARD: ReportError …第 3 条 / 第 4 条…`，命令与注意事项已就地订正。
+  ③ HANDOFF 新段落初稿误编号 `⑨`（状态块编号只到 ⑧=round-44），去掉编号避免串号。
+- **不提外评**：A 的依据全在仓内（schema / `trace_pipeline.py` 契约原文、8 组内存复现、
+  11 锁、5 组变异、本地裁判）；唯一不确定项「执行器未来是否拓扑排序」是产品意向，
+  外评替代不了人拍板，且本轮已把它转成**显式契约变更点**而非猜测 ⇒ 无语义或契约盲区。
+
+### 46.10 本机复核命令（完整路径）
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+$py = "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+& $py -m pytest tests/ -q
+& $py -m pytest tests/test_diagnosis_report.py -q -k td035_order
+& $py -m pytest tests/test_task_yaml.py -q -k acyclic
+& $py src/arena/trace_pipeline.py --fixture all
+& $py src/arena/review_packet.py --check
+```
+
+预期依次：`652 passed` / `11 passed, 38 deselected` / `1 passed, 22 deselected` /
+`0/0/0.25/0.5/1.0` / `OK (7974ca6f877d3e6a)`。
+
+## 47. round-47 ② 验收的证据边界核证（`--check` 到底覆盖什么）（2026-11-12）
+
+### 47.1 范围与授权边界（一次一个小步）
+
+人回「按照你的建议来」。§46.8 给出的路线第一步是 **② 由人验收**，且明写「契约变更不代销」；
+提交亦归人拍板。因此本轮**不代验收、不代销项、不 commit、不落地 TD-037**，只做一件 AI
+能独立完成且直接服务该验收的事：把 ② 的证据链里 `--check OK (7974ca6f877d3e6a)`
+**到底证明了什么**用当前版本实测钉死。
+
+动机：§42.8 记「`--check` 不覆盖源码实现文本」，那是 **round-42** 的结论；此后 round-46
+改过 `diagnosis_report.py`，而 TD-036 已让生成器 `_task_struct()` 复用加载期对账。
+旧结论是否仍成立、边界是否变细，不能靠沿用，须用当前磁盘重跑。
+
+**本轮产品代码 / 测试 / YAML / 评审包正文一字未改**；四组变异均在临时写盘后立即恢复。
+
+### 47.2 受控实验设计
+
+对 `src/arena/diagnosis_report.py` 做**字节级**变异（锚点在写盘前先 dry-run 核唯一性，
+任一不唯一即拒写盘，§43.7 教训）；每组 `try/finally` 恢复并核 `RESTORED`；
+判定只记录 `--check` 的 `RC` 与分类，**区分 `OK` / `STALE` / `TAMPERED` / `FAIL` /
+`TIMEOUT` / `ERROR`**。基线为未变异状态。
+
+| 组 | 变异（`diagnosis_report.py`） | 是否改变生成器现算量 |
+|---|---|---|
+| M-A | 调用行 `_check_dependency_order(gate, credit)` → `pass`（**禁用 round-46 的 A**） | 否 |
+| M-B | `if at >= idx:` → `if at < idx:`（现役合法配置被误拒） | **是**（夹具脚本退出码非 0） |
+| M-C | `if at >= idx:` → `if False:`（放过后置依赖） | 否 |
+| M-D | 实现行尾加注释（纯源码字节变化） | 否 |
+
+前置核对：源码纯 CRLF 461 行、实验前 sha256 前 16 位 `a448d3d41938076e`；
+`docs/review-packet.md` 实验前后字节哈希不变。
+
+### 47.3 实测结果（本地裁判，非推断）
+
+| 组 | `RC` | `--check` 判定 | `RESTORED` |
+|---|---|---|---|
+| BASELINE | 0 | `OK (7974ca6f877d3e6a)` | — |
+| M-A 禁用 A | 0 | **仍 `OK`** | `True` |
+| M-B 合法配置被误拒 | **1** | **`FAIL: 按锚点 03cf8c9 重算评审包失败：命令失败（exit=1）… diagnosis_report.py`** | `True` |
+| M-C 放过后置依赖 | 0 | **仍 `OK`** | `True` |
+| M-D 纯字节改动 | 0 | **仍 `OK`** | `True` |
+
+收尾：`FINAL_RESTORED=True`、`PACKET_UNCHANGED=True`、`PY_COMPILE_RC=0`、
+`FINAL_CHECK RC=0 OK (7974ca6f877d3e6a)`；源码 sha 仍 `a448d3d41938076e`，
+`git status --porcelain` 仍 **40 项**、HEAD 仍 `03cf8c9`。
+
+### 47.4 结论：边界比 §42.8 更细（对 §42.8 是细化，不是推翻）
+
+`_snapshot()`（:152-167）确实**不含源码内容哈希**，`packet-sha256` 是包正文指纹；
+但 `build()` 会**现场执行**源码：`_scores()` 跑 `diagnosis_report.py --fixture all`、
+`_task_struct()` 跑 `_check_scoring_policy()`。于是：
+
+- 源码改动只要**改变了这些现算量**（M-B：夹具脚本退出码非 0 ⇒ `_run()` 抛
+  `PacketError` ⇒ `check()` 走 `FAIL` 分支），`--check` **会**报红，属**间接覆盖**；
+- 源码改动**不改变现算量**（M-A / M-C / M-D），`--check` **不会**报红，是真正的盲区。
+
+即口径应写成「**`--check` 只覆盖生成器现算的量，不覆盖源码实现文本本身**」，
+而非字面上的「任何源码改动都不报」。§42.8 原文「本次篡改不改变上述任何被扫描量」
+已含这条因果，本轮把它用**当前版本**的四组实测显式化。
+
+**对 ② 验收的直接含义**：把 round-46 的 A 实现整段禁用（M-A），`--check` 照样绿。
+所以 `OK (7974ca6f877d3e6a)` **不能**用作「A 的实现仍在」的证据；
+该项由 `pytest -k td035_order`、5 组变异裁判与 `git diff` 覆盖。**建议验收时按此口径读证据**，
+不要把 `--check` 的绿当成全部证据链。
+
+### 47.5 给 TD-037 的可判定判据（**只给判据，不替人拍板**）
+
+TD-037 已立项、低优先、排在 ② 验收之后，本轮**不插队、不实现**。两案的可判定差别：
+
+| 案 | 做什么 | 能覆盖 | 代价（可核证） |
+|---|---|---|---|
+| A 纳入源码哈希 | 把源码实现文本哈希写进 `--check` 覆盖范围 | M-A / M-C / M-D 全部报红 | 任何源码字节改动（**含注释、空行**）都让包 `STALE`；与「commit 后不为对齐 HEAD 重生成」（`review_packet.py:417-420`）叠加，历史各轮指纹全部过期 |
+| B 只写清口径 | 在文档把「只覆盖现算量；源码一致性由 pytest / 变异 / `git diff` 覆盖」写成契约 | 不改变检出能力，M-A / M-C 仍靠本地裁判 | 零代码改动；依赖每轮确实跑了本地裁判 |
+
+**我方倾向（建议，非决策）：B**。理由是可核证的：本仓每轮已跑全量 pytest + 字节级变异 +
+`git diff` 状态核对，A 换来的额外检出面与本仓实际工作流重叠，却会破坏锚点设计
+（`_snapshot()` 认锚点不认 HEAD 正是为避免打包提交造成永久假阳性）。
+**反证条件**：若将来出现「源码被改、本地裁判恰好没跑、包却显示 OK」的真实场景，
+B 的前提就不成立，应改拍 A。此判断属产品意向，**归人拍板**。
+
+### 47.6 十分钟验证（不落盘，可直接跑；跑完自动恢复）
+
+在 PowerShell 里复现 M-A，**亲眼看到「禁用 A 后 `--check` 仍绿」**。
+here-string 内一律单引号（§46.4 的 PS 5.1 传参坑）；`finally` 保证恢复：
+
+```powershell
+Set-Location "$env:USERPROFILE\WorkBuddy\2026-11-03-18-17-48\agent-arena"
+$py = "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+$code = @'
+import subprocess, sys
+from pathlib import Path
+p = Path('src/arena/diagnosis_report.py')
+orig = p.read_bytes()
+anchor = b'    _check_dependency_order(gate, credit)'
+assert orig.count(anchor) == 1, 'ANCHOR_NOT_UNIQUE'
+try:
+    p.write_bytes(orig.replace(anchor, b'    pass  # TEN_MIN_MUTANT', 1))
+    r = subprocess.run([sys.executable, 'src/arena/review_packet.py', '--check'],
+                       capture_output=True, text=True, encoding='utf-8', errors='replace')
+    print('CHECK_OUTPUT_FIRST_LINE:', (r.stdout or r.stderr).strip().splitlines()[0])
+    print('EXPECTED: still OK (blind spot)')
+finally:
+    p.write_bytes(orig)
+print('RESTORED=', p.read_bytes() == orig)
+'@
+& $py -c $code
+```
+
+预期：`CHECK_OUTPUT_FIRST_LINE: OK: 评审包内容与仓库一致（7974ca6f877d3e6a）`，
+`EXPECTED: still OK (blind spot)`，`RESTORED= True`。
+**若 `RESTORED` 不是 `True`，请立刻停止后续动作并告知**（磁盘上会留有临时变异）。
+
+### 47.7 留痕、状态与不提外评
+
+- **过程留痕**：① 首版实验锚点带 `\r\n` 时，命令传输层把其中一个锚点的 `\r\n`
+  写成字面 `/r/n`（`count=0`，与 §42 首行 `\r\n` 同类，第三次），断言在写盘前拦下、
+  **磁盘零改动**；改用不含行尾的锚点并额外断言 `/r/n` 残留后重跑通过。
+  ② M-B 的 `RC=1 / FAIL` 是**预期判据**（本实验要测的就是 `--check` 会不会报），
+  不是脚本 `ERROR` 或 `TIMEOUT`，如实分类不混写。
+- **TD 状态一律不变**：TD-035 ① 已销；② 已落地、**维持未销待人验收**；整体未销；
+  TD-037 已立项、低优先、不插队。本轮**零 git 写操作**，提交仍归人拍板
+  （若提交须按主题分批，且遵守 commit 后不为对齐 HEAD 重生成评审包）。
+- **不提外评**：本轮全部依据在仓内（源码原文、四组变异实测、`--check` 输出、
+  `RESTORED` / 指纹 / sha）；唯一未定项是「② 是否验收」与「TD-037 拍 A 还是 B」，
+  均为产品意向，外评替代不了人拍板，且本地裁判没有覆盖不到的语义盲区。
+
+### 47.8 本机复核命令（完整路径，只在本机侧使用、不外发）
+
+沿用 §46.10 五条命令（预期值不变），另加一条核对源码未被实验污染：
+
+```powershell
+$code2 = @'
+import hashlib
+from pathlib import Path
+print(hashlib.sha256(Path('src/arena/diagnosis_report.py').read_bytes()).hexdigest()[:16])
+'@
+& $py -c $code2
+& $py src/arena/review_packet.py --check
+```
+
+预期依次：`a448d3d41938076e` / `OK (7974ca6f877d3e6a)`。
+**同样只用单引号**：写成 `-c "…双引号…"` 会被 PowerShell 5.1 吞掉内部引号（§46.4）。
+
+## 48. round-48 ② 验收通过、TD-035 整体销项与提交授权（2026-11-12）
+
+### 48.1 人拍板与销项
+
+人明示「**已通过，可以提交**」。按 §46.8 路线：
+
+- **② 验收通过**：TD-035 ②（案 A）由 round-46 落地、round-47 补齐证据边界，
+  现由人验收通过；① 已于 round-43/46 销项。**TD-035 整体销项**。
+- **验收证据链（含 §47 的边界修正）**：`--check OK (7974ca6f877d3e6a)` **不能**证明 A 的实现仍在
+  （§47.4 已实证禁用 A 后照样绿）；因此本次验收不把 `--check` 当作该事项的证据，
+  改以 `-k td035_order` **11 passed**、5 组 CRLF 字节级变异 6/6/7/7/2 `FAILED`、
+  全量 **652 passed**、五夹具 `0/0/0.25/0.5/1.0`、源码 sha `a448d3d41938076e`
+  与 `git diff` 为准。**证据链完整，不靠 `--check` 单独背书**。
+- **TD-037**：已立项、低优先；A（纳入源码哈希）/ B（只写清口径）两案判据见 §47.5，
+  **仍待人拍 A/B，本轮不实现、不插队**。我方倾向 B 仅为建议。
+- 后续顺序：TD-037 拍板 → 小步 → D5/D6 → Q4(d)；builder 引用常量仍建议暂不做。
+
+### 48.2 提交授权与执行纪律
+
+人「可以提交」⇒ 本轮执行 git 写操作。纪律：
+
+1. **按主题分 2 批**（§45 已证「按轮次拆」不成立，40 项跨 1~48 轮、同文件多轮累积）：
+   批次 1 = 可执行资产与契约（`src/` / `tests/` / `fixtures/` / `tasks/` /
+   `docs/*.schema.json` / schema 说明 / executor 语义 / `review.bat` / `verify.bat` /
+   `.gitignore`）；批次 2 = 治理记录与评审包（`review-response-v1.md` / `HANDOFF.md` /
+   外发留档 / 现役评审包 / 归档 rename）。
+2. **只 commit、不 push**：推送另归人拍板。
+3. **commit 后不为对齐 HEAD 重生成评审包**（`review_packet.py:417-420`）；
+   否则 `snapshot-sha` 前移，历史各轮记录的指纹全部过期、HEAD 基线丢失。
+4. **提交后不补写仓内正文**（避免产生新的未提交改动）；实际提交结果记在维护者侧日志与答复。
+
+### 48.3 提交前只读核查（事实，非推断）
+
+| 项 | 实测 |
+|---|---|
+| 待提交 | **40 项** = 17 tracked（含 1 rename）+ 23 untracked；`git diff --stat` 17 文件 +5249/−23 |
+| index 遗留 | `R100 docs/review-packet-v1.md → docs/archive/review-packet-v1.md` 已 staged（历史遗留，非本轮）；分批前先取消暂存，工作区不动 |
+| 行尾 | `core.autocrlf=true`、无 `.gitattributes`；**CRLF 受控实验**：把评审包整体转 CRLF 后 `--check` 仍 `OK (7974ca6f877d3e6a)` / RC=0，`RESTORED=True`、`SHA_UNCHANGED=True` ⇒ 行尾转换不破坏正文指纹（文本读取按通用换行归一） |
+| 匿名 | 禁词命中 6 处：`review_packet.py:57` 的 `FORBIDDEN` **词表定义** 5 处（守卫本身）＋ 内部记录 `review-response-v1.md` 历史正文 1 类（§1428 已登记）；**外发文件 0 命中** |
+| 凭据 / 路径 | 凭据字面量 **0 命中**；本机绝对路径仅出现在内部记录 `review-response-v1.md`，**外发文件 0 命中** |
+| 环境 | `user.name` / `user.email` 已配置；无自定义 hook（不跳过 hook）；分支 `main` |
+
+**匿名风险留痕（交回人拍板）**：`docs/review-response-v1.md` 含历史昵称 2 处与本机
+绝对路径，按 §1428「该文件不外发、历史正文不回改」的既定口径**照现状提交**，
+本轮不擅自回改历史。commit 是本地操作、不构成外发；**若日后 push 到公开仓库，
+须先按 §1428 清理这几处**，是否清理、何时 push 归人决定。
+
+### 48.4 不提外评
+
+本轮全部是仓内可判定事实（验收授权、证据链、git 状态、受控实验、匿名扫描）；
+待定项「TD-037 拍 A/B」「是否 push / 清理历史正文」均为产品意向，
+外评替代不了人拍板，无本地裁判覆盖不到的语义或契约盲区。
+
+## 49. round-49 push 前匿名清理、TD-037 拍板 B 与推送授权（2026-11-12）
+
+### 49.1 人拍板与授权边界
+
+人回「**1：现在清理并 Push 2：方案 B**」。两件事分别落：
+
+- 「清理并 Push」＝ §48.3 交回的匿名风险正式授权：按 §1428 的例外条件清理后推送。
+- 「方案 B」＝ §47.5 的 **B 案由人拍板**：只把口径写成契约，**不实现 A**。
+
+### 49.2 清理范围与口径（机械替换，不动任何结论 / 判据 / 证据数值）
+
+全仓 54 个已跟踪文件实测，命中三类：
+
+| 位置 | 类别 | 处数 | 处置 |
+|---|---|---|---|
+| `docs/review-response-v1.md` | 历史昵称 | **5 处**（§48.3 记为 2 处，口径差如实订正） | →「维护者」；两处自我指涉句按语义改成「历史昵称」，避免「X→X」失真 |
+| `docs/review-response-v1.md` | 本机绝对路径（含用户名） | **64 处**／63 行 | → `$env:USERPROFILE\`（PowerShell 双引号内展开，**命令仍可直接粘贴运行**，且不暴露用户名） |
+| `spike/jmespath_probe.py:11` | docstring 里的运行示例路径 | 1 处 | → 通用 `python spike/jmespath_probe.py` |
+| `src/arena/review_packet.py:57` | `FORBIDDEN` 词表定义（守卫本身） | 5 处字面量 | → 以 Unicode 码点转义保存，运行期元组**逐字相等**（等价性实证见 §49.5） |
+
+- 凭据字面量 **0 命中**；外发文件（各简报 / 评审包 / 手册）**0 命中、未改动**。
+- §1428「该文件不外发、历史正文不回改」的**例外由人本轮授权触发**：该文件随仓库 push，
+  必须先清理再外发。替换只动字面量，**不动结论、判据、指纹、分数与证据数值**。
+- `FORBIDDEN` 那一行是**表示形式**改写，不改判定逻辑，且**不属 TD-037 范围**；
+  B 的「零代码改动」指的是 TD-037 不实现 A（`--check` / `_snapshot()` / 生成器一行不动）。
+  两者不矛盾，若人不同意这处连带改写，回退成本＝1 行，一句话可撤。
+
+### 49.3 历史边界（必须如实交回，不能只报工作树 CLEAN）
+
+- `03cf8c9`（＝推送前的 `origin/main`）树里**本来就含**历史昵称 4 处与 `spike` 绝对路径 1 处，
+  属**已推送的历史对象**。HANDOFF §2 记为私有仓库；本轮未独立核实其当前可见性，**标为假设**。
+- 本轮清理使**最新工作树**满足匿名纪律，但普通 fast-forward push **不会消除已推送历史里的旧文本**。
+  若要彻底消除须重写公共历史 + force push，会影响任何已克隆方，风险高，
+  **本轮不做、归人单独授权**。
+- 两个待 push 提交 `b8f92b1` / `5f28f40` 的正文本身含敏感内容，仅改工作区再加第三个 commit
+  **消不掉**。故用 `git reset --mixed 03cf8c9` 重写这两个**未推送**的本地提交，
+  再按 §48.2 主题分两批提交：不用 `--amend`、不 force push、不动基线。
+
+### 49.4 TD-037 拍 B：契约化判据与复开条件
+
+- **拍板 B**：不实现 A，`--check` / `_snapshot()` / 生成器**零代码改动**，检出能力不变。
+- **契约口径（唯一位置＝§49.4 + §47.4）**：`--check` **只覆盖生成器现算的量，
+  不覆盖源码实现文本本身**；源码一致性由全量 pytest、字节级变异、`git diff` / 源码 sha 覆盖。
+  验收或复核时**不得把 `OK` 单独当作「实现仍在」的证据**。
+- **不写进 `docs/review-packet-manual.md`**：该手册是评审包模板源，改它会让现役包
+  `TAMPERED` / `STALE`；重生成又会使历史各轮指纹全部过期（`review_packet.py:417-420`）。
+- **反证 / 复开条件（可判定）**：若出现「源码被改、本地裁判恰好没跑、包仍显示 `OK`」的
+  真实场景，B 的前提不成立 ⇒ **TD-037 复开并改拍 A**。判据不靠 AI 自评。
+- **状态**：TD-037 **销项**（B 已拍板并契约化），保留上述复开条件。
+  后续顺序：D5/D6 → Q4(d)；builder 引用评分策略常量仍建议暂不做。
+
+### 49.5 十分钟验证（本机可跑，全部为外部裁判）
+
+| 验证 | 判据 |
+|---|---|
+| 词表等价性 | 从旧提交取 `FORBIDDEN` 元组与当前模块逐字比较 → 相等；`_guard()` 对样例文本行为一致 |
+| 匿名扫描 | 全仓禁词 / 绝对路径 / 凭据 / 用户名 **0 命中** |
+| 全量裁判 | `pytest tests/ -q` → **652 passed** |
+| 评审包 | `--check` → `OK (7974ca6f877d3e6a)`，包字节哈希 `839eb4b66a954ba7` **不变**（证明未重生成） |
+
+复核命令沿用 §46.10 / §47.8（路径已按 §49.2 改成 `$env:USERPROFILE`，可直接粘贴）。
+
+### 49.6 提交与推送纪律
+
+只重写两个未推送提交 + **fast-forward push**；**不重生成评审包**、不改基线、不 `push -f`。
+推送的实测结果**不写回仓内正文**（§48.2 第 4 条，避免产生新的未提交改动），
+记在维护者侧日志与本轮答复。
+
+### 49.7 不提外评
+
+依据全在仓内（扫描结果、等价性实证、本地裁判、git 状态）；
+未定项「是否重写已推送历史」是产品意向，外评替代不了人拍板，无语义或契约盲区。
+
