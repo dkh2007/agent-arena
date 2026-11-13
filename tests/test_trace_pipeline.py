@@ -190,7 +190,11 @@ def test_boundary_cases_survive_full_dto_pipeline(case):
     """每个边界 trace 都不只是执行器自洽，还要能组装成合法报告。"""
     data = raw("raw-perfect")
     data["trace"]["tool_calls"] = copy.deepcopy(case["tool_calls"])
-    data["trace_audit"]["call_count"] = len(case["tool_calls"])
+    # §57：兼容入口现在也走 F1 派生对账，先让手写声明与派生值一致，
+    # 否则结构违规 case 会在入口被拒，测不到本用例要测的 R3 分类 / DTO 合法性。
+    data["trace_audit"] = tp._derive_trace_audit(
+        data["trace"], TASK["trace_requirements"]["minimum"]
+    )
     built = tp.recompute_r3(data)
     report = dr.build_report(TASK, built)
     dr.validate_report(report)
@@ -639,12 +643,33 @@ def test_f1_semantic_trace_invalid_does_not_flip_schema_valid():
 
 
 def test_f1_compat_entry_recompute_r3_still_bypasses_derivation():
-    """TD-024 剩余项现状锁：兼容入口不经过 F1，仍能组装矛盾报告（§55 下一小步收敛）。"""
+    """TD-024 收敛后的正向锁（函数名是 S3-2 历史遗留，语义由 §57 反转，按 §26 惯例不改名）。
+
+    兼容入口现在与主链路共用 `_reconcile_audit()`：一致 audit 产出派生值、
+    矛盾 audit 在入口被拒。顺带补 §55.7 登记的 `recompute_all` 侧覆盖缺口。
+    """
     data = copy.deepcopy(raw("raw-perfect"))
-    data["trace_audit"]["call_count"] = 999
-    report = dr.build_report(TASK, tp.recompute_r3(data))
+    derived = tp._derive_trace_audit(
+        data["trace"], TASK["trace_requirements"]["minimum"]
+    )
+    built = tp.recompute_r3(data)
+    assert built["trace_audit"] == derived
+    report = dr.build_report(TASK, built)
     dr.validate_report(report)
-    assert report["trace_audit"]["call_count"] == 999
+    assert report["trace_audit"] == derived
+
+    conflicted = copy.deepcopy(raw("raw-perfect"))
+    conflicted["trace_audit"]["call_count"] = 999
+    with pytest.raises(tp.PipelineError, match="call_count"):
+        tp.recompute_r3(conflicted)
+    with pytest.raises(tp.PipelineError, match="call_count"):
+        tp.recompute_all(conflicted, TASK)
+
+    # §55.7 缺口：主链路的真相源冲突防御此前无专属正向锁，这里补上。
+    reported_conflict = copy.deepcopy(raw("raw-perfect"))
+    reported_conflict["trace"] = None
+    with pytest.raises(tp.PipelineError, match="reported"):
+        tp.recompute_all(reported_conflict, TASK)
 
 
 def _bad_index(d):

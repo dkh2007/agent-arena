@@ -61,8 +61,8 @@
 
 同理，R4 的参数 schema 违规属于任务语义，不进 `invalid_reasons`；平台若将来要加
 时间戳单调性 / `status=error` 条件必填等更严规则，须先写进 `trace_requirements`，
-由 `call_sequence_problems()` 单一内核供执行器与 F1 派生器共用（TD-024 已部分收敛，
-§55），否则 R1 严格对账会误伤合法提交。
+由 `call_sequence_problems()` 单一内核供执行器与 F1 派生器共用（TD-024 已收敛，
+§55 / §57），否则 R1 严格对账会误伤合法提交。
 
 ---
 

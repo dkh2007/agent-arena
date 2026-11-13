@@ -90,10 +90,11 @@ notes[]              可选。报告出现"未覆盖情况"时必须在这里说
 | **A4** | `reported=false ⇒` 不允许 `final_status` | TD-023 / P4「无 trace 却声称退出状态」 |
 
 A3 / A4 为 round-24 新增（拍板 P-F1-4）。即使将来出现绕过 `recompute_all()` 的
-组装路径，报告也不会带上自相矛盾的 audit。**已知旁路**：兼容入口 `recompute_r3()`
-不经过 F1 对账（TD-024 剩余项，§55 下一小步收敛）。**已收敛（round-65 §55）**：
+组装路径，报告也不会带上自相矛盾的 audit。**已收敛（round-65 §55 / round-67 §57）**：
 调用序列规则由 `call_sequence_problems()` 单一内核供派生器与执行器共用，两入口防御由
-`_check_raw_consistency()` 共用，零行为变化；原「两处独立实现、未来须收敛」描述已过时。
+`_check_raw_consistency()` 共用；F1 派生对账由 `_reconcile_audit()` 单一实现供
+`recompute_all()` 与兼容入口 `recompute_r3()` 共用，**兼容入口不再有旁路**。
+原「两处独立实现、未来须收敛」与「已知旁路」两处描述均已过时。
 
 ---
 

@@ -14,7 +14,7 @@
 - **S3-3-6 起五条全现算**：`recompute_all()` 是主链路，`run_fixture()` 只走它。
   spec / trace 约束 / 工具声明全部从**传入的 task** 派生，不回落到默认 YAML。
 - **`recompute_r3()` 是 S3-2 的兼容入口**，只现算 R3，供 71 条历史锁继续调用；
-  它不在主链路上，**不经过 F1 派生对账**（TD-024 剩余旁路，§55 下一小步收敛）。
+  它不在主链路上，但**同样经过 F1 派生对账**（TD-024 剩余旁路于 §57 收敛）。
 - **不改写夹具**：本模块返回深拷贝。夹具里手写 `assertion_results` 作为 S2 历史基线
   **保留在磁盘上但不再被读**，供一致性锁比对（§20.2 第 3 项）。
 - **不改 build_report 的语义**：trace 强制改写、依赖折叠、两段式计分仍归它管。
@@ -180,13 +180,35 @@ def _check_raw_consistency(raw: dict) -> dict | None:
     return trace
 
 
-def recompute_r3(raw: dict, spec: dict | None = None, vocab: set[str] | None = None) -> dict:
-    """返回 raw 的深拷贝，其中 R3 断言结果由 `raw.trace.tool_calls` 现算。"""
+def _reconcile_audit(out: dict, trace: dict | None, requirements: object) -> dict:
+    """F1 派生对账：两个入口共用一份实现（TD-024 剩余项，§57 收敛）。
+
+    此前只有 `recompute_all()` 内联这段，兼容入口会组装出主链路绝不会产出的
+    矛盾报告。抽成共享函数而非复制到第二个入口，避免再次出现规则漂移。
+    """
+    if not isinstance(requirements, dict):
+        raise PipelineError("任务缺 trace_requirements.minimum，无法派生 trace_audit")
+    derived = _derive_trace_audit(trace, requirements)
+    _refuse_audit_conflict(out["trace_audit"], derived)
+    out["trace_audit"] = derived
+    return out
+
+
+def recompute_r3(raw: dict, spec: dict | None = None, vocab: set[str] | None = None,
+                 task: dict | None = None) -> dict:
+    """返回 raw 的深拷贝，其中 R3 断言结果由 `raw.trace.tool_calls` 现算。
+
+    S3-2 兼容入口：71 条历史锁只传 `raw`，`spec` 与 `task` 都允许缺省，
+    缺省口径与 `recompute_all()` 一致（从默认任务文件加载）。
+    """
     if spec is None:
         spec = ae.load_r3_spec()
+    if task is None:
+        task = dr.load_task(TASK_PATH)
 
     out = copy.deepcopy(raw)
     trace = _check_raw_consistency(out)
+    _reconcile_audit(out, trace, (task.get("trace_requirements") or {}).get("minimum"))
 
     results = out.get("assertion_results")
     if not isinstance(results, list):
@@ -219,7 +241,6 @@ def recompute_all(raw: dict, task: dict | None = None,
     out = copy.deepcopy(raw)
     # T11 真相源冲突检查：两个入口共用一份实现（TD-024 Step A）。
     trace = _check_raw_consistency(out)
-    audit = out["trace_audit"]
 
     handwritten = out.get("assertion_results")
     if not isinstance(handwritten, list):
@@ -233,12 +254,8 @@ def recompute_all(raw: dict, task: dict | None = None,
         )
 
     # F1：trace_audit 改为派生值。手写声明只用于对账，对不上就在入口拒绝。
-    # 兼容入口 recompute_r3() 不经过这里（TD-024 剩余旁路，§55 下一小步收敛）。
-    if not isinstance(requirements, dict):
-        raise PipelineError("任务缺 trace_requirements.minimum，无法派生 trace_audit")
-    derived = _derive_trace_audit(trace, requirements)
-    _refuse_audit_conflict(audit, derived)
-    out["trace_audit"] = derived
+    # 两个入口共用 `_reconcile_audit()`（TD-024 剩余项，§57 收敛）。
+    _reconcile_audit(out, trace, requirements)
 
     artifacts = out.get("artifacts")
     computed: dict[str, dict] = {}

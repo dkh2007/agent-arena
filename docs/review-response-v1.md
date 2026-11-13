@@ -5615,7 +5615,120 @@ grep -n 'D6 的 TD-024 部分\|已由 §55 / §56 取代' docs/review-response-v
 - D6 实现顺序 §51.7 不变；TD-026 维持「已登记、未实现」；TD-024 剩余项（`recompute_r3` 的 F1 旁路）仍为下一小步。
 - 本轮零 git 写操作（未 commit / 未 push）；提交与 push 归人拍板。仓外日志追加 round-66。
 
+> **订正注（round-67，§57）**：本节的「TD-024 剩余项仍为下一小步」与「提交 / push 归人拍板」，
+> 已由 §57 取代：round-59~66 的累积改动已提交为 `1a319ad` 并按规则 11 推送；
+> TD-024 剩余项已于 §57 收敛。历史正文按纪律不回改。
 
+---
+
+## 57. round-67：提交推送 + TD-024 剩余项收敛
+
+### 57.1 决定与边界
+
+人指示「提交，继续向前推进」。**提交与 push 由 AI 直接完成**（先按规则 11 扫整段待推送历史），随后不停步开 **TD-024 剩余项**：`recompute_r3()` 兼容入口不走 F1 派生对账的旁路收敛。
+
+- **决定**：按 §55.8 / §56.9 已登记的「下一小步」执行收敛，**不重新定义 TD-024**，不改 TD-026 状态，不动 Q4(d) 顺序。
+- **收敛方式**：把 F1 派生对账抽成**单一共享函数**，两个入口都调用；不复制第二份规则（否则又制造 TD-024 想消灭的东西）。
+- **不做**：不新增第五态、不改判定逻辑、不改分数、不新增测试用例（新增会让 `_pytest_count()` +1 → `--check` STALE → 锚点后移）。
+- **本轮不是「零行为变化」**：兼容入口从「能组装矛盾报告」变成「矛盾即拒绝」，这是**预期且唯一**的判定语义变化；主链路 `recompute_all()` 行为必须逐输入不变。
+
+### 57.2 开工只读核证：影响面探针（本轮新证据）
+
+按 §55.8 要求「收敛前先复核 71 条历史锁与现状锁」，先跑一次性内存探针（仓外、跑完即删、不落仓），模拟「`recompute_r3` 加上派生对账」后的行为，逐项预测哪些锁会红：
+
+| 对象 | 结果 |
+|---|---|
+| 五夹具走兼容入口 → `build_report` → `validate_report` | **5/5 OK** |
+| `test_boundary_cases_survive_full_dto_pipeline` 的 14 个边界 case | **10 OK / 4 FAIL**；4 个 FAIL 全是结构违规 case（`shuffled_call_index` / `missing_call_index` / `bad_status_enum` / `params_not_object`），原因是手写 audit 干净而派生 audit 为 `schema_valid=false` |
+| 同样 14 个 case，**先把 audit 同步成派生值** | **14/14 OK，0 个 state diff** ⇒ `build_report` 不会因 `schema_valid=false` 改写 R3 判定 |
+| 现状锁 `call_count=999` | **REFUSED**（`PipelineError`，报 `call_count: 手写=999 派生=5`） |
+| 其余 `recompute_r3` 调用点（含 5 个真相源冲突 mutate） | 行为不变；`duplicate_r3` 仍报「R3 断言结果应恰好 1 条」 |
+
+⇒ 影响面**只有 2 条测试**（1 条现状锁 + 1 条参数化锁的函数体），都在同一文件内，且**用例数不变**。
+
+### 57.3 实现方案
+
+1. 新增 `_reconcile_audit(out, trace, task)`：取 `trace_requirements.minimum` → `_derive_trace_audit()` → `_refuse_audit_conflict()` → 覆盖 `out["trace_audit"]`。原 `recompute_all()` 内联的 5 行改调它，报错文本逐字不变。
+2. `recompute_r3(raw, spec=None, vocab=None, task=None)`：`task` 缺省时与 `recompute_all()` 一样从 `TASK_PATH` 加载（兼容入口本就从默认 YAML 取 `load_r3_spec()`，口径延续）；在 `_check_raw_consistency()` 之后、`evaluate_assertion()` 之前调用共享对账。**71 条历史锁调用形式一字不改**。
+3. 主链路 `recompute_all()` 的对账顺序、参数、报错一律不动。
+
+### 57.4 测试处置（不新增用例）
+
+| 测试 | 处置 |
+|---|---|
+| `test_f1_compat_entry_recompute_r3_still_bypasses_derivation` | **现状锁反转为正向锁，函数名保留**（按 §26 惯例，避免 node id 集合变化）：断言兼容入口产出派生 audit、矛盾 `call_count` 被拒；顺带补 §55.7 登记的缺口——对 `recompute_all()` 加一条真相源冲突正向断言 |
+| `test_boundary_cases_survive_full_dto_pipeline` | 函数体内先把 `trace_audit` 同步成派生值再组装；14 个 case 的 R3 判定断言原样保留 |
+
+### 57.5 完成判据与十分钟验证
+
+```bash
+python -m pytest tests/ -q
+python -m pytest tests/test_trace_pipeline.py -q -k 'f1_compat_entry or boundary_cases_survive_full_dto_pipeline'
+python src/arena/diagnosis_report.py --fixture all
+python src/arena/review_packet.py --check
+python scripts/equivalence_probe.py
+python scripts/push_gate.py --self-test --dirty c830b1b
+```
+
+- 判据 A：兼容入口给矛盾 audit 必须抛 `PipelineError`；给一致 audit 必须产出与派生值**逐字段相等**的 audit。
+- 判据 B：五夹具分数 `0 / 0 / 0.25 / 0.5 / 1.0` 与 `--collect-only` 计数均不变；评审包 `--check OK` 且字节 sha `839eb4b66a954ba7` 不变。
+- 判据 C：`equivalence_probe.py` 仍 `FINAL_MATCH=True`（它覆盖 `recompute_all` 主链路与两处规则内核），证明**主链路零行为变化**。
+- 判据 D：两组变异实证——分别关掉**兼容入口**与**主链路**对共享对账的调用，各自对应的正向锁必须报红；恢复后全绿。（原写「两条锁同时报红」不准：边界锁测的是另一件事，不受入口对账开关影响，已在 57.8 按实测订正。）
+
+### 57.6 举证边界（不夸大）
+
+`scripts/equivalence_probe.py` 的 L2 走 `recompute_all()`，**不覆盖 `recompute_r3()`**；本轮兼容入口的行为变化是**有意的**，由反转后的正向锁钉住，不属于「等价」主张。`FINAL_MATCH=True` 只能证明主链路与规则内核未漂移。对拍基线仍是 git 真实对象 `0ca8492`（当时 D6 前的实现），不随本轮提交改写。
+
+### 57.7 落仓清单
+
+| 文件 | 改动 |
+|---|---|
+| `docs/review-response-v1.md` | 新增 §57 |
+| `src/arena/trace_pipeline.py` | 新增 `_reconcile_audit()`；两入口接入；模块 docstring / 过时注释同步 |
+| `tests/test_trace_pipeline.py` | 1 条现状锁反转 + 1 条参数化锁函数体预同步 audit |
+| `HANDOFF.md` | round-67 最新状态块 |
+| `docs/diagnosis-report-schema.md` | 若仍有「已知旁路」现役描述，改为新事实 |
+| 仓外 `.workbuddy/memory/2026-11-13.md` | 追加 round-67 |
+
+### 57.8 本轮实测（全部为本机命令输出，非自评）
+
+**① 提交与推送（先做，人指示「提交」）**
+
+| 项 | 结果 |
+|---|---|
+| 提交 | `1a319ad`，11 文件、903 insertions / 80 deletions，工作区归零 |
+| 闸门默认范围 | `SCAN_SCOPE=origin/main..HEAD` / `COMMITS_IN_RANGE=1` / `files=57` / `added=903` / `hits=0` / **`PUSH_GATE=CLEAN`** |
+| 闸门单提交 | `--commit 1a319ad` → `PUSH_GATE=CLEAN` |
+| 闸门负向对照 | `--self-test --dirty c830b1b` → `SELF_TEST_PASS=True`；正向 `CLEAN(0)` / 已知脏提交 `BLOCKED(2 命中)` / 空范围不假绿 |
+| push | `0ca8492..1a319ad main -> main`，`PUSH_RC=0`；`git ls-remote` 远端 sha = 本地 HEAD = `origin/main` |
+
+**② 影响面探针（§57.2）**：5/5 夹具 OK；14 个边界 case `10 OK / 4 FAIL`（4 个结构违规）；预同步 audit 后 `14 OK / 0 state diff`；现状锁 `REFUSED`。
+
+**③ 实现后首轮（如实留痕一次失误）**：`66 failed, 104 passed`——根因是我抽函数时删掉了 `recompute_all()` 的 `requirements` 定义，但 `evaluate_assertion()` 在 `:270` 仍引用它，正常路径 `NameError`；有一条锁不红是因为它在到达该行前已被对账拒绝。**改为共享函数直接接收 `requirements`、两入口各自派生后传入**即修复。重跑 `5 failed, 165 passed`，红项与探针预测**逐条一致**。
+
+**④ 测试反转后**：`tests/test_trace_pipeline.py` **170 passed**；针对性 `-k 'f1_compat_entry or boundary_cases_survive_full_dto_pipeline'` **15 passed**；五夹具 `0.0 / 0.25 / 0.0 / 0.5 / 1.0` 不变；全量 **`652 passed / 122.41s`**。
+
+**⑤ 一致性与等价**：`--check OK (7974ca6f877d3e6a)`；包字节 sha `839eb4b66a954ba7` **未变**；`--collect-only` 仍 652 ⇒ **零重生成、锚点未动**（NOTE「锚点 `03cf8c9` 落后 HEAD 5 个提交」是设计行为）。`equivalence_probe.py` → `L1 30 检查 / 0 差异`、`L2 20 用例 / 0 差异`、`FINAL_MATCH=True / RC=0` ⇒ **主链路零行为变化**。
+
+**⑥ 变异实证（判据 D）**
+
+| 变异 | 做法 | 结果 |
+|---|---|---|
+| M1 | 临时关掉**兼容入口**的 `_reconcile_audit()` 调用 | `1 failed, 14 passed`；仅反转锁红（边界锁 14 条全绿，符合预期） |
+| M2 | 临时关掉**主链路**的 `_reconcile_audit()` 调用 | `13 failed, 157 passed`；全为 F1 派生物 / 严格拒绝锁，反转锁中的主链路断言也红 |
+| 恢复 | 两处源码还原 | 针对性 `18 passed`、`--check OK` |
+
+⇒ 两个入口**都真的调用了同一份对账**，且各自有正向锁钉住。M1 结果同时说明「两条锁同时报红」这个原始措辞不成立，已在 57.5 订正。
+
+**⑦ 闸门 / 匿名**：`SELF_TEST_PASS=True`；改动文件匿名扫描见 57.9。
+
+### 57.9 状态与下一步
+
+- **TD-024 整体销项**：两处重复规则（§55 Step B）、两入口防御重复（§55 Step A）、兼容入口 F1 旁路（§57）三处均已收敛，且由变异实证 + git 对象对拍双向举证。
+- **TD-026 维持「已登记、未实现／暂缓非取消」**；结构层条件必填未获授权也未作废；Q4(d) 两类题口径按 §53 登记，实现顺序 §51.7 不变。
+- 本轮**无产品口径待人拍板**：收敛方向由 §55.8 / §56.9 既定，实现与验证属技术落地步；依据全在仓内 + 本机探针 + git 真实对象，**不提外评**。
+- 本批次代码 / 测试 / 文档在收尾裁判通过后提交并推送（commit sha 以 `git log -1` 复核，不硬编码进文档，避免锚点重放失效）；**此前那笔 `1a319ad` 已单独推送**。
+- 下一步：**Q4(d) 两类题分流的实现**（§53 口径已拍板，排在实现序列最后），或先补 A 线设计层 P1/P2/P3；两者都是排期选择，由人一句话决定，AI 不替人定方向。
 
 
 
