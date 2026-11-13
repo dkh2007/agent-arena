@@ -6309,3 +6309,130 @@ grep -n "156-163" 项目计划书草稿-v0.4.md && grep -n "24(3):133-159" 项�
 - **待人拍板：无**。四条都是"原写法与原文不符"，改法只有一种，不需要价值判断。
 - **剩余可核项**（不需拍板）：ClawBench 原始页面、CubeSandbox 与 agentevals 的时点数据刷新（第 0 周 spike 时顺手做）。
 - **下一步可做**：把 Q6 那张"每条决策的证据强度表"落成**一条决策一个现场演示命令**的脚本（评委问哪条当场跑哪条）。
+
+---
+
+## 62. round-72：决策演示台（11 条决策 → 11 个现场动作，含 5 条变异实证）
+
+### 62.1 起因
+
+§59 回答 Q6 时交的是一张「证据强度表」——那仍然是我的排序，不是证据。评委问「决策 9 怎么证明」
+的正确回答不该是「我在第 59 节写了」，而应是一条能当场跑出结果的命令。本轮把它做成
+`scripts/demo_decision.py`：11 条决策，问哪条跑哪条。
+
+### 62.2 三条自我约束（这才是本轮的重点，脚本只是载体）
+
+| 约束 | 做法 | 违反时会发生什么 |
+|---|---|---|
+| **不复述决策正文** | 每条的标题用正则从 `docs/review-packet.md` 第 3 节**现读** | 若把正文抄进脚本，改一处漏一处，脚本就成了第二个真相源 |
+| **期望值从声明现读** | 「分母恒为 4」的那个 4 取自任务 YAML 的 `scoring.score.credit.total_weight`；读不到 `raise` | 写死 4 的话，YAML 改了分母而实现没跟上，演示仍然绿 |
+| **降级档不算通过** | 四档 `PASS / PARTIAL / NOT_EXECUTABLE / FAIL`，后两档单列计数 | 把「部分能验」混进「全过」，等于用统计口径骗自己 |
+
+第三条是刻意跟自己过不去：当前 **PASS 7 / PARTIAL 3 / NOT_EXECUTABLE 1 / FAIL 0**——
+按「11 条全绿」的说法会好听得多，但那三条 PARTIAL（决策 1 / 2 / 8）与一条 NOT_EXECUTABLE（决策 3）
+的剩余部分确实不由脚本担保，必须说出来。
+
+### 62.3 逐条可演示性
+
+| # | 决策 | 档 | 现场做什么 |
+|---|---|---|---|
+| 1 | 首发域 = Agent 开发学习 | PARTIAL | 扫 `tasks/*.yaml` 的 `domain`，确认无算法题域；「推迟到决赛」是路线承诺，无码可验 |
+| 2 | 自研断言层（A2E 已证伪） | PARTIAL | 断言类型数、五夹具状态集合、`spike/` 证据齐备度、`span_count_readback==0`；「26 指标全是聚合分」靠 README 人工整理 |
+| 3 | 复习项 = 可执行任务 | NOT_EXECUTABLE | 复习层未实现，无载体；只能确认边界（诊断报告不含复习/掌握度字段） |
+| 4 | 两段式 gate/credit，分母恒定 | PASS | `rubric_layers` 现算 gate 无权重、credit 权重和 == 声明分母；五夹具 `total_weight` 恒定、`disqualified` 与 gate fail 等价 |
+| 5 | 门禁只管分数不管观测 | PASS | `raw-no-file`：`disqualified=True` + `ratio=0` + 反事实得分 > 0 + credit 仍有 pass |
+| 6 | 不新增第 4 技能 | PASS | 技能集合 = 3、gate 条目无 `skill_id`、`no_output_file` 进 `unattributed_patterns` 不进 `skill_gaps` |
+| 7 | 数据缺失 ≠ 能力不足 | PASS | 全夹具 × 全断言扫描：凡 `blocked/unscored` 一律不计掌握度、不产错误模式、`report_attribution` 可派生复算 |
+| 8 | 掌握度与调度分开 | PARTIAL | 诊断层无掌握度字段、源码无 `stability` 当系数的算式、`data-model` 旧口径已撤；公式本身未实现 |
+| 9 | 缺过程按题型分流 | PASS | **双向**：`requires_process=True` → 0 分且断言不改写；关掉开关 → 0.5 分。开关空转或吞诊断都会红 |
+| 10 | 保对账 | PASS | 四场景：真出处 verified / 编造 mismatch / 只塞 params unverifiable / 空记录 unverifiable |
+| 11 | 版本不一致 ⇒ 作废 | PASS | 三情形（错版本/对版本/不带版本）+ 作废报告仍过 schema + `voided` 与 `disqualified` 不混用 |
+
+### 62.4 自证不是永绿：5 条变异
+
+一个从不报红的检查表等于没有检查表。所以给演示台配了定向破坏测试（`tests/test_demo_decision.py`，
+全部用 monkeypatch 在进程内改，不碰产品代码与夹具）：
+
+| 变异 | 破坏点 | 要求 |
+|---|---|---|
+| M1 | `counterfactual_credit` 恒 0 | 决策 5 必须 FAIL |
+| M2 | `_process_fact` 恒返回 `missing=False` | 决策 9 必须 FAIL |
+| M3 | `voided` 恒 False | 决策 11 必须 FAIL |
+| M4 | `attribution_policy.unscored.counts_toward_mastery = True` | 决策 7 必须 FAIL |
+| M5 | gate 条目加 `weight=1` | 决策 4 必须 FAIL |
+
+`21 passed`。**这 5 条是本轮唯一能证明「演示台会红」的东西**；只跑 `--all` 得全绿本身不构成证据。
+
+### 62.5 过程中抓到的两个自身错误（如实留痕）
+
+**错误 1（读数错路径）**：决策 4 首次实现读 `scoring.credit.total_weight`，实际路径是
+`scoring.score.credit.total_weight`——多了一层 `score`。于是读到 0，5 条判据（含四份夹具的分母）全红。
+**修法不是补默认值，而是让读不到就 `raise`**：`_credit_total()` 现在缺键直接报错并指明去修 YAML 路径或本函数。
+理由：静默默认 0 会让"声明缺失"伪装成"实现不符"，两种故障混成一种红。
+
+**错误 2（同名不同义）**：决策 3 首次用 `review` 正则匹配模块名，把 `review_packet.py`（**评审**包）判成
+复习层，直接给了一个假 FAIL。中文里"评审"与"复习"在英文都是 review，这类撞名在判据里必须避开——
+改用无歧义词 `fsrs|schedul|spaced|review_card|flashcard`，并加一道**源码内容扫描**做双保险。
+
+顺带说明一个副产品：这两个错都是"期望值从声明读"这条约束自己体检出来的。若当初把 4 和"无复习模块"
+写死在脚本里，两个错都会安静地留在那儿。
+
+### 62.6 顺带修掉评审包一处对外事实错误（比演示台本身更要紧）
+
+评审包 §4 长期写着「单元测试实测：**1 failed, 666 passed**」。事实是：round-70 最后一次生成评审包时
+确实有 1 条红（测试断言还没跟着改），之后测试修好了，但**评审包没有重新生成**，于是对外材料里一直
+挂着一个已不存在的失败。现为 `688 passed / 688 total`（新增 21 条演示台测试）。
+
+**机制缺口（登记 TD-040）**：`--check` 只重放已记录的那一行、不重跑测试，所以它能抓"代码漂移"，
+抓不到"记录本身过期"。两条候选修法留待定：
+(a) 生成时若实测非全绿，包内显式加一段「本次未全绿，禁止对外发布」的红字，并让 `--check` 对此报警；
+(b) 发正式包前强制无 `--fast` 重生成（现有纪律），再加一条"包内 HEAD 距当前 HEAD > N 次提交即提示重生成"。
+本轮只登记，不实现——避免在收尾阶段改生成器。
+
+### 62.7 落仓
+
+| 文件 | 改动 |
+|---|---|
+| `scripts/demo_decision.py`（新） | 11 条演示 + 四档判定 + 总表；约 520 行，纯 stdlib + 仓内模块 |
+| `tests/test_demo_decision.py`（新） | 21 条：11 条现状不为 FAIL、5 条变异必须红、档位互斥、退出码、读不到声明就 raise、标题现读 |
+| `docs/review-packet-manual.md` | 新增 §7「每条决策怎么当场验」（四档表 + 两条自我约束 + 变异命令），原 §7 复现环境改 §8 |
+| `docs/review-packet.md` | 脚本重生成：用例数 667→688、实测行 `1 failed,666 passed`→`688 passed`、新增 §7 |
+| `HANDOFF.md` | round-72 状态块 |
+
+**未动**：产品代码、任务 YAML、夹具、schema——零判定语义、零分数改动。
+
+### 62.8 判据（可复核）
+
+```bash
+# ① 演示台总表与全跑
+python scripts/demo_decision.py
+python scripts/demo_decision.py --all          # 期望 PASS 7 / PARTIAL 3 / NOT_EXECUTABLE 1 / FAIL 0，退出码 0
+
+# ② 会红吗（本轮核心）
+python -m pytest tests/test_demo_decision.py -q      # 期望 21 passed
+
+# ③ 单独验最容易被质疑的两条
+python scripts/demo_decision.py 9              # 双向：0 分 <-> 0.5 分，只改开关
+python scripts/demo_decision.py 11             # 作废仍出报告、仍过 schema
+
+# ④ 评审包：用例数与实测行都已刷新
+python src/arena/review_packet.py --check      # 期望 OK
+grep -n "单元测试实测" docs/review-packet.md    # 期望 688 passed，不再是 1 failed
+
+# ⑤ 全量
+python -m pytest tests/ -q                     # 期望 688 passed
+```
+
+**反证条件**：
+① 若 `--all` 出现 FAIL，说明对应决策未被执行或演示已过期——**不要改脚本的判据去迁就实现**；
+② 若五个变异里任一个不再让对应演示变红，说明那条演示退化成永绿，本节的"自证"结论作废；
+③ 若 `demo_decision.py` 里出现写死的 `4`（分母）或写死的决策正文，则 §62.2 两条约束已被违反。
+
+### 62.9 状态
+
+- **待人拍板：无**。演示台不引入任何产品口径，只把已有决策变成可执行检查。
+- **已知不足**：决策 2 依赖 `spike/README.md` 的人工整理（A2E 需 1–3GB 镜像，现场不复跑）；
+  决策 8 只能证明"没有那个错"，不能证明"公式对"（公式未实现）；决策 3 完全无载体。
+- **新登记**：TD-040（`--check` 抓不到"记录本身过期"，两条候选修法见 §62.6）。
+- **下一步可做且不需拍板**：把 TD-040 的两条候选做成对比试验（在临时分支上各实现一版，看哪种误报更少）；
+  或继续核证计划书剩余时点数据。
