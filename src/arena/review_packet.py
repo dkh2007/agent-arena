@@ -104,6 +104,39 @@ def _pytest_count() -> int:
 
 FAST_TEST_LINE = "- 单元测试实测：`--fast` 模式未执行测试（对外发正式评审包时请去掉 --fast）"
 
+# TD-040：实测行不只是给人读的，它决定这份包能不能对外发。
+# 判据只有两条——有没有实测数据、失败数是否为 0。不解析 passed 数（可由 total 推出，
+# 解析三处反而会出现三处不一致的可能）。
+_FAILED_RE = re.compile(r"(\d+)\s+failed")
+
+
+def _test_gate(line: str) -> tuple[bool, str]:
+    """(可对外发布, 不可发布的原因)。生成与校验共用，避免两套口径。
+
+    判定只看**记录本身**，不看当前工作区：所以它能拦「生成时就带着失败」，
+    拦不住「生成时全绿、之后代码才变红」——后者要靠 `--check --full` 重跑。
+    """
+    if not line.strip() or line.strip() == FAST_TEST_LINE.strip() or "未执行测试" in line:
+        return False, "无实测数据（`--fast` 生成或实测行缺失）"
+    failed = _FAILED_RE.search(line)
+    if failed and int(failed.group(1)) > 0:
+        return False, f"实测含 {failed.group(1)} 条失败"
+    return True, ""
+
+
+def _block_notice(reason: str) -> str:
+    """非全绿时插进正文的显式警告。
+
+    必须写进正文而不是只写日志：评审包是**给别人看的文件**，
+    日志会随终端滚动消失，文件会被发给外部 AI 或评委。
+    """
+    return (
+        f"> ⚠️ **本包不可对外发布**：{reason}。\n"
+        "> 评审包是给外部评审者看的材料，带失败记录或没有实测数据都会直接损害可信度。\n"
+        "> 修好测试后去掉 `--fast` 重新生成；确认无意外的失败再发。"
+    )
+
+
 
 def _parse_pytest_summary(stdout: str) -> tuple[str, int]:
     """从 pytest -q 末行解析 (摘要, 总数)。抽成纯函数，失败/错数才能被单测覆盖。"""
@@ -160,10 +193,12 @@ def _snapshot(ref: str, test_line: str) -> str:
     sha = _git_sha(ref)
     log = _git_log(ref)
     tests = _pytest_count()
+    publishable, reason = _test_gate(test_line)
+    gate = "" if publishable else "\n\n" + _block_notice(reason)
     return (
         f"- 生成锚点：`{sha}`（本节提交列表固定在该提交，不随后续提交变化）\n"
         f"- 单元测试：**{tests} 个用例被收集**（`pytest tests/ --collect-only` 计数）\n"
-        f"{test_line}\n"
+        f"{test_line}{gate}\n"
         f"\n**锚点处最近 8 条提交**\n\n{log}"
     )
 
@@ -350,8 +385,12 @@ def build(
     return body, digest, _git_sha(ref)
 
 
-def write_packet(out: Path, fast: bool = False) -> None:
-    body, digest, snap = build(fast=fast)
+def write_packet(out: Path, fast: bool = False, test_result: str | None = None) -> None:
+    """`test_result` 供测试构造特定记录（例如造一份「带失败记录」的包）。
+
+    产品路径不传它——真实生成时永远现场跑测试，否则就退化成自欺。
+    """
+    body, digest, snap = build(fast=fast, test_result=test_result)
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     meta = f"<!-- packet-sha256={digest} snapshot-sha={snap} generated={stamp} -->"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -361,7 +400,48 @@ def write_packet(out: Path, fast: bool = False) -> None:
     print(f"    packet-sha256 = {digest}   snapshot-sha = {snap}")
 
 
-def check(out: Path) -> int:
+def _verify_recorded_run(recorded_line: str) -> int:
+    """`--check --full`：重跑一遍 pytest，与包内记录的那行比对。
+
+    为什么非有它不可：常规 `--check` 把记录行**原样喂回** `build()` 重算指纹，
+    等于拿记录证明记录。真正的盲格是「生成时全绿、之后代码变红而包没重生成」——
+    那份包对外声称全绿，实际是红的。只有重跑看得见。
+
+    代价：一次全量 `pytest`（本仓库约 2 分钟）。所以默认不跑，由人显式加 `--full`。
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        print("FAIL: 在 pytest 进程内不能重跑测试（会递归）。请在命令行执行 --check --full")
+        return 1
+    rec_total = re.search(r"/\s*(\d+)\s*total", recorded_line)
+    if not rec_total:
+        print("FAIL: 包内实测行缺失或格式无法解析，无法复核")
+        return 1
+    rec_failed = _FAILED_RE.search(recorded_line)
+    rec_failed_n = int(rec_failed.group(1)) if rec_failed else 0
+    rec_total_n = int(rec_total.group(1))
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "-q"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    summary, now_total = _parse_pytest_summary(proc.stdout)
+    now_failed = _FAILED_RE.search(summary)
+    now_failed_n = int(now_failed.group(1)) if now_failed else 0
+
+    print(f"- 包内记录：{rec_failed_n} failed / {rec_total_n} total")
+    print(f"- 现在重跑：{now_failed_n} failed / {now_total} total（{summary}）")
+    if rec_failed_n == now_failed_n and rec_total_n == now_total:
+        print("OK_FULL: 包内实测记录仍然成立")
+        return 0
+    if rec_failed_n == 0 < now_failed_n:
+        print("TEST_DRIFT: 包声称全绿，但当前工作区有失败——对外材料与实际相反，必须重生成")
+    else:
+        print("TEST_DRIFT: 包内记录与当前实测不符（多半是测试增删或已修好未重生成）")
+    print("            请重新生成：python src/arena/review_packet.py")
+    return 3
+
+
+def check(out: Path, full: bool = False) -> int:
     """判断这份评审包的内容是否还和仓库一致。
 
     刻意不用 HEAD 比较：生成物本身要进下一个提交，HEAD 必然变化，
@@ -401,8 +481,17 @@ def check(out: Path) -> int:
         except PacketError:
             return ""
 
-    ref = snap.group(1) if snap else "HEAD"
+    # TD-040：先问「能不能对外发」，再问「内容是否最新」。
+    # 顺序不能反——一个带失败记录的包，先说它 STALE 会把注意力引到"重新生成"，
+    # 而重新生成出来的仍是带失败的包。实测依据：487ff6f 那次的包 --check 判 OK。
     recorded_line = TEST_RESULT_RE.search(old_body)
+    publishable, reason = _test_gate(recorded_line.group(0) if recorded_line else "")
+    if not publishable:
+        print(f"NOT_RELEASABLE: 这份评审包不可对外发布——{reason}")
+        print("                包内已记录该状态（见正文警告）；修好测试后重新生成，不要用 --fast")
+        return 2
+
+    ref = snap.group(1) if snap else "HEAD"
     try:
         fresh_body, fresh_digest, _ = build(
             ref, test_result=recorded_line.group(0) if recorded_line else None
@@ -413,6 +502,8 @@ def check(out: Path) -> int:
 
     if recorded.group(1) == fresh_digest:
         print(f"OK: 评审包内容与仓库一致（{fresh_digest}）")
+        if full:
+            return _verify_recorded_run(recorded_line.group(0) if recorded_line else "")
         # 内容绿 ≠ 锚点新。以前只在 STALE 分支报落后，OK 时静默，
         # 于是"代码已改但恰好没改到自动段"这类脱节完全没有提示（round-6 ②-1）。
         behind = behind_count()
@@ -446,12 +537,21 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="生成/校验外部评审包")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="输出路径，默认 docs/review-packet.md")
     ap.add_argument("--check", action="store_true", help="只校验内容与仓库是否一致，不写文件")
+    ap.add_argument(
+        "--full",
+        action="store_true",
+        help="配合 --check：重跑一遍 pytest，复核包内实测记录是否仍成立（约 2 分钟）",
+    )
     ap.add_argument("--fast", action="store_true", help="跳过测试执行，只收集用例数（本地迭代用）")
     args = ap.parse_args(argv)
 
+    if args.full and not args.check:
+        print("FAIL: --full 只用于 --check（生成时本来就跑测试，无需 --full）", file=sys.stderr)
+        return 1
+
     try:
         if args.check:
-            return check(Path(args.out))
+            return check(Path(args.out), full=args.full)
         write_packet(Path(args.out), fast=args.fast)
     except PacketError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

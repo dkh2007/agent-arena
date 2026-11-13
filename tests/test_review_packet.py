@@ -23,6 +23,23 @@ from arena import review_packet  # noqa: E402
 
 PACKET = review_packet.DEFAULT_OUT
 
+# TD-040：`--fast` 生成的包缺实测数据，会被 check() 判 NOT_RELEASABLE（这是刻意的）。
+# 本文件多数用例要测的是 TAMPERED / STALE / 锚点冻结，与「可发布性」无关，
+# 所以用一个全绿记录把可发布性这一维固定住，免得两件事互相干扰。
+GREEN_LINE = "- 单元测试实测：当前工作区本地实测 **688 passed / 688 total**（测试构造）"
+FAILED_LINE = "- 单元测试实测：当前工作区本地实测 **1 failed, 687 passed / 688 total**（测试构造）"
+
+
+def write_green(out: Path, **kwargs) -> None:
+    """写一份「记录全绿」的包：除可发布性外，其余行为与 fast 生成一致。
+
+    总数取仓库真实收集数，不写死——写死会让「用例数对不上」变成测试自身的噪音，
+    而那条检查（`test_test_count_matches_repo`）本来是专门守这个的。
+    """
+    n = review_packet._pytest_count()
+    line = f"- 单元测试实测：当前工作区本地实测 **{n} passed / {n} total**（测试构造）"
+    review_packet.write_packet(out, fast=True, test_result=line, **kwargs)
+
 
 @pytest.fixture(scope="module")
 def packet_text() -> str:
@@ -178,7 +195,7 @@ def test_check_missing_file_returns_1(tmp_path):
 def test_check_distinguishes_ok_tampered_stale(tmp_path, monkeypatch):
     """三种状态必须可区分，这是整套方案的意义所在。"""
     out = tmp_path / "packet.md"
-    review_packet.write_packet(out, fast=True)
+    write_green(out)
 
     # 1) 刚生成 → 一致
     assert review_packet.check(out) == 0
@@ -200,7 +217,7 @@ def test_ok_reports_anchor_behind(tmp_path, monkeypatch, capsys):
     不阻塞是刻意的：打包提交必然让锚点落后 1 个，若阻塞就等于永久假阳性。
     """
     out = tmp_path / "packet.md"
-    review_packet.write_packet(out, fast=True)
+    write_green(out)
     real_run = review_packet._run
 
     def three_commits_behind(cmd: list[str]) -> str:
@@ -223,7 +240,7 @@ def test_check_detects_score_drift(tmp_path, monkeypatch):
     `_pytest_count` 一律取当前工作区。评分口径一变，`--check` 立刻 STALE。
     """
     out = tmp_path / "packet.md"
-    review_packet.write_packet(out, fast=True)
+    write_green(out)
     monkeypatch.setattr(
         review_packet, "_scores", lambda: "| 夹具 | 得分 |\n|---|---|\n| fake | 9.9999 |"
     )
@@ -265,7 +282,7 @@ def test_check_survives_own_packaging_commit(tmp_path, monkeypatch):
     STALE，用户几轮之后就学会忽略它，整套检测等于作废。
     """
     out = tmp_path / "packet.md"
-    review_packet.write_packet(out, fast=True)
+    write_green(out)
 
     meta = out.read_text(encoding="utf-8").partition("\n")[0]
     anchor = re.search(r"snapshot-sha=([0-9a-f]+)", meta).group(1)
@@ -289,7 +306,7 @@ def test_check_survives_own_packaging_commit(tmp_path, monkeypatch):
 def test_check_rejects_broken_anchor(tmp_path):
     """文件头的锚点被改坏时不能静默按当前 HEAD 蒙混过关。"""
     out = tmp_path / "packet.md"
-    review_packet.write_packet(out, fast=True)
+    write_green(out)
     text = out.read_text(encoding="utf-8")
     meta, _, body = text.partition("\n")
     out.write_text(
@@ -303,7 +320,7 @@ def test_check_rejects_broken_anchor(tmp_path):
 def test_packet_written_as_lf(tmp_path):
     """生成物统一 LF，避免 Windows 下 CRLF 造成整文件 diff 噪音。"""
     out = tmp_path / "packet.md"
-    review_packet.write_packet(out, fast=True)
+    write_green(out)
     assert b"\r\n" not in out.read_bytes()
 
 
@@ -405,7 +422,7 @@ def test_build_inside_pytest_refuses_default_mode(monkeypatch):
 def test_check_does_not_rerun_pytest(tmp_path, monkeypatch):
     """--check 重放包里已记录的那行，不重跑测试（两次执行/偶发波动会造成假 STALE）。"""
     out = tmp_path / "packet.md"
-    review_packet.write_packet(out, fast=True)
+    write_green(out)
 
     def bomb(*args, **kwargs):
         raise AssertionError("--check 不该重新执行 pytest")
@@ -464,7 +481,7 @@ def test_td036_write_packet_refuses_before_writing(tmp_path, monkeypatch):
     )
     out = tmp_path / "packet.md"
     with pytest.raises(review_packet.PacketError, match="评分策略漂移"):
-        review_packet.write_packet(out, fast=True)
+        write_green(out)
     assert not out.exists()
 
 
@@ -478,12 +495,164 @@ def test_td036_generator_follows_builder_constants(monkeypatch):
 
 
 def test_td036_check_fails_on_policy_drift(tmp_path, monkeypatch, capsys):
-    """策略漂移时 --check 返回 1 并说明原因，不把错包判成 OK。"""
+    """策略漂移时 --check 返回 1 并说明原因，不把错包判成 OK。
+
+    用自建的**可发布**包，不读 `DEFAULT_OUT`：否则这条用例会依赖默认包当前的
+    记录状态（`--fast` 生成的默认包会被判 2），把「测策略漂移」变成「测包状态」，
+    还会让生成评审包的过程与它互相卡住。
+    """
+    out = tmp_path / "p.md"
+    write_green(out)
     monkeypatch.setattr(
         review_packet, "TASK",
         _td036_task_with_drift(
             tmp_path, ("scoring", "score", "gate", "on_unscored"), "disqualify"
         ),
     )
-    assert review_packet.check(review_packet.DEFAULT_OUT) == 1
+    assert review_packet.check(out) == 1
     assert "评分策略漂移" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# TD-040：包的「可发布性」与「记录是否仍成立」
+#
+# 对比试验（scripts/td040_compare.py）的结论：
+#   - 候选 B「锚点落后 N 个提交」被否：最好也只有 2/4 正确，且它对测试红绿
+#     没有因果关系，N=1 在正常发布的包上误报、N≥2 放过真正该拦的样本。
+#   - 候选 A「生成门」保留：4/4，成本只是解析一行文本。
+#   - 另补候选 C「--check --full 重跑复核」：A 拦不住「生成后才变红」。
+#
+# 下面是 A 与 C 的锁。A 是**预防**（不让带失败的包生成），C 是**检测**（事后复核）。
+# ---------------------------------------------------------------------------
+
+
+def test_test_gate_classifies_three_cases():
+    """生成与校验共用同一判定，不许两套口径。"""
+    assert review_packet._test_gate(GREEN_LINE) == (True, "")
+    ok, why = review_packet._test_gate(FAILED_LINE)
+    assert ok is False and "1 条失败" in why, why
+    ok, why = review_packet._test_gate(review_packet.FAST_TEST_LINE)
+    assert ok is False and "无实测数据" in why, why
+    ok, why = review_packet._test_gate("")
+    assert ok is False and "无实测数据" in why, why
+
+
+def test_failed_record_puts_warning_into_body(tmp_path):
+    """警告必须写进**正文**：终端日志会滚掉，文件会被发给外部 AI 和评委。"""
+    out = tmp_path / "p.md"
+    review_packet.write_packet(out, fast=True, test_result=FAILED_LINE)
+    text = out.read_text(encoding="utf-8")
+    assert "本包不可对外发布" in text
+    assert "1 条失败" in text
+
+
+def test_green_record_has_no_warning(tmp_path):
+    """反向锁：全绿时正文不能出现警告，否则每次发布都带一条噪音。"""
+    out = tmp_path / "p.md"
+    write_green(out)
+    assert "本包不可对外发布" not in out.read_text(encoding="utf-8")
+
+
+def test_check_blocks_failed_record(tmp_path):
+    """带失败记录的包 check 必须返回 2（NOT_RELEASABLE），不能是 OK。"""
+    out = tmp_path / "p.md"
+    review_packet.write_packet(out, fast=True, test_result=FAILED_LINE)
+    assert review_packet.check(out) == 2
+
+
+def test_check_blocks_fast_packet(tmp_path):
+    """`--fast` 包没有实测数据，同样不可发布。"""
+    out = tmp_path / "p.md"
+    review_packet.write_packet(out, fast=True)
+    assert review_packet.check(out) == 2
+
+
+def test_block_precedes_stale(tmp_path, monkeypatch):
+    """顺序锁：可发布性判定必须先于陈旧度判定。
+
+    若反了，一个带失败记录的包会被报成 STALE，把人引去「重新生成」——
+    而重新生成出来的仍然是带失败的包，问题原地打转。
+    """
+    out = tmp_path / "p.md"
+    review_packet.write_packet(out, fast=True, test_result=FAILED_LINE)
+    monkeypatch.setattr(review_packet, "_env", lambda: "依赖已变（模拟）")
+    assert review_packet.check(out) == 2, "不可发布必须优先于陈旧"
+
+
+def test_historical_case_487ff6f_must_be_blocked():
+    """真实案例回归锁。
+
+    `487ff6f` 那次生成的包，实测行诚实写着 1 failed，当时 `--check` 判 OK
+    （已用 `git worktree` 在原时刻复现）。这是 TD-040 的立案证据，
+    本条确保它以后不再被判绿。
+    """
+    line = ("- 单元测试实测：当前工作区本地实测 **1 failed, 666 passed / 667 total**"
+            "（`pytest tests/ -q`；本地 HEAD `1a9e79a`，生成锚点 `1a9e79a`）")
+    ok, why = review_packet._test_gate(line)
+    assert ok is False and "1 条失败" in why
+
+
+def _fake_pytest(monkeypatch, *, failed: int = 0, total_delta: int = 0) -> None:
+    """伪造 pytest **执行结果**，其余命令（git、--collect-only）透传真实执行。
+
+    - 只拦不带 `--collect-only` 的 pytest 调用：用例收集数是包内容的一部分，
+      伪造它会让「内容一致性」先失败，测不到 full 分支。
+    - 必须临时摘掉 `PYTEST_CURRENT_TEST`：`_verify_recorded_run` 用它判断
+      「我是不是在 pytest 进程里」并据此拒绝重跑（防递归）。测 full 路径时
+      我们本来就不打算真跑 pytest，摘掉是安全的；递归防护本身由
+      `test_full_refuses_inside_pytest` 单独覆盖。
+    - 尾部数字按真实收集数生成，用 `total_delta` 制造「用例数漂移」。
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    real_run = review_packet.subprocess.run
+    n = review_packet._pytest_count() + total_delta  # patch 前取真实值
+    tail = (f"{failed} failed, {n - failed} passed in 1.0s\n" if failed
+            else f"{n} passed in 1.0s\n")
+
+    def fake(cmd, **kwargs):  # noqa: ANN001 - 需与 subprocess.run 同形
+        if any("pytest" in str(part) for part in cmd) and "--collect-only" not in cmd:
+            return review_packet.subprocess.CompletedProcess(cmd, 1 if failed else 0, tail, "")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(review_packet.subprocess, "run", fake)
+
+
+def test_full_check_detects_drift(tmp_path, monkeypatch, capsys):
+    """C 的核心：包说全绿、实际变红，只有重跑看得见。"""
+    out = tmp_path / "p.md"
+    write_green(out)
+    _fake_pytest(monkeypatch, failed=3)
+    assert review_packet.check(out, full=True) == 3
+    printed = capsys.readouterr().out
+    assert "TEST_DRIFT" in printed
+    assert "对外材料与实际相反" in printed
+
+
+def test_full_check_passes_when_record_still_holds(tmp_path, monkeypatch, capsys):
+    """反向锁：记录仍成立时必须给 0，否则 --full 就成了永红。"""
+    out = tmp_path / "p.md"
+    write_green(out)
+    _fake_pytest(monkeypatch)
+    assert review_packet.check(out, full=True) == 0
+    assert "OK_FULL" in capsys.readouterr().out
+
+
+def test_full_check_flags_count_drift(tmp_path, monkeypatch, capsys):
+    """用例数变了也算漂移：包里的数就对不上了。"""
+    out = tmp_path / "p.md"
+    write_green(out)
+    _fake_pytest(monkeypatch, total_delta=5)
+    assert review_packet.check(out, full=True) == 3
+    assert "TEST_DRIFT" in capsys.readouterr().out
+
+
+def test_full_refuses_inside_pytest(capsys):
+    """在 pytest 进程内重跑 pytest 会递归，必须立刻拒绝而不是挂死。"""
+    assert review_packet._verify_recorded_run(GREEN_LINE) == 1
+    assert "递归" in capsys.readouterr().out
+
+
+def test_full_requires_check_flag(capsys):
+    """`--full` 单独用是误用：生成时本来就跑测试。"""
+    assert review_packet.main(["--full"]) == 1
+    assert "--full 只用于 --check" in capsys.readouterr().err
