@@ -261,6 +261,22 @@
 > `.pytest-tmp-r69/` 用 `.git/info/exclude` 本地排除（不动 `.gitignore`）。
 > **待人拍板**：P1/P2/P3、P1(b) 措辞、Q1 呈现候选、Q5 的 D1、TD-038 处置。**不拍 = 维持现状 = 零改动。**
 
+> **最新状态（round-70，§60，人拍板后全部落地）**：上一轮挂着的六项**全部关闭**，评审包 §5「待拍板清单」由 3 条降为 **0 条**。
+> ① **P1**：采纳外评「掌握度与调度分开记」，但**修正其「衰减取 S」这一步**（S 是天数、系数须在 0–1，量纲不成立），
+> 改为「衰减沿用复习间隔这一个时间轴」——既满足外评「只保留一个时间常数」，又不写不成立的等号。`data-model.md` §5.2 原口径作废。
+> ② **P2 / Q5-D1**：人拍板「按题目要不要步骤分类」。任务级开关 `submission_requirements.requires_process`，
+> dbg-001 设 true；缺过程 ⇒ 不计能力分、不计掌握度、记 `process_fact`、提示补交。**断言状态不改写**——
+> 第一版改写导致 14 条测试报红，根因是它把「做对了却没过门槛」的证据一起吞掉（与决策 5 冲突）。
+> ③ **P3**：保对账，落 `src/arena/reconciliation.py`（verified / unverifiable / mismatch 三态，出处只认返回值不认 params），
+> 7 条测试。**刻意不接进 rubric**（会改 credit 分母 4），登记 TD-039。
+> ④ **Q1**：`credit_pass_weight` → `counterfactual_credit`（+`x-previous-name`），CLI / 正则 / 表头同步；现役代码与测试 0 残留。
+> ⑤ **TD-038**：取人拍板的第三种——`score.voided` + `void_reason=task_version_mismatch`，报告照出、分数不算、`report_attribution` 全 false、提示重交；
+> **与 `disqualified` 不合并**（一个是「这次不算数」，一个是「没交东西」）。缺省不比对是已知宽松口，M1 收紧。
+> ⑥ **五夹具分数变更（硬锁被改，已显式登记 §60.7）**：`raw-no-trace` **0.50 → 0**，其余四份不变，新序 `0/0/0.25/0/1.0`。
+> 原因是决策 9，不是回归；断言仍判 pass（`counterfactual_credit=2`）。原「单调不减」判据改为「两道门槛 + 正确性排序 + 上下界锚点」。
+> ⑦ 实测：**667 passed**、`--check OK (2a776f8871975833)`、评审包重生成、匿名守卫与闸门待收尾复核。
+> 待办：TD-039（P3 接入 rubric）、TD-038 宽松口收紧。
+
 **匿名纪律（对 AI 同样适用）**：本文档与仓库内任何文件不含真实姓名/校名；请勿在 AI 对话中粘贴含真名/校名的材料；API key 与 PAT 绝不进入任何对话。
 
 ---

@@ -186,17 +186,17 @@ def test_credit_score_uses_fixed_denominator():
         score = report["score"]
         expected = sum(a["weight"] for a in report["assertions"] if a["layer"] == "credit" and a["state"] == "pass")
         assert score["total_weight"] == CREDIT_TOTAL == 4
-        assert score["credit_pass_weight"] == expected
+        assert score["counterfactual_credit"] == expected
         assert score["denominator_policy"] == "fixed_at_credit_total_weight"
         assert sum(score["by_state"].values()) == len(ALL_IDS)
 
 
-def test_credit_pass_weight_consistent_with_assertions():
-    """credit_pass_weight 与断言逐条对得上——门禁未过时它仍照算，这个值才是诊断用的那个。"""
+def test_counterfactual_credit_consistent_with_assertions():
+    """counterfactual_credit 与断言逐条对得上——门禁未过时它仍照算，这个值才是诊断用的那个。"""
     for name in NAMES:
         report = _build(name)
         manual = sum(a["weight"] for a in report["assertions"] if a["layer"] == "credit" and a["state"] == "pass")
-        assert report["score"]["credit_pass_weight"] == manual
+        assert report["score"]["counterfactual_credit"] == manual
 
 
 def test_gate_failure_disqualifies():
@@ -211,41 +211,94 @@ def test_gate_failure_disqualifies():
 def test_gate_unscored_does_not_disqualify():
     """I8：门禁本身无法判定（trace 缺失致 R5 无据）时不拦。
 
-    按 on_unscored=do_not_disqualify：无法证明不合格就不判不合格。这不会放水——
-    同一份提交的 credit 层 R3/R4 也因 trace 缺失而 unscored，拿不到分。
+    按 on_unscored=do_not_disqualify：无法证明不合格就不判不合格。
+    round-70 起本题要求过程（`submission_requirements.requires_process: true`），
+    raw-no-trace 属于「缺过程」⇒ ratio 记 0、不计掌握度，但 **disqualified 仍是 False**
+    （缺过程不是门禁失败），反事实得分 2/4 保留下来当诊断。
     """
-    score = _build("raw-no-trace")["score"]
+    report = _build("raw-no-trace")
+    score = report["score"]
     assert score["disqualified"] is False
     assert score["disqualifying_assertions"] == []
-    assert score["ratio"] == pytest.approx(0.5)  # 只剩 R2 的 2 分
+    assert score["ratio"] == 0, "缺过程 ⇒ 本次不计能力分"
+    assert score["counterfactual_credit"] == 2, "断言照常判定，反事实得分是诊断信息"
+    assert report["process_fact"] == {"required": True, "submitted": False, "missing": True}
+
+
+def test_process_missing_suppresses_score_but_keeps_observations():
+    """P2 / Q5-D1 的核心：缺过程「不算数」≠「没做对」。
+
+    若把 credit 断言改写成 unscored，raw-no-trace 的 R2 判定会一起消失，
+    等于用评分逻辑吞掉诊断（与决策 5 冲突）。这里锁住「断言不动、只压分数与归因」。
+    """
+    report = _build("raw-no-trace")
+    got = _by_id(report)
+    assert got["R2_report_correct"]["state"] == "pass", "做对了就得记下来"
+    assert report["score"]["counterfactual_credit"] == 2
+    assert report["report_attribution"] == {
+        "counts_toward_mastery": False, "emit_error_patterns": False
+    }
+    assert any("流程不完整" in n for n in report["notes"])
+
+
+def test_optional_process_task_scores_with_answer_only():
+    """不需要步骤的题：只交答案即可，缺过程不压制分数（Q5-D1 的另一半）。"""
+    task = copy.deepcopy(TASK)
+    task["submission_requirements"]["requires_process"] = False
+    report = build_report(task, _raw("raw-no-trace"), VOCAB)
+    assert report["process_fact"] == {"required": False, "submitted": False, "missing": False}
+    assert report["score"]["ratio"] == pytest.approx(0.5), "只交答案的题照常算分"
+    assert report["report_attribution"]["counts_toward_mastery"] is True
+
+
+def test_process_note_counts_as_submitted():
+    """人拍板口径：写了「没思路」也算交了步骤，不判「缺过程」。"""
+    raw = _raw("raw-no-trace")
+    raw["submission"]["process_note"] = "没思路：不知道要按 offset 分页拉"
+    report = build_report(TASK, raw, VOCAB)
+    assert report["process_fact"]["submitted"] is True
+    assert report["process_fact"]["missing"] is False
+    assert report["score"]["ratio"] == pytest.approx(0.5)
 
 
 def test_gate_failure_keeps_credit_observations():
     """方案 Y 的核心：门禁只管分数，不管观测。
 
     若照"门禁失败就把 credit 全标 blocked"，raw-no-file 的 R3/R4 观测会被抹掉，
-    credit_pass_weight 变成 0，诊断信息随分数一起消失。这里锁住它必须保留。
+    counterfactual_credit 变成 0，诊断信息随分数一起消失。这里锁住它必须保留。
     """
     report = _build("raw-no-file")
     got = _by_id(report)
     assert report["score"]["disqualified"] is True
     assert got["R3_retry_evidence"]["state"] == "pass"
     assert got["R4_no_param_hallucination"]["state"] == "pass"
-    assert report["score"]["credit_pass_weight"] == 2, "门禁未过也要照算 credit 通过权重（仅供诊断）"
+    assert report["score"]["counterfactual_credit"] == 2, "门禁未过也要照算 credit 通过权重（仅供诊断）"
     assert any("无资格评分" in n for n in report["notes"])
 
 
-def test_score_is_monotonic_across_fixtures():
-    """P6 的验收判据：分数必须随质量单调上升。
+def test_score_orders_by_process_gate_then_accuracy():
+    """分数判据（round-70 修订）：先过过程与门禁两道门槛，再按正确性排序。
 
-    旧版：0.333 / 0.500 / 0.500 / 0.500 —— 三档质量撞在一起，序是塌的。
-    新版：0 / 0 / 0.25 / 0.50 / 1.00。
+    旧判据要求「五份夹具分数严格单调上升」，前提是"没报 trace 也能拿 0.5"。
+    round-70 起本题要求过程，raw-no-trace 落在「缺过程」⇒ 0 分，与 raw-empty 并列。
+    这是口径的直接后果，不是回归：分数不区分「没做」与「做了没交过程」，
+    但过程门槛本身可区分（`process_fact`）。
+
+    现行：0 / 0 / 0.25 / 0 / 1.0
+      raw-empty      0     没交产物 + 没过程
+      raw-no-file    0     有过程，但门禁 R1 失败
+      raw-fake-retry 0.25  过了门槛，答错（R2/R3 fail）
+      raw-no-trace   0     答对了，但缺过程
+      raw-perfect    1.0   全过（上界锚点）
     """
-    ratios = [_build(n)["score"]["ratio"] for n in NAMES]
-    assert ratios == sorted(ratios), f"分数序塌陷：{dict(zip(NAMES, ratios))}"
-    assert ratios[0] == ratios[1] == 0, "两种门禁失败都必须是 0"
-    assert ratios[2:] == [0.25, 0.5, 1.0], f"中间档位不对：{ratios[2:]}"
-    assert ratios[-1] == 1.0, "满分必须可达，否则上界没有锚点"
+    ratios = dict(zip(NAMES, (_build(n)["score"]["ratio"] for n in NAMES)))
+    assert ratios == {
+        "raw-empty": 0, "raw-no-file": 0, "raw-fake-retry": 0.25,
+        "raw-no-trace": 0, "raw-perfect": 1.0,
+    }, ratios
+    assert ratios["raw-fake-retry"] < ratios["raw-perfect"], "过门槛后按正确性排序"
+    assert ratios["raw-perfect"] == 1.0, "满分必须可达，否则上界没有锚点"
+    assert min(ratios.values()) == 0, "下界必须可达"
 
 
 # ---------------------------------------------------------------------------
@@ -546,3 +599,75 @@ def test_td035_order_does_not_change_score():
     """正向锁：加载期硬约束只挡非法配置，现役五夹具分数一字不变。"""
     report = build_report(copy.deepcopy(TASK), _raw("raw-perfect"), VOCAB)
     assert report["score"]["ratio"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# TD-038：任务版本不一致 ⇒ 本份作废（不算数，但不是「不会」）
+#   人拍板的第三种处置：报告照出、分数不算、不计能力短板、写清请重交。
+#   与 disqualified 分开记：disqualified = 学生没交东西，voided = 这次不算数。
+# ---------------------------------------------------------------------------
+
+
+def _build_with_version(name: str, version: str | None) -> dict:
+    raw = copy.deepcopy(_raw(name))
+    if version is None:
+        raw["submission"].pop("task_version", None)
+    else:
+        raw["submission"]["task_version"] = version
+    return build_report(TASK, raw, VOCAB)
+
+
+def test_td038_version_mismatch_voids_report_but_keeps_diagnostics():
+    """作废不是「吞掉这单」：分数不算，但断言判定与反事实得分都还在。"""
+    report = _build_with_version("raw-perfect", "2020-01-01.1")
+    score = report["score"]
+    assert score["voided"] is True
+    assert score["void_reason"] == "task_version_mismatch"
+    assert score["ratio"] == 0 and score["weighted_sum"] == 0
+    assert score["counterfactual_credit"] == 4, "反事实得分是诊断信息，作废也不丢"
+    assert all(a["state"] == "pass" for a in report["assertions"]), "逐条判定照旧保留"
+    assert any("重新提交" in n for n in report["notes"])
+    validate_report(report, SCHEMA)
+
+
+def test_td038_version_match_scores_normally():
+    report = _build_with_version("raw-perfect", TASK["task_version"])
+    assert report["score"]["voided"] is False
+    assert report["score"]["ratio"] == 1.0
+    assert "void_reason" not in report["score"], "非作废不带 void_reason（schema 也不要求）"
+
+
+def test_td038_missing_version_is_not_compared():
+    """缺省不比对：五夹具都没带 task_version，行为必须与改动前一致（向后兼容）。"""
+    assert all("task_version" not in _raw(n)["submission"] for n in NAMES)
+    for name in NAMES:
+        assert _build(name)["score"]["voided"] is False
+
+
+def test_td038_voided_never_counts_toward_mastery():
+    """「不记能力短板」必须有执行者，不能只写在 notes 文案里。"""
+    voided = _build_with_version("raw-fake-retry", "1999-01-01.1")
+    assert voided["report_attribution"] == {
+        "counts_toward_mastery": False, "emit_error_patterns": False
+    }
+    normal = _build("raw-fake-retry")
+    assert normal["report_attribution"]["counts_toward_mastery"] is True, "非作废不是恒 false"
+
+
+def test_td038_report_attribution_is_derived():
+    """report_attribution 是派生汇总，不是第二真相源：可由 policy + by_state + suppressed 重算。"""
+    states = ("pass", "fail", "blocked", "unscored")
+    for name in NAMES:
+        report = _build(name)
+        policy, by_state = report["attribution_policy"], report["score"]["by_state"]
+        suppressed = report["score"]["voided"] or report["process_fact"]["missing"]
+        if suppressed:
+            expect = {"counts_toward_mastery": False, "emit_error_patterns": False}
+        else:
+            expect = {
+                "counts_toward_mastery": any(policy[s]["counts_toward_mastery"] and by_state[s] > 0
+                                            for s in states),
+                "emit_error_patterns": any(policy[s]["emit_error_patterns"] and by_state[s] > 0
+                                          for s in states),
+            }
+        assert report["report_attribution"] == expect, name

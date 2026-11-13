@@ -11,6 +11,8 @@
     "trace_audit",
     "score",
     "attribution_policy",
+    "report_attribution",
+    "process_fact",
     "assertions",
     "skill_gaps",
     "unattributed_patterns"
@@ -29,7 +31,17 @@
           "pattern": "^[0-9a-f]{7,40}$",
           "description": "产生本报告的 YAML 版本；没有它，报告里的断言 id 无法与任务对齐"
         },
+        "task_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "提交针对的任务版本号，与任务 YAML 的 task_version 比对（TD-038）。缺省表示提交方未携带版本信息，此时**不做比对**（向后兼容，见 review-response-v1.md §60）；带上了却不一致 ⇒ 本份作废（voided），分数不算、不计掌握度、提示按当前版本重交"
+        },
         "agent_id": { "type": "string", "minLength": 1 },
+        "process_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "提交方对本次做题过程的文字说明（P2 / Q5-D1）。非空即视为『交了步骤』——写一句『不会/没思路』也算，避免把『没写』当成『不会』。与 trace 二选一即可满足过程要求"
+        },
         "evaluated_at": { "type": "string", "format": "date-time" },
         "invoke": {
           "type": "object",
@@ -92,7 +104,7 @@
       "additionalProperties": false,
       "required": [
         "weighted_sum",
-        "credit_pass_weight",
+        "counterfactual_credit",
         "total_weight",
         "ratio",
         "denominator_policy",
@@ -105,12 +117,13 @@
         "weighted_sum": {
           "type": "number",
           "minimum": 0,
-          "description": "最终得分分子。disqualified 时恒为 0，否则等于 credit_pass_weight"
+          "description": "最终得分分子。disqualified 时恒为 0，否则等于 counterfactual_credit"
         },
-        "credit_pass_weight": {
+        "counterfactual_credit": {
           "type": "number",
           "minimum": 0,
-          "description": "credit 层通过的权重之和。门禁未过时仍照算——它只用于诊断，不参与 ratio。这个值与 assertions 里 pass 的 credit 断言始终自洽"
+          "description": "反事实得分：credit 层通过的权重之和，语义是『若通过门禁本可得几分』。门禁未过时仍照算（诊断信息不丢），但它**不是分数**、不参与 ratio，第三方汇总不得把它当分数读。该值与 assertions 里 pass 的 credit 断言始终自洽。原名 credit_pass_weight（round-70 按 Q1 呈现口径改名，避免与 ratio 并列时被当成分子）",
+          "x-previous-name": "credit_pass_weight"
         },
         "total_weight": {
           "type": "number",
@@ -143,6 +156,15 @@
             "blocked": { "type": "integer", "minimum": 0 },
             "unscored": { "type": "integer", "minimum": 0 }
           }
+        },
+        "voided": {
+          "type": "boolean",
+          "description": "本份提交作废（TD-038）：任务版本与当前不一致等『不是学生不会』的原因。作废时 ratio 记 0、report_attribution 全 false，但**断言判定照常保留**（诊断不吞）。与 disqualified 的区别：disqualified 是学生没交东西/没跑完，voided 是这次不算数、需按当前版本重交"
+        },
+        "void_reason": {
+          "type": "string",
+          "enum": ["task_version_mismatch"],
+          "description": "作废原因码，仅 voided=true 时必填"
         }
       },
       "allOf": [
@@ -159,6 +181,13 @@
         {
           "if": { "properties": { "disqualified": { "const": false } }, "required": ["disqualified"] },
           "then": { "properties": { "disqualifying_assertions": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "voided": { "const": true } }, "required": ["voided"] },
+          "then": {
+            "required": ["void_reason"],
+            "properties": { "weighted_sum": { "const": 0 }, "ratio": { "const": 0 } }
+          }
         }
       ]
     },
@@ -172,6 +201,27 @@
         "fail": { "$ref": "#/$defs/attribution" },
         "blocked": { "$ref": "#/$defs/attribution" },
         "unscored": { "$ref": "#/$defs/attribution" }
+      }
+    },
+    "report_attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["counts_toward_mastery", "emit_error_patterns"],
+      "description": "整份报告的归因开关（派生值，不是第二真相源）：可由 attribution_policy + by_state + score.voided + process_fact 重算。作废或缺过程一律 false/false —— 下游只读这一个开关，不必解读 notes 的措辞（用户要求：作废时『不记能力短板』必须有执行者，不能只写在文案里）",
+      "properties": {
+        "counts_toward_mastery": { "type": "boolean" },
+        "emit_error_patterns": { "type": "boolean" }
+      }
+    },
+    "process_fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "submitted", "missing"],
+      "description": "流程事实（P2 / Q5-D1）：这道题要不要过程、这次交没交。中性记录，不是能力判断——缺过程只在 required=true 时压制分数与归因，**不改写断言状态、不写进 error_patterns / skill_gaps**。required 来自任务 YAML 的 submission_requirements.requires_process；submitted = trace 通过结构校验 或 submission.process_note 非空（写『没思路』也算交了）；missing = required 且未 submitted",
+      "properties": {
+        "required": { "type": "boolean" },
+        "submitted": { "type": "boolean" },
+        "missing": { "type": "boolean" }
       }
     },
     "assertions": {

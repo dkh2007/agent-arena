@@ -30,13 +30,19 @@
 report_version       "v2"
 submission           提交元信息（含 task_git_hash：没有它，断言 id 无法与 YAML 对齐）
 trace_audit          trace 前置校验结果（**trace 的派生值**，见 §2.1；A2E 反面教材的产物）
-score                两段式分数：gate 决定资格、credit 决定分数
+score                两段式分数：gate 决定资格、credit 决定分数（含 voided：本份是否作废）
 attribution_policy   四态 × {是否计入掌握度, 是否产出错误模式}
+report_attribution   整份开关（派生值）：本次报告能否计入掌握度 / 产出错误模式
+process_fact         流程事实：这道题要不要过程、这次交没交（round-70 / P2，中性记录）
 assertions[]         逐条断言：layer / weight / state / skill_id / error_patterns / evidence
 skill_gaps[]         技能缺口聚合（只含 fail 且有 skill_id 的断言）
 unattributed_patterns[]  有错误模式但无技能归属的失败（R1/R5）——不进 skill_gaps，但不许丢
 notes[]              可选。报告出现"未覆盖情况"时必须在这里说明，不许静默
 ```
+
+> **`report_attribution` 不是第二真相源**：它可由 `attribution_policy` + `score.by_state` + `score.voided` + `process_fact.missing` 重算（`tests/test_diagnosis_report.py::test_td038_report_attribution_is_derived` 锁住）。存在的唯一理由是：作废/缺过程时「不记能力短板」这句话必须有**执行者**，只写在 `notes` 文案里等于没有校验。
+>
+> **`process_fact` 与 `score` 分开的理由**：缺过程是**流程事实**，不是能力判断。若把它写进 `score`，下游很容易把它当成分数原因；写在顶层则只回答"这次交没交过程"。
 
 顺序约定：`assertions[]` **先 gate 后 credit**，与执行顺序一致（执行器先跑门禁，不过就不必跑昂贵的 credit 判定）。`R5` 排在 `R2` 之前不是笔误。
 
@@ -103,13 +109,14 @@ A3 / A4 为 round-24 新增（拍板 P-F1-4）。即使将来出现绕过 `recom
 ```json
 {
   "weighted_sum": 1,
-  "credit_pass_weight": 1,
+  "counterfactual_credit": 1,
   "total_weight": 4,
   "ratio": 0.25,
   "denominator_policy": "fixed_at_credit_total_weight",
   "disqualified": false,
   "disqualifying_assertions": [],
-  "by_state": {"pass": 3, "fail": 2, "blocked": 0, "unscored": 0}
+  "by_state": {"pass": 3, "fail": 2, "blocked": 0, "unscored": 0},
+  "voided": false
 }
 ```
 
@@ -121,14 +128,18 @@ A3 / A4 为 round-24 新增（拍板 P-F1-4）。即使将来出现绕过 `recom
 | **credit（积分）** | R2 结果正确(2)、R3 重试证据(1)、R4 无参数幻觉(1) | 分母 = **4** | 决定"评多少分" |
 
 ```
-ratio = disqualified ? 0 : credit_pass_weight / 4
+suppressed = disqualified || voided || process_fact.missing
+ratio = suppressed ? 0 : counterfactual_credit / 4
 ```
 
-### 3.2 三条硬规则
+三个压制条件分开记，因为它们的**含义不同**：`disqualified` 是没交东西/没跑完（学生侧），`voided` 是版本对不上这次不算数（round-70 / TD-038），`process_fact.missing` 是题目要求过程却没交（round-70 / P2）。三者都不改断言状态。
+
+### 3.2 四条硬规则
 
 - `disqualified = any(gate.state == "fail")`。**门禁 `unscored` 不拦**（`on_unscored: do_not_disqualify`）：无法证明不合格就不判不合格。这不会放水——同一份提交的 credit 层 R3/R4 也因 trace 缺失而 `unscored`，分数上不去。
 - 不合格的分数是 **0**，不接受"封顶 0.3"这类做法：封顶值没有依据，评委会直接问"为什么是 0.3"。
-- `credit_pass_weight` **与 `disqualified` 无关**，永远等于"credit 层 pass 的权重和"。它只用于诊断，不参与 `ratio`。这个字段让报告保持内部自洽：断言列表里写着 `pass`，就有一个数与它对应。
+- `counterfactual_credit` **与 `disqualified` / `voided` 无关**，永远等于"credit 层 pass 的权重和"。它只用于诊断，不参与 `ratio`。这个字段让报告保持内部自洽：断言列表里写着 `pass`，就有一个数与它对应。**唯一分数是 `ratio`**；字段原名 `credit_pass_weight`，round-70 因 Q1「两个分数并列会被误读」改名为带 `counterfactual` 的语义名，schema 里保留 `x-previous-name` 便于对接旧读取方。
+- `voided` 与 `disqualified` **不合并**：一个是"这次不算数"，一个是"没交东西"。合并会把版本错位写成冤案（人拍板原话：「判不合格 = 冤案」）。
 
 ### 3.3 为什么不用"全部断言权重和"当分母（P4 修正）
 
@@ -223,26 +234,28 @@ schema 管结构（能表达的），builder 管语义（schema 表达不了的�
 | I3 | `fail` 的模式 ⊆ 本断言声明 ∩ 词表 | builder | 需要读词表文件 |
 | I4 | `blocked` 必须有真失败的前置 | builder | 需要跨条目引用 |
 | I5 | `total_weight` = credit 权重和（本任务 4），与 YAML 声明一致 | builder | 跨文件一致性 |
-| I6 | `weighted_sum = disqualified ? 0 : credit_pass_weight` | builder | 算术 |
-| I7 | `credit_pass_weight` = credit 层 pass 的权重和（与断言列表逐条自洽） | builder | 跨条目汇总 |
+| I6 | `weighted_sum = suppressed ? 0 : counterfactual_credit`，其中 `suppressed = disqualified ∨ voided ∨ process_fact.missing` | builder | 算术 |
+| I7 | `counterfactual_credit` = credit 层 pass 的权重和（与断言列表逐条自洽） | builder | 跨条目汇总 |
 | I8 | 门禁 `unscored` 不导致 `disqualified` | builder | 策略判断 |
 | I9 | R1/R5 失败时其模式进 `unattributed_patterns`，不进 `skill_gaps` | builder | 归因策略 |
+| I10 | `voided` / `process_fact.missing` **不改写断言状态**，只压 `ratio` 与 `report_attribution`（round-70；决策 5 的延伸：门禁只管分数，不管观测） | builder | 策略判断 |
+| I11 | `voided=true ⇒ void_reason` 必填且 `ratio=0`、`weighted_sum=0`（TD-038） | schema（allOf）+ builder | — |
 
 ---
 
 ## 8. 五份夹具的实测结果（本步的证据）
 
-| 夹具 | 提交形态 | v1 ratio | **v2 ratio** | 关键判定 |
-|---|---|---|---|---|
-| `raw-empty` | 0 次工具调用就正常退出 | **0.333** | **0（DQ）** | R1 门禁拦下。R4 空集平凡 pass 的漏洞已堵（round-32 F5）：无目标工具受检调用 → `unscored`，不再计掌握度；ratio 仍 0 全靠 gate 拦 |
-| `raw-no-file` | 过程全对，产物没写 | 0.500 | **0（DQ）** | R1 门禁拦下；`credit_pass_weight=2` 仍照算，`unattributed_patterns=[no_output_file]` |
-| `raw-fake-retry` | 游标退回 offset=0 的假重试 | 0.500 | **0.25** | credit 只拿 R4 的 1 分；`skill_gaps` 两个（R2 的 2 分 + R3 的 1 分） |
-| `raw-no-trace` | 结果对，但没报 trace | 0.500 | **0.500** | 门禁 R5 `unscored` 不拦；credit 只剩 R2 的 2 分 |
-| `raw-perfect` | 全对 | — | **1.000** | 上界锚点 |
+| 夹具 | 提交形态 | v1 ratio | **v2 ratio** | round-70 起 | 关键判定 |
+|---|---|---|---|---|---|
+| `raw-empty` | 0 次工具调用就正常退出 | **0.333** | 0（DQ） | **0（DQ）** | R1 门禁拦下。R4 空集平凡 pass 的漏洞已堵（round-32 F5）：无目标工具受检调用 → `unscored`，不再计掌握度 |
+| `raw-no-file` | 过程全对，产物没写 | 0.500 | 0（DQ） | **0（DQ）** | R1 门禁拦下；`counterfactual_credit=2` 仍照算，`unattributed_patterns=[no_output_file]` |
+| `raw-fake-retry` | 游标退回 offset=0 的假重试 | 0.500 | 0.25 | **0.25** | credit 只拿 R4 的 1 分；`skill_gaps` 两个（R2 的 2 分 + R3 的 1 分） |
+| `raw-no-trace` | 结果对，但没报 trace | 0.500 | 0.500 | **0** | **本题要求过程（决策 9）**：`process_fact.missing=true` ⇒ 不计能力分、不计掌握度；断言照旧（R2 仍 `pass`，`counterfactual_credit=2`），门禁 R5 `unscored` 不拦 |
+| `raw-perfect` | 全对 | — | 1.000 | **1.000** | 上界锚点 |
 
-**分数序 `0 → 0 → 0.25 → 0.50 → 1.00`，单调。** v1 是 `0.333 → 0.500 → 0.500 → 0.500`，三档质量撞在同一个值上——这就是 P6。
+**分数序（round-70）`0 / 0 / 0.25 / 0 / 1.00`**：不再是全序单调——`raw-no-trace` 落回 0，与 `raw-empty`、`raw-no-file` 并列。这是决策 9 的直接后果，不是回归：**分数不区分"没做"与"做了没交过程"，过程门槛本身由 `process_fact` 区分**。`raw-perfect` 仍是上端锚点，`raw-fake-retry` 仍证明"过门槛后按正确性排序"（0.25 < 1.00）。
 
-`test_score_is_monotonic_across_fixtures` 把这条序写成断言，`raw-perfect` 保证上端有锚点（否则只能验证下界和中间值）。
+`test_score_orders_by_process_gate_then_accuracy` 锁住这张表；`test_process_missing_suppresses_score_but_keeps_observations` 锁住"断言不被改写"。
 
 ### 8.1 v2 保留的两个已知取舍
 
@@ -258,8 +271,9 @@ schema 管结构（能表达的），builder 管语义（schema 表达不了的�
 | **P4** | 分数分母口径 | 分母恒为 **credit 层权重和 4**，不因断言缺失而缩小。gate 没有权重，不进分母 |
 | **P5** | R1/R5 在分类学里无归属，怎么办 | **不加第 4 技能**，走 gate 通道：`disqualifying_assertions` + `unattributed_patterns` 留痕。理由见 §5 |
 | **P6** | 分数分辨率不足（三种提交同为 0.5） | 改为 **gate / credit 两段式**，门禁未过记 0 |
-| P1 | 掌握度口径（FSRS D/S/R vs EWMA + S 作衰减） | **仍未拍板**，不影响本 DTO |
-| P2 / P3 | 全 unscored 时结果断言是否照常计分；防作弊优先项 | 已按"照常计分、不更新 S"与"优先 R6 一致性校验"实现，未写进计划书 |
+| P1 | 掌握度口径（FSRS D/S/R vs EWMA + S 作衰减） | **round-70 拍板**：掌握度与调度分开记，只用一个时间轴；**不把 S 当衰减系数**（量纲不成立），S 只负责调度。见 `data-model.md` §5.2 |
+| P2 / Q5-D1 | 缺过程怎么算 | **round-70 拍板**：按题目类型分流——要过程的题缺过程 ⇒ 不计能力分、不计掌握度、记 `process_fact`（`submission_requirements.requires_process`）；只交答案的题照常算分。**不改写断言状态** |
+| P3 | 防作弊优先项 | **round-70 拍板**：保「答案可对账」（答案数值须能由过程记录推出），随机化只作补充；对账不通过 ≠ 答错，落「未验证」 |
 
 ---
 

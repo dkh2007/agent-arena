@@ -254,7 +254,7 @@ def test_score_table_matches_report_core(body: str):
         score = report["score"]
         cells = rows[path.stem]
         assert cells[3].startswith(f"{score['ratio']:.4f}"), f"{path.stem} 的 ratio 列与 DTO 不符"
-        assert cells[4] == str(score["credit_pass_weight"]), f"{path.stem} 的 credit 通过列与 DTO 不符"
+        assert cells[4] == str(score["counterfactual_credit"]), f"{path.stem} 的反事实得分列与 DTO 不符"
 
 
 def test_check_survives_own_packaging_commit(tmp_path, monkeypatch):

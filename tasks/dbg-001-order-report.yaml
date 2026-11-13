@@ -4,6 +4,16 @@
 #   DB Task 表只存核心元数据（task_id/title/skills/yaml_path/git_hash）；
 #   rubric / test_inputs / trace_requirements / fault_injection 等评测配置只存在于本 YAML，不入库（见 data-model 开放决策 4）。
 task_id: dbg-001-order-report
+# TD-038：任务版本号。提交方若在 submission.task_version 里带上版本，与此不一致 ⇒
+# 本份作废（voided，ratio=0、不计掌握度、提示按当前版本重交），但断言判定照常保留。
+# 改本任务的断言 / 期望值 / 工具 schema 时必须同步抬版本号，否则旧提交会被当成本版判分。
+# 缺省（提交没带版本）不比对——这是已知宽松口，M1 接 API 时改为必填。
+task_version: "2026-11-13.1"
+# P2 / Q5-D1（round-70）：本题**要求过程**——考的是调试（找无效行、拉全分页、失败重试），
+# 只交答案拿不到"哪一步走错"的诊断，也看不出重试策略。缺过程 ⇒ 本次不计能力分、
+# 不记缺点、记一条中性流程事实、提示补交（人拍板口径见 review-response-v1.md §53.1）。
+submission_requirements:
+  requires_process: true
 title: 订单数据核对报告（调试向）
 domain: 工具调用与多步任务调试
 primary_skill_id: multi_step_planning

@@ -64,10 +64,10 @@ PLACEHOLDERS = ("{{AUTO_SNAPSHOT}}", "{{AUTO_SCORES}}", "{{AUTO_TASK}}", "{{AUTO
 TEST_RESULT_RE = re.compile(r"^- 单元测试实测：.*$", re.M)
 
 # 夹具摘要行的格式（由 diagnosis_report._run_all_fixtures 打印）：
-#   OK DQ raw-empty   ratio=0.0000 (0/4) credit_pass=1 pass=2 fail=2 blocked=1 unscored=0
+#   OK DQ raw-empty   ratio=0.0000 (0/4) counterfactual=1 pass=2 fail=2 blocked=1 unscored=0
 SCORE_RE = re.compile(
     r"^(OK|FAIL)\s+(DQ)?\s*(\S+)\s+ratio=([\d.]+)\s+\((\d+)/(\d+)\)"
-    r"\s+credit_pass=(\d+)\s+pass=(\d+)\s+fail=(\d+)\s+blocked=(\d+)\s+unscored=(\d+)$"
+    r"\s+counterfactual=(\d+)\s+pass=(\d+)\s+fail=(\d+)\s+blocked=(\d+)\s+unscored=(\d+)$"
 )
 
 
@@ -185,7 +185,7 @@ def _scores() -> str:
         )
 
     table = [
-        "| 夹具 | 门禁 | 得分 | credit 通过 | pass | fail | blocked | unscored |",
+        "| 夹具 | 门禁 | 得分 | 反事实得分 | pass | fail | blocked | unscored |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for m in parsed:

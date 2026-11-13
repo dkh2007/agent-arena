@@ -6071,3 +6071,163 @@ grep -n "顺序筛除降低评估成本" 项目计划书草稿-v0.4.md   # 应�
 
 
 
+
+---
+
+## 60. round-70：P1/P2/P3 与 Q1/Q5-D1/TD-038 落地（人拍板后实施，含五夹具分数变更）
+
+### 60.1 输入与授权
+
+人给了三样东西，本轮全部执行：
+
+1. 外部第二意见 `review-plan-product-choices.md`（仓外，未读代码，基于描述作答），对 P1/P2/P3 各给一条建议；
+2. 明确指令「这一轮必须解决，根据这个回答，结合你自身的想法解决」——**授权 AI 在采纳外评的同时按仓内核证修正其细节**；
+3. 三条直接拍板：**Q5-D1 按题目是否要求过程分类**、**Q1 呈现按建议 P（改名）**、**TD-038 取第三种（出报告、不算分、不记短板、提示重交）**。
+
+外评的性质是「第二意见」，不是结论。本轮对其中**一处**做了实质修正，理由见 §60.2。
+
+### 60.2 P1：掌握度与调度分离——采纳方向，修正「衰减参数取 S」这一步
+
+**外评建议**：拆成两件事（掌握度 P / 调度 S），但「只保留一个时间常数」，让 P 的衰减由卡片稳定性参数决定。
+**本轮修正**：拆分的**方向**采纳；「让 P 的衰减由 S 决定」这一步**不采纳**，理由是 §58.5 已核证的量纲问题——S 是「可提取性降到 90% 所需天数」（值域上万天），而平滑/衰减系数必须在 (0,1)，两者不能直接等号。
+
+**同时满足外评「只保留一个时间轴」诉求的做法**：衰减尺度不另立公式，直接复用**复习间隔**（上一次复习到现在的天数）这一个时间轴——它是调度模型的输出，因此全系统仍然只有一个时间模型，只是「S 不直接当系数」。
+
+落地位置：
+
+| 载体 | 改动 |
+|---|---|
+| `docs/data-model.md` §5.2 | 「掌握度 = 本表 R 值，无第二口径」**作废**；改为「卡片参数只负责调度，不表示掌握度」+ 掌握度公式 + 「不把 S 当衰减系数」与其条件（须定义并标定 `α=f(S)`，登记为假设） |
+| `docs/review-packet-manual.md` §3 决策 8 | 同上，一句话版本 |
+| 计划书 §4.2 第 8 条 | 同上 + 反证条件（若有一手文献直接定义 `α=f(S)` 并给值域约束，本条作废） |
+| 计划书 §2.2 首行 | 加限定：「本表只把 FSRS 用于『何时再练』；掌握度不取它的任何数值」 |
+
+**这条同时关掉了 §58.6 ② 的老问题**：P1(b) 原话（「时间衰减参数取 FSRS 的 stability S」）不再是一个待改写的措辞，而是被决策 8 取代。
+
+### 60.3 P2 / Q5-D1：缺过程按题目类型分流
+
+**人拍板原话**：「看这个题目是不是需要步骤，不需要的话就给分，否则不给分」。
+
+落地为一个**任务级开关**，不是一个全局规则：
+
+| 层 | 落点 |
+|---|---|
+| 任务声明 | `tasks/dbg-001-order-report.yaml` 新增 `submission_requirements.requires_process: true`（本题是调试题，要过程；缺过程拿不到"哪一步走错"的诊断） |
+| 判定 | `diagnosis_report._process_fact()`：`submitted = trace 通过结构校验 或 submission.process_note 非空`；`missing = required 且未 submitted` |
+| 效果 | `missing` ⇒ `ratio=0`、`report_attribution` 全 `false`、`notes` 提示补交；**断言状态不改写** |
+| 报告字段 | 顶层 `process_fact: {required, submitted, missing}`——中性记录，不进 `error_patterns` / `skill_gaps` |
+
+**为什么「不改写断言状态」是硬约束**：第一版实现把 credit 断言一律改成 `unscored`，结果 14 条测试报红——根因不是测试脆，而是这个做法让「做对了却没过过程门槛」的证据一起消失，等于用评分逻辑吞掉诊断（与决策 5 冲突）。改成「只压分数与归因」后，`counterfactual_credit` 仍保留（`raw-no-trace` 是 2/4），schema 里 `I10` 把这条写成不变量。
+
+**「写没思路也算交了」已实现**：`submission.process_note` 非空即视为 `submitted`（`test_process_note_counts_as_submitted`）。这是人拍板口径的原文要求，不把它当漏洞。
+
+### 60.4 P3：保对账，做成独立判定器（刻意不接进 rubric）
+
+**采纳外评**：保「答案里的数值必须能从过程记录推出来」，随机化只作补充。外评给的两个代价，本轮都写进了实现：
+
+| 代价 | 处理 |
+|---|---|
+| 误拒（正确答案推不出） | 三态而非两态：`verified` / `unverifiable` / `mismatch`。**`unverifiable` 是"数据不足，不是答错"**，与决策 7 一致，不记短板 |
+| 记录字段要求 | 出处只认返回值类字段（`result_summary` / `response` / `result` / `output`），**`params` 不算出处**——否则「把参数当结果」就能自证（`test_params_are_not_a_source_of_truth`） |
+
+**实现**：`src/arena/reconciliation.py`（`reconcile()` + `trace_numbers()` + `summarize()`），7 条约束测试。
+**刻意不接进 `dbg-001` 的 rubric**：一旦成为 credit 断言，分母就不再是 4，五夹具分数序与已发布评审包全部要动。按「小步实现、先证明可行再接」的顺序，接入单开一批；登记为 TD-039（P3 接入 rubric 待办）。
+
+### 60.5 Q1 呈现：改名（人拍板「按你建议来」）
+
+`score.credit_pass_weight` → **`score.counterfactual_credit`**，schema 保留 `x-previous-name`。
+同时：
+
+- CLI 摘要 `credit_pass=` → `counterfactual=`，评审包 `SCORE_RE` 与表头同步（表头「credit 通过」→「反事实得分」）；
+- `notes` 文案补一句「这是『若过门禁本可得』的权重和，不是本次分数，不得当作分数汇总」；
+- schema 的 `score.description` 明写「唯一分数是 `ratio`」。
+
+**判定它成立的方式**：`grep -rn "credit_pass_weight" src/ tests/` 应 0 命中（现役代码与测试），仅 schema 与 schema 文档里保留「原名」说明。
+
+### 60.6 TD-038：第三种处置（人拍板）
+
+**人拍板的第三种**：出报告、分数不算、不记能力短板、写清「请按当前版本重交」。原话里的三条理由（拒绝出报告 = 沉默丢单；判不合格 = 冤案；作废两边都占）照录进决策 11。
+
+落地：
+
+| 项 | 实现 |
+|---|---|
+| 版本来源 | 任务 YAML 新增 `task_version: "2026-11-13.1"`；提交侧 `submission.task_version`（可选） |
+| 比对 | `diagnosis_report._task_version_mismatch()`；**缺省不比对**（向后兼容，五夹具因此不受影响） |
+| 效果 | `score.voided=true` + `score.void_reason="task_version_mismatch"` + `ratio=0` + `report_attribution` 全 `false` + `notes` 提示重交；**断言判定与 `counterfactual_credit` 保留** |
+| 与 `disqualified` 的关系 | **不合并**。一个是「这次不算数」，一个是「没交东西」；合并会把版本错位写成冤案 |
+| schema | `voided`（required）、`void_reason`（条件必填，enum 仅一个值）、`report_attribution`（required，派生值） |
+
+**已知宽松口（如实登记）**：提交不带 `task_version` 时跳过比对，旧客户端可绕过。这是为了不改五夹具行为的兼容选择，M1 接 API 后改必填再收紧。
+
+### 60.7 五夹具分数变更登记（硬锁被改，必须显式说明）
+
+`docs/review-response-v1.md` §53.4 曾写「五夹具分数 `0 / 0 / 0.25 / 0.5 / 1.0` 为硬锁，任何实现不得改变」。本轮**改了**，且是**口径改变的直接后果**，不是回归：
+
+| 夹具 | 改动前 | 改动后 | 原因 |
+|---|---|---|---|
+| `raw-empty` | 0 | 0 | 不变（本来就 0） |
+| `raw-no-file` | 0 | 0 | 不变（门禁拦下） |
+| `raw-fake-retry` | 0.25 | 0.25 | 不变（有 trace，过程门槛通过） |
+| `raw-no-trace` | **0.50** | **0** | **决策 9**：本题要求过程，缺过程不计能力分。断言仍判 `pass`（`counterfactual_credit=2`），只是不计分 |
+| `raw-perfect` | 1.00 | 1.00 | 不变（上界锚点） |
+
+**代价与判据更新**：分数序不再是全序单调（`0/0/0.25/0/1.0`）——`raw-no-trace` 与 `raw-empty`、`raw-no-file` 并列 0。这是设计意图：**分数不区分「没做」与「做了没交过程」，过程门槛本身由 `process_fact` 区分**。原测试 `test_score_is_monotonic_across_fixtures` 改名并改为 `test_score_orders_by_process_gate_then_accuracy`，新判据是「两道门槛 + 正确性排序 + 上下界锚点」，不是「单调不减」。
+
+**授权来源**：人本轮原话「Q5 的 D1 我认为你分类就好了，看这个题目是不是需要步骤，不需要的话就给分，否则不给分」。改 §53.4 的硬锁属口径变更，按人拍板执行，不是 AI 自行放宽。
+
+连带更新：`tests/test_param_schema.py` 的分数序参数、`tests/test_trace_pipeline.py` 的 `SCORE_ORDER`、`docs/diagnosis-report-schema.md` §8 表、评审包 §4.1 表（由脚本重生成）。
+
+### 60.8 落仓清单
+
+| 文件 | 改动 |
+|---|---|
+| `src/arena/diagnosis_report.py` | `counterfactual_credit` 改名；`_task_version_mismatch()` / `_process_fact()` / `_report_attribution()`；`score.voided` / `report_attribution` / `process_fact`；notes |
+| `src/arena/reconciliation.py`（新） | P3 对账判定器（三态 + 出处只认返回值） |
+| `src/arena/review_packet.py` | `SCORE_RE` 与表头改名 |
+| `docs/diagnosis-report.schema.json` | `counterfactual_credit`（+`x-previous-name`）、`voided`（required）、`void_reason`（条件必填）、`report_attribution`（required）、`process_fact`（required）、`submission.task_version` / `process_note` |
+| `tasks/dbg-001-order-report.yaml` | `task_version`、`submission_requirements.requires_process: true` |
+| `docs/data-model.md` | §5.2 掌握度口径（P1） |
+| `docs/diagnosis-report-schema.md` | §2 顶层 / §3 score / §7 不变量（I6/I7/I10/I11）/ §8 夹具表 / §9 决策 |
+| `docs/review-packet-manual.md` | 决策 5 改名、决策 8–11 新增、§4.1 说明、§5 清空、§6 换成三处待检验命题 |
+| `docs/review-packet.md` | 脚本重生成（`2a776f8871975833`） |
+| `tests/` | 新增 15 条（TD-038 5、process 3、对账 7）；更新分数序与表头断言 |
+| 计划书（仓外） | §2.2 首行限定、§4.2 第 8/9/10 条 |
+
+**未动**：`docs/peer-*.md`、`docs/redteam-brief-round8.md`、`docs/review-response-v1.md` 的历史正文（含 §54/§58/§59 里对 `credit_pass_weight` 的引用）——历史不回改，改名事实在本节登记。
+
+### 60.9 十分钟验证（可复核，不以自评代替）
+
+```bash
+# ① 全量：应为 667 passed
+python -m pytest tests/ -q --basetemp=/tmp/r70
+
+# ② 评审包一致 + 指纹
+python src/arena/review_packet.py --check      # OK (2a776f8871975833)
+
+# ③ 五夹具新分数序（0/0/0.25/0/1.0）与反事实得分
+python src/arena/diagnosis_report.py --fixture all
+
+# ④ 缺过程：分数 0、断言不改写、流程事实留痕
+python src/arena/diagnosis_report.py --fixture fixtures/raw-no-trace.json | grep -E 'counterfactual|process_fact|voided'
+
+# ⑤ 版本作废：把 raw-perfect 的 task_version 改成别的再跑（见 tests 里的 helper）
+grep -n "test_td038_version_mismatch_voids_report_but_keeps_diagnostics" -A 8 tests/test_diagnosis_report.py
+
+# ⑥ 对账三态
+python src/arena/reconciliation.py
+python -m pytest tests/test_reconciliation.py -q
+
+# ⑦ 改名彻底（现役代码/测试 0 命中）
+grep -rn "credit_pass_weight" src/ tests/ --include="*.py"
+```
+
+**反证条件**：① 若 `raw-no-trace` 的 `counterfactual_credit` 也变成 0，说明「诊断不丢」被破坏，§60.3 结论作废；② 若 `voided` 与 `disqualified` 在任一报告里同时为 true 且 `disqualifying_assertions` 为空，说明两状态被混用；③ 若对账模块把 `params` 里的数值当出处，§60.4 的边界作废。
+
+### 60.10 状态与下一步
+
+- **P1/P2/P3、Q1、Q5-D1、TD-038 全部落地**；评审包 §5「待拍板清单」由 3 条降为 **0 条**，结论并入 §3 决策 8–11。
+- **TD-002 三处不一致一次性对齐**：`data-model.md:121-122`（P1 口径）、`review-packet-manual.md` §5（P2 行删除）、`diagnosis-report-schema.md` §9（P1/P2/P3 结论）。三处现在说的是同一件事。
+- **新增待办**：TD-039（P3 对账接入 rubric，需改 credit 分母，单开一批）；TD-038 的「缺省不比对」宽松口（M1 接 API 改必填）。
+- **待人拍板**：无。本轮所有改动都有本轮人拍板的直接依据；若认为 §60.2 对外评的修正（不采纳「衰减取 S」）不对，可推翻——反证条件已写进计划书第 8 条。
+- **下一步可做且不需拍板**：Q6 的证据强度表 → 每条决策的现场演示脚本；计划书 §三「相关工作」与 §八「风险」的文献主张逐条核证。

@@ -287,6 +287,65 @@ def _assertion_item(
     return item
 
 
+def _task_version_mismatch(task: dict, raw: dict) -> str | None:
+    """TD-038：提交针对的任务版本与当前任务不一致时，返回作废原因码；一致或缺省返回 None。
+
+    缺省不比对（向后兼容）：老客户端不带 task_version 时行为与改动前完全一致，
+    五夹具因此保持原分数。这个"缺省即放过"是已知的宽松口，登记为 TD-038 的残留，
+    M1 接 API 时改为必填后再收紧（见 review-response-v1.md §60）。
+    """
+    expected = task.get("task_version")
+    submission = raw.get("submission") or {}
+    got = submission.get("task_version")
+    if not expected or not got:
+        return None
+    return None if str(got) == str(expected) else "task_version_mismatch"
+
+
+def _process_fact(task: dict, raw: dict, trace_ok: bool) -> dict:
+    """P2 / Q5-D1：这份提交「要不要过程」以及「有没有交」。
+
+    `submitted` 的判据是「有可用的过程证据」：trace 通过结构校验，或提交里写了一段
+    非空的 `process_note`（人拍板口径：「写了『不会/没思路』也算交了步骤」）。
+    **不把「步骤」等同于「工具调用」** —— 一道题可能只要求写下思路，不要求调工具。
+
+    题目类型由任务 YAML 的 `submission_requirements.requires_process` 决定，
+    代码里不写第二份分类表；缺省 false（= 只交答案即可），保持既有任务行为不变。
+    """
+    cfg = task.get("submission_requirements") or {}
+    required = bool(cfg.get("requires_process"))
+    submission = raw.get("submission") or {}
+    note = submission.get("process_note")
+    declared = isinstance(note, str) and bool(note.strip())
+    submitted = bool(trace_ok or declared)
+    return {"required": required, "submitted": submitted,
+            "missing": bool(required and not submitted)}
+
+
+def _report_attribution(policy: dict, by_state: dict, suppressed: bool) -> dict:
+    """整份报告的归因开关（派生值）。
+
+    存在两个理由：① 作废报告必须"不计能力短板"，而这句如果只写在 notes 文案里就
+    没有执行者（用户要求：作废时不能只靠文案）；② 下游只读一个布尔，不必自己
+    把 attribution_policy 与 by_state 再算一遍。
+
+    它是 attribution_policy 的**派生汇总**，不是第二真相源：任何时刻都可由
+    policy + by_state + suppressed 重算出来（测试锁住这一点）。
+
+    `suppressed` = 本次报告不作为能力证据（作废 / 缺过程 / 门禁不合格之外的抑制条件）。
+    """
+    if suppressed:
+        return {"counts_toward_mastery": False, "emit_error_patterns": False}
+    return {
+        "counts_toward_mastery": any(
+            policy[s]["counts_toward_mastery"] and by_state[s] > 0 for s in STATES
+        ),
+        "emit_error_patterns": any(
+            policy[s]["emit_error_patterns"] and by_state[s] > 0 for s in STATES
+        ),
+    }
+
+
 def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
     """把「逐条断言结果 + trace 校验结果」组装成符合 schema 的诊断报告。
 
@@ -337,14 +396,46 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
     if declared_total is not None and declared_total != credit_total:
         raise ReportError(f"YAML 声明的 credit.total_weight={declared_total}，但 credit 断言权重之和={credit_total}")
 
-    credit_pass_weight = sum(a["weight"] for a in assertions if a["layer"] == CREDIT and a["state"] == "pass")
-    weighted_sum = 0 if disqualified else credit_pass_weight
-    ratio = 0.0 if disqualified else round(credit_pass_weight / credit_total, 6)
+    counterfactual_credit = sum(a["weight"] for a in assertions if a["layer"] == CREDIT and a["state"] == "pass")
+
+    # ── P2 / Q5-D1（round-70）：按题目类型决定「缺过程」怎么算 ────────────
+    # 人拍板口径（§53.1）：需要步骤的题缺过程 ⇒ 本次不打能力分、不记缺点、记一条中性
+    # 流程事实、提示补交；不需要步骤的题只交答案即可，照常计分。
+    # 关键：**不改写断言状态**——「缺过程」是本次不算数，不是「无法判定」。
+    # 断言照常判定（诊断不丢），只压制分数与归因；否则会把"做对了却没过过程门槛"
+    # 的证据一起抹掉，与决策 5「门禁只管分数，不管观测」冲突。
+    process_fact = _process_fact(task, raw, trace_ok)
+    missing_process = bool(process_fact["missing"])
+
+    # TD-038（round-70）：任务版本不一致 ⇒ 本份「不算数」，但不是「不会」。
+    # 处置按人拍板的第三种：报告照出、分数不算、不计能力短板、写清请重交。
+    # 与 disqualified 分开记：disqualified 是学生没交东西/没跑完，voided 是这次不算数。
+    void_reason = _task_version_mismatch(task, raw)
+    voided = void_reason is not None
+    suppressed = disqualified or voided or missing_process
+    weighted_sum = 0 if suppressed else counterfactual_credit
+    ratio = 0.0 if suppressed else round(counterfactual_credit / credit_total, 6)
     by_state = {s: sum(1 for a in assertions if a["state"] == s) for s in STATES}
     if disqualified:
         notes.append(
             "门禁未通过（" + ", ".join(disqualifying) + "）：本次提交无资格评分，ratio 记 0。"
-            f"credit 层断言仍照常判定（若算分可得 {credit_pass_weight}/{credit_total}），该值仅用于诊断，不计入分数"
+            f"credit 层断言仍照常判定（反事实得分 {counterfactual_credit}/{credit_total}："
+            "这是「若过门禁本可得」的权重和，不是本次分数，不得当作分数汇总）"
+        )
+    if voided:
+        expected_ver = task.get("task_version")
+        got_ver = (raw.get("submission") or {}).get("task_version")
+        notes.append(
+            f"任务版本不一致（提交 {got_ver} / 当前 {expected_ver}）：本次提交**不算数**，"
+            "分数记 0 且不计入掌握度，但**不代表能力不足**。请按当前版本重新提交；"
+            "以下断言判定基于提交版本，仅供参考"
+        )
+    if missing_process:
+        notes.append(
+            "本任务要求提交过程/思路：本次未收到过程（未上报 trace，也未写思路说明）。"
+            "按**流程不完整**处理——本次不计能力分、不计入掌握度、不产出错误模式，"
+            f"**不视为能力不足**（反事实得分 {counterfactual_credit}/{credit_total} 仅供参考）。"
+            "请补交步骤，或写一句「没思路」后重交"
         )
 
     attr_src = (task.get("scoring") or {}).get("attribution") or {}
@@ -386,21 +477,30 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
             "trace 未通过前置校验（" + ", ".join(trace_audit["invalid_reasons"]) + "）：轨迹类断言记 unscored"
         )
 
+    score_obj = {
+        "weighted_sum": weighted_sum,
+        "counterfactual_credit": counterfactual_credit,
+        "total_weight": credit_total,
+        "ratio": ratio,
+        "denominator_policy": DENOMINATOR_POLICY,
+        "disqualified": disqualified,
+        "disqualifying_assertions": disqualifying,
+        "by_state": by_state,
+        "voided": voided,
+    }
+    if voided:
+        score_obj["void_reason"] = void_reason
+
     report = {
         "report_version": REPORT_VERSION,
         "submission": raw["submission"],
         "trace_audit": trace_audit,
-        "score": {
-            "weighted_sum": weighted_sum,
-            "credit_pass_weight": credit_pass_weight,
-            "total_weight": credit_total,
-            "ratio": ratio,
-            "denominator_policy": DENOMINATOR_POLICY,
-            "disqualified": disqualified,
-            "disqualifying_assertions": disqualifying,
-            "by_state": by_state,
-        },
+        "score": score_obj,
         "attribution_policy": attribution_policy,
+        "report_attribution": _report_attribution(
+            attribution_policy, by_state, voided or missing_process
+        ),
+        "process_fact": process_fact,
         "assertions": assertions,
         "skill_gaps": sorted(gaps.values(), key=lambda g: (-g["weight_lost"], g["skill_id"])),
         "unattributed_patterns": unattributed,
@@ -426,7 +526,7 @@ def _run_all_fixtures(task_path: str) -> int:
         flag = "DQ" if score["disqualified"] else "  "
         print(
             f"OK {flag} {path.stem:<16} ratio={score['ratio']:.4f} "
-            f"({score['weighted_sum']}/{score['total_weight']}) credit_pass={score['credit_pass_weight']} {states}"
+            f"({score['weighted_sum']}/{score['total_weight']}) counterfactual={score['counterfactual_credit']} {states}"
         )
     return 0 if ok else 1
 

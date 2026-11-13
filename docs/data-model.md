@@ -118,8 +118,11 @@
 | fsrs_card | JSON | py-fsrs Card 序列化（due / stability / difficulty / last_review…） |
 | updated_at | DATETIME | |
 
-> FSRS 卡片粒度 = **(用户, 技能)** 二元组：同一技能每用户一张卡。首次提交产生检出错误模式后初始化卡片；此后每次 Submission 的 `fsrs_rating` 驱动 `review_card(card, rating)` 更新。技能掌握度 = 本表 R 值（可提取性），无第二口径。
-> **P1 待拍板**：本行「掌握度 = R 值」与 `review-response-v1.md` §2 E2 的替代方案（掌握度 P = 断言通过率的 EWMA，时间衰减参数取 FSRS 的 S，R 只表示"现在复习收益多大"）冲突。拍板前两种口径都在文档里，**不得同时写进计划书**。
+> FSRS 卡片粒度 = **(用户, 技能)** 二元组：同一技能每用户一张卡。首次提交产生检出错误模式后初始化卡片；此后每次 Submission 的 `fsrs_rating` 驱动 `review_card(card, rating)` 更新。
+> **卡片参数只负责调度**（下一次什么时候复习），**不表示掌握度**。
+> **掌握度 P（P1，round-70 定）**：由最近做题表现估计并随时间衰减——指数平滑 `P_k = (1-λ)·P_{k-1} + λ·c_k`（λ 为固定平滑系数），衰减只沿用**复习间隔**这一个时间轴，不引入第二套时间常数。
+> **不把 FSRS 的 stability S 当作衰减系数**：S 的定义是「可提取性降到 90% 所需天数」（值域可达上万天），与 λ ∈ (0,1) 不可直接换算；若要用 S，须先定义并**标定**映射 `α = f(S)`，当前登记为**假设**（须留出数据做消融验证，见 `review-response-v1.md` §58.5 / §60）。
+> 「掌握度 = FSRS 的 R 值」的原写法**作废**；两种口径并存的过渡状态随之结束。
 > ReviewLog（py-fsrs 的复习日志）**后置**：M0 不建表，复习事件可从 Submission + ReviewItem 重建；M1 接入参数优化时再加。
 
 ## 3. 关系一览

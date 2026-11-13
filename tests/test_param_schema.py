@@ -130,10 +130,14 @@ def test_no_trace_handwritten_pass_is_stale_baseline():
 
 
 @pytest.mark.parametrize("name,ratio", [("raw-empty", 0.0), ("raw-no-file", 0.0),
-                                        ("raw-fake-retry", 0.25), ("raw-no-trace", 0.5),
+                                        ("raw-fake-retry", 0.25), ("raw-no-trace", 0.0),
                                         ("raw-perfect", 1.0)])
 def test_score_sequence_unchanged(name, ratio):
-    """本步不接全链路，分数序必须纹丝不动。"""
+    """分数序（round-70 修订）：raw-no-trace 由 0.5 变 0——本题要求过程，缺过程不计能力分。
+
+    该值变化来自 `submission_requirements.requires_process: true`（人拍板口径 §53.1 /
+    Q5-D1），不是本模块改动导致；R4 本身的判定（unscored / trace_not_reported）不变。
+    """
     assert tp.run_fixture(name)["score"]["ratio"] == ratio
 
 

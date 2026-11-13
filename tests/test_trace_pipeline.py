@@ -25,7 +25,9 @@ from arena import trace_pipeline as tp  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 TASK = dr.load_task(ROOT / "tasks" / "dbg-001-order-report.yaml")
-SCORE_ORDER = [0.0, 0.0, 0.25, 0.5, 1.0]
+# round-70：raw-no-trace 由 0.5 → 0（本题要求过程，缺过程不计能力分；口径见 §53.1 / Q5-D1）。
+# 变的是分数，不是链路判定：该夹具的逐条 state / reason_code 仍由测试逐一锁定。
+SCORE_ORDER = [0.0, 0.0, 0.25, 0.0, 1.0]
 
 
 def raw(name: str) -> dict:
@@ -1162,11 +1164,11 @@ def test_f5_td019b_zero_calls_is_unscored():
 
 
 def test_f5_td019b_no_target_calls_does_not_count_toward_mastery():
-    """② 空集 pass 不再计入掌握度：A0 的 credit_pass_weight 3→2（只剩 R2），ratio 0.75→0.5。"""
+    """② 空集 pass 不再计入掌握度：A0 的 counterfactual_credit 3→2（只剩 R2），ratio 0.75→0.5。"""
     report = _f45_report([])
     assert by_id(report)["R4_no_param_hallucination"]["state"] == "unscored"
     assert by_id(report)["R4_no_param_hallucination"]["error_patterns"] == []
-    assert report["score"]["credit_pass_weight"] == 2
+    assert report["score"]["counterfactual_credit"] == 2
     assert report["score"]["ratio"] == 0.5
 
 
