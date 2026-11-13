@@ -5729,6 +5729,345 @@ python scripts/push_gate.py --self-test --dirty c830b1b
 - 本轮**无产品口径待人拍板**：收敛方向由 §55.8 / §56.9 既定，实现与验证属技术落地步；依据全在仓内 + 本机探针 + git 真实对象，**不提外评**。
 - 本批次代码 / 测试 / 文档在收尾裁判通过后提交并推送（commit sha 以 `git log -1` 复核，不硬编码进文档，避免锚点重放失效）；**此前那笔 `1a319ad` 已单独推送**。
 - 下一步：**Q4(d) 两类题分流的实现**（§53 口径已拍板，排在实现序列最后），或先补 A 线设计层 P1/P2/P3；两者都是排期选择，由人一句话决定，AI 不替人定方向。
+  - **round-68 补充（补充上文读法而非覆盖）**：人已选「先补 A 线」，实际执行见 §58；本行的 Q4(d) 实现顺序仍不插队。
+
+---
+
+## 58. round-68：A 线第一步 —— 计划书硬事实依据核证与设计层委托包（2026-11-13）
+
+### 58.1 范围与不做的事
+
+人指示「先补 A 线」。A 线定义见 `peer-brief-round57-pace.md` §2.5 / §3：评审包 §5 的 P1/P2/P3（掌握度定义 / trace 缺失计分 / 防作弊）+ §6 的 Q1–Q6，属**设计层**，直接决定初赛盲审时计划书能否被评委 10 分钟内判真伪。
+
+**本轮只做不需要人拍板、且能独立验证的部分**：
+
+| 做 | 不做 |
+|---|---|
+| 联网核证计划书 §2.2 / §4.3 / §九 的文献、库、版本、状态主张 | **不替人拍 P1/P2/P3**（§10 第 3 节标题原文「等维护者 拍板的三条（AI 无决定权）」） |
+| 订正可核实的事实错误（属事实订正，非产品口径） | **不销 TD-002**、不改 `review-packet.md` §5 / `review-packet-manual.md` 第 5 节（§12.4 原话：「擅自销项会改变对外发包内容 → 等人确认」） |
+| 回答 Q3 / Q4（评审包原话：「没有就说没有，不要给一个看起来像的名字」） | 不改 `docs/data-model.md:121` 的「掌握度 = R 值」与 `:122` 的 P1 待拍板注 —— 那是 P1 产品口径 |
+| 产出设计层外评委托包 + 大白话决策卡（仓外，可转发） | **零产品代码 / 零测试 / 零判定语义 / 零分数改动**；不动五夹具与 `_snapshot()` 覆盖量 |
+
+**改动落在仓外交付物**：`项目计划书草稿-v0.4.md` 位于仓库目录之外（`agent-arena/` 的上一级），因此本节改动**不进入 git 工作区、不影响评审包 `--check`**。这是 round-59 改 `:270` 时的同一形态。
+
+### 58.2 核证方法
+
+- 多源检索：4 组定向检索 + 1 次跨源学术综合（`domain_search`），覆盖论文一手页（ACM / Science / PSPI / ERIC / Wiley / IES / Anki 官方手册 / GitHub 官方仓库）。
+- **一手优先**：凡有官方手册、出版社页面、ERIC 记录、DOI 的，以之为准；博客 / 二手综述只用于交叉印证，不单独作结论依据。
+- 三分法：每条主张标「核实为真 / 事实错误 / 查不到 → 撤回或降级为设计声明」，并给可核验来源。**推断冒充结论的一律显式标注**，这正是 Q4 的原话要求。
+- 十分钟验证见 §58.8；所有 URL / DOI 均可直接复核，不用「我认为应该没问题」作答。
+
+### 58.3 硬事实核证总表（计划书 §2.2 五行逐条）
+
+| # | 计划书原写法 | 核证结论 | 可核验来源 | 处置 |
+|---|---|---|---|---|
+| 1 | `FSRS/DSR（KDD 2022；Anki 23.10 默认调度器）` | **两处事实错误**。① KDD 2022 那篇提出的是 SSP-MMC / DSR 三值模型，FSRS 是开源社区据此衍生的调度器，不是同一篇论文；② Anki 23.10 是**首次内置支持**，官方手册明写 FSRS 是 SM-2 的 alternative、需手动启用，不是「成为默认」的版本 | Ye, Su & Cao, KDD 2022, pp.4381-4390, doi:10.1145/3534678.3539081；`docs.ankiweb.net/deck-options.html` §FSRS；`github.com/open-spaced-repetition/py-fsrs`（MIT） | **修正采纳**：改写为「记忆模型源自 KDD 2022 / FSRS 为衍生实现 / 23.10 首次内置可选」，并对「后续版本是否默认」**不作断言**（第三方来源说法不一，不制造新的绝对断言） |
+| 2 | `Karpicke & Roediger, Science 2008（约 80% vs 30%）——可执行复习任务直接落此证据` | 数字**基本成立**（40 组外语词对，一周后约 80% vs 33–36%），但「**直接落此证据**」是过度声称：实验材料是**陈述性记忆**，迁移到可执行编程任务属设计类推 | Science 319:966-968, doi:10.1126/science.1152408；LibreTexts / Education Hub 复述表 | **修正采纳**：降级为「机制启发，不是直接实证」，见 §58.6 |
+| 3 | `自我解释/精细询问（Dunlosky et al. 2013，高效档）` | **事实错误**。Dunlosky 2013 把 self-explanation 与 elaborative interrogation 都评为 **moderate（中等）**；high 档只有 practice testing 与 distributed practice | Dunlosky et al., PSPI 14(1):4-58, doi:10.1177/1529100612453266（10 种技术逐项评级：low / moderate / high） | **修正采纳**：改为 moderate，并把该机制定位为「辅助机制」，不再当高效证据 |
+| 4 | `KT 领域公认开放问题：可解释性` | **查不到可核验来源**支撑「公认开放问题」这一定性 | 检索未得 | **撤回定性**：改为陈述本系统做法（错误模式→技能缺口的规则链可回溯），不冒充文献结论 |
+| 5 | `RFM（检索-反馈-监测）范式` | **拔高且命名不稳**。IES/NCER 项目确有 retrieval-feedback-monitoring 方法，但同一官方体系后续项目写作 Retrieval-**Monitoring**-Feedback / RMF，且它是**具体研究方法名**，不是通用「范式」 | IES 项目 R305H050038（Kent State, 2005–2008）；NCES 同名项目页 | **修正采纳**：写明方法名与来源、两种缩写并存，撤回「范式」定性 |
+
+### 58.4 Q3 专答：两段式评分有没有文献或工业实践支撑
+
+**答：有，但评审包 Q3 里猜的四个名字，只有一个是该领域的规范术语。**
+
+| Q3 猜的词 | 核证 |
+|---|---|
+| `gated rubric` | **查无此规范术语**。`hurdle` 在评估语境里指 `hurdle task` / `competency hurdle`（澳洲多所大学评估政策中有正式定义），但「gated rubric」不是学科用语；招聘领域的 "hard gates" 是工程博客措辞，不可当学术依据 |
+| `hurdle model` | **歧义**：统计学里 `double-hurdle model` 是 Cragg 1971 的计量模型，与评分门禁无关；教育测量用 `multiple-hurdle` / `conjunctive standard` |
+| `conjunctive scoring` | ✅ **真术语**，且文献充分。National Academies Press《Incentives and Test-Based Accountability in Education》ch.5 明确区分 conjunctive / multiple-hurdle 与 compensatory；Sadler (2009) 讨论 conjunctive / disjunctive grading rule；OSCE conjunctive standards（Medical Teacher, doi:10.1080/0142159X.2020.1856353） |
+| `two-stage assessment` | **查无专门文献**，更像工程／产品用语 |
+| **最贴切的对应（我方给出，非 Q3 所列）** | **Wheeler (1993), ERIC ED374160 的 `combined model`**：原文 "uses features of both the compensatory and conjunctive models, and is used when decisions are made at two or more decision-making levels" —— 分层决策，正是 gate→credit 的教科书式表述；另有 hiring 领域 `hybrid approach`（先 hurdle 后 compensatory） |
+
+**适用条件差异（必须写清，否则容易被误引）**：
+
+- **门禁前置的正当性不来自「更准」**。Yocarini et al. (2018), *EM:IP* 37(3):24-39, ERIC EJ1191374：conjunctive 的假阳性更低、假阴性更高，补偿式反之；谁更准取决于平均信度、测验间相关、补考次数。Ock & Oswald (2018), doi:10.1027/1866-5888/a000205 的 Monte Carlo：补偿模型在多数条件下期望效标表现与总体效用更高，**multiple-hurdle 的优势在降低评估成本**（昂贵环节只施加于通过者）与「关键项在逻辑上不可补偿」。
+- 因此计划书若要论证 gate→credit，正确写法是「**关键项逻辑不可补偿 + 顺序筛除降成本 + 政策上不许总分掩盖关键短板**」，**不能**写成「两段式评分在测量学上更准确」。
+- 对应到本项目：gate 层是「交了产物 + 正常退出」这类**前提性条件**，而非能力维度；credit 层才是加权区分。这与 combined model 的分层决策语义一致。
+
+### 58.5 Q4 专答：EWMA 的衰减参数取 FSRS 的 stability S
+
+**答：拆成三层，结论不相同；第三层（也是 P1(b) 原话那一层）无直接文献，且量纲不成立。**
+
+| 层 | 主张 | 证据 |
+|---|---|---|
+| A | EWMA / EMA 用于掌握度平滑 | ✅ **有直接文献**。Pelánek, *Experimental Analysis of Mastery Learning Criteria*（UMAP 2017）/ *Analysis and Design of Mastery Learning Criteria*：递推式 `θ_k = α·θ_{k-1} + (1-α)·c_k`，权重 `w_i=(1-α)α^(i-1)`，并评 EMA「often provides good performance」；Pelánek (2014, EDM) 时间衰减函数作基线 |
+| B | 用「记忆稳定度类量」作随时间变化的衰减尺度 | ⚠️ **有先例但口径不统一**：HLR（Settles & Meeder, ACL 2016, doi:10.18653/v1/P16-1174）以半衰期 `h` 使 `p=2^(-Δ/h)`；AKT (Ghosh et al., 2020) 用固定形式指数衰减核；MemDec 显式建模 decay。均非 FSRS 的 S |
+| C | **直接把 FSRS 的 S 代入 EWMA 的 α** | ❌ **检索未找到直接文献**；且**量纲与值域不兼容**：S 定义为「可提取性降到 90% 所需天数」（值域可达上万天），α 必须 ∈ (0,1)。直接等号在数学上不成立，必须先定义映射 `α=f(S)` 并论证其单调性与值域约束 |
+
+**两条额外硬约束（写进计划书边界）**：
+
+1. FSRS 的 S **不是半衰期**（是 90% 可提取性时间），当作半衰期用会系统性错估间隔。
+2. FSRS 遗忘曲线是**幂律**（v4.5/v5 `R=(1+19t/(81S))^(-1/2)`，FSRS-6 衰减指数可优化），而 EWMA 是**指数**形式；用 EWMA 近似幂律衰减在长间隔段有系统偏差，须作 limitation 标注。
+
+**保守替代（评审包 Q4 自己建议的方向）**：用**复习间隔 / elapsed days** 而非 S 作衰减尺度，或先用常数 α 作基线；S 只负责调度，掌握度另设时间衰减，两者通过待定义映射连接，且该映射须经留出数据消融验证。该方案能挂到 Pelánek (2014) 的既有基线上，评委会问答成本最低。
+
+### 58.6 新发现（本轮核证的副产物，比文献清单本身更重要）
+
+**① 计划书与 P1 自相矛盾。** P1 的原论证是「把程序性技能当陈述性记忆，评委一句话就能问倒」（评审包 §5 P1 备注），但计划书 §2.2 第 2 行恰恰拿一组**外语词对（陈述性记忆）实验**给「可执行编程任务复习」直接背书。同一份材料里，一边用这个理由否掉旧写法、一边自己犯同一错误 —— 这是盲审 10 分钟内最容易被抓住的一处。已在 §2.2 订正中把该证据**降级为「机制启发 / 设计类推」**，不再宣称直接实证。
+
+**② Q4 结论动摇 P1(b) 方案本身。** P1 的 (b) 选项原文写「时间衰减参数取 FSRS 的 stability S」。§58.5 层 C 表明这一步无文献且量纲不成立。**这不是推翻 P1(b) 的方向**（P 与调度分离仍成立），但 (b) 的具体表述**在拍板前必须改写**：要么把等号换成待验证映射 `α=f(S)` 并标为假设，要么直接采用保守替代（复习间隔）。**该改写属产品口径，归人拍板**，AI 不自行改评审包 §5。
+
+**③ TD-002 的三处不一致仍然真实存在**（`data-model.md:121-122` / `review-packet-manual.md:74` / `diagnosis-report-schema.md:262`），且本轮新证据使其更需谨慎：`diagnosis-report-schema.md:262` 写「P2/P3 已按…实现，未写进计划书」，其中「已实现」的强度高于实际（P3 的 R6 一致性校验在 `src/` 中 0 命中，TD-013 仍挂着）。**本轮不销 TD-002、不改这三处**，仅在 §58 登记，待人拍板 P1/P2 后一次性对齐。
+
+### 58.7 处置登记（五类）
+
+| 项 | 处置 | 理由 |
+|---|---|---|
+| 计划书 §2.2 五行 | **修正采纳** | 事实订正，非产品口径；逐条挂 DOI / 官方手册 |
+| 计划书 §4.3 OTel 行 + §4.1 架构图「标准打桩」 | **修正采纳** | OTel GenAI semconv 截至 2026-11 仍为 **Development 状态、非 stable**，2026-06 迁出主仓独立维护、属性名曾变更（`gen_ai.system`→`gen_ai.provider.name`）；称「开源标准」会让评委误以为已冻结。改为「约定 + pin 版本」 |
+| 计划书 §九 参考清单 | **修正采纳** | 由「Science 2008 / Dunlosky 2013」这类不可查简写，补成卷页 + DOI + 项目号；新增 Q3/Q4 对应的文献骨架与「不使用的名字」 |
+| Q3 / Q4 | **采纳**（回答，非拍板） | 评审包要求「没有就说没有」，按 §58.4 / §58.5 如实作答 |
+| P1 / P2 / P3 | **挂条件采纳** | 放行条件＝人拍板；本轮只出大白话决策卡与外评委托包，不销项、不改对外发包内容 |
+| `data-model.md` / 评审包 §5 / TD-002 | **不采纳（本轮不动）** | §12.4 明确要求等人确认 |
+
+### 58.8 十分钟验证（可复核，不以自评代替）
+
+```bash
+# ① 计划书事实订正是否落地、旧写法是否清零
+grep -n 'Anki 23.10\|80% vs 30\|高效档\|公认开放问题\|FSRS：KDD\|开源标准' 项目计划书草稿-v0.4.md
+# ② Q3 的四个候选词里哪些是真术语（对照 ERIC / NAP 一手记录）
+#    https://eric.ed.gov/?id=ED374160  (Wheeler 1993, combined model)
+#    https://www.nationalacademies.org/read/12521/chapter/5
+#    https://eric.ed.gov/?id=EJ1191374  (Yocarini 2018)
+# ③ Q4 的量纲反证：S 定义与 α 值域
+#    https://docs.ankiweb.net/deck-options.html  §FSRS
+#    https://www.fi.muni.cz/~xpelanek/publications/mastery-detection.pdf  §2.2.3
+# ④ 仓内零改动 + 评审包未过期
+cd agent-arena && git status --porcelain=v1 && python src/arena/review_packet.py --check
+```
+
+**反证条件**：若 Anki 官方手册把 23.10 明确写作「默认调度器」，或存在一手文献直接把 FSRS 的 S 定义为 EWMA 的 α，则 §58.3 #1 / §58.5 层 C 的结论作废，须回来订正本节。
+
+### 58.9 外评判据与委托包
+
+**本轮提一轮外评，判据成立**：Q3/Q4 属「文献对应与数学口径」，本地裁判（652 passed / `--check` / 变异 / 对拍 / 闸门）**一条都覆盖不到**；且 §58.6 ② 涉及「P1(b) 原话该不该改写」这一跨模块契约口径，正是需要第二真相源的语义盲区。
+
+- 委托包：`peer-brief-round68-a-line.md`（仓外，自包含、匿名 0 命中），只问 3 个可判定命题，附核证总表与「请勿回答」清单。
+- 大白话决策卡：`a-line-plain-card.md`（仓外），把 P1/P2/P3 翻成生活类比，给「不拍也能继续」出口与可整段复制的提问。
+- **发起权与拍板权在人**；本轮不等回件、不因此停摆，仓内工作按 §52.4 小步继续。
+
+### 58.10 落仓清单
+
+| 文件 | 改动 |
+|---|---|
+| `项目计划书草稿-v0.4.md`（仓外交付物） | §2.2 五行订正；§4.1 架构图 1 行；§4.3 OTel 行；§九 参考清单补精确出处 + Q4 诚实边界注 |
+| `docs/review-response-v1.md` | 新增 §58；§57.9 末行加一条补充读法注 |
+| `HANDOFF.md` | round-68 最新状态块 |
+| `peer-brief-round68-a-line.md`（仓外） | 新建设计层外评委托包 |
+| `a-line-plain-card.md`（仓外） | 新建 P1/P2/P3 大白话决策卡 |
+| 仓外 `.workbuddy/memory/2026-11-13.md` | 追加 round-68 |
+
+**零改动**：`src/` / `tests/` / `tasks/` / `docs/review-packet.md` / `docs/review-packet-manual.md` / `docs/data-model.md` / `fixtures/`。
+
+### 58.11 本轮实测（全部为本机命令输出，非自评）
+
+| 判据 | 命令 / 结果 |
+|---|---|
+| 全量单测 | `pytest tests/ -q --basetemp=<new>` → **652 passed in 114.87s**，`RC=0` |
+| 评审包一致性 | `review_packet.py --check` → **`OK (7974ca6f877d3e6a)`**，`RC=0`；NOTE 为设计行为，不为对齐 HEAD 重生成 |
+| 包字节指纹 | `Get-FileHash docs/review-packet.md -Algorithm SHA256` → `839eb4b66a954ba7` **未变** |
+| push 闸门 | `--self-test --dirty c830b1b` → `SELF_AUDIT_HITS=0` / 正向 HEAD `CLEAN hits=0` / 负向 `BLOCKED hits=2` / `EMPTY_RANGE_NOT_CLEAN=True` / **`SELF_TEST_PASS=True`**，`RC=0` |
+| 匿名扫描 | `grep -n` 禁词表扫 4 份改动/新建文件 → **0 命中** |
+| 计划书表格结构 | `awk -F'|'` 逐行数分隔符：§2.2 五行与表头均 **3 段**、§4.3 十一行均 3 段，未破坏渲染 |
+| 仓内改动清单 | `git status --porcelain` = **1 项 `M docs/review-response-v1.md`**；HEAD 仍 `2af6dfe` |
+| 旧写法清零 | `grep` 扫描 `Anki 23.10` / `80% vs 30` / `高效档` / `公认开放问题` / `FSRS：KDD` / `开源标准` → 仅命中订正说明中的引用，无残留断言 |
+
+> **边界**：`--check` 只覆盖生成器现算量（§47 / TD-037 方案 B），**不能证明源码实现文本仍在**。本轮零代码改动，该项不构成风险；若将来以「652 passed + 包 OK」当作实现仍在的证据，仍属越界。
+
+### 58.12 状态与下一步
+
+- **A 线第一步完成**：计划书硬事实依据订正 + Q3/Q4 回答 + 设计层委托包与大白话卡。P1/P2/P3 **仍挂待拍板**、TD-002 **未销**、评审包 §5 **未改**，与 §12.4「等人确认」一致。
+- **本轮开一轮外评**（判据见 §58.9）：`peer-brief-round68-a-line.md` 已备好、匿名 0 命中、自包含；**发起权在人，不等回件、不因此停摆**。回件到达后按「核证 → 登记 → 处置 → 落仓 → 人拍板」处理。
+- **待人拍板的只有产品口径**：P1/P2/P3 三题（大白话见 `a-line-plain-card.md`），以及由 §58.6 ② 引出的「P1(b) 具体措辞是否改写」。**不拍 = 维持现状 = 零改动，不挡后续**。
+- **本轮零 git 写操作**（未 commit / 未 push）；仓内仅 1 项文档改动，仓外交付物与两份委托材料不进 git。提交与 push 归人拍板，届时仍按规则 11 逐提交扫整段待推送历史。
+- **下一步可做且不需要拍板**：按 §58.4 的 combined model 框架，给计划书补一段「为什么 gate→credit」的可判定论证（明确写「不是更准、是关键项不可补偿 + 降成本」）；以及核证 Q1 / Q2 / Q5 / Q6 的本地可判定部分。**Q4(d) 两类题分流实现仍按 §51.7 不插队**。
+
+---
+
+## 59. round-69：gate→credit 论证落地 + Q1/Q2/Q5/Q6 本地核证（2026-11-13）
+
+### 59.1 范围与本轮的口径变化
+
+承接 §58.12 的「下一步可做且不需拍板」。本轮做两件事：把 §58.4 的文献结论写成计划书里的**可判定论证**（§4.2 第 7 条），以及用**仓内可重跑探针**回答 Q1/Q2/Q5/Q6 中属于本地裁判能覆盖的部分。
+
+**与 §58 的一处口径修正（先写出来，避免后人拿旧话当依据）**：§58.4 结论说「门禁前置的正当性是关键项不可补偿 + 降低评估成本」。本轮实测发现**「降低成本」这条在本项目内不成立**——断言在算分前已全部跑完，门禁失败不会跳过任何计算。该理由只在文献层面成立（Ock & Oswald 2018 的 multiple-hurdle 针对昂贵评估环节），落到本项目是空话。计划书第 7 条已按事实删掉这条依据，只留 ①③ 两条。**§58.4 的表述按本节订正，不是覆盖**。
+
+### 59.2 Q2 专答：R4 该不该设成门禁（结论：不该，三条独立理由）
+
+评审包 Q2 的提示原话是「R4 是全称命题，零次调用时平凡为真——这正是改造前 33% 地板分的来源」。本轮把这个提示当命题去证伪，探针落 `scripts/q2_gate_probe.py`（只读、deepcopy 后现算、可重跑）。
+
+**理由一：它不是配置开关，是要放弃这 1 分权重。** 门禁层在实现里禁止带权重（`diagnosis_report.py:207-209`），把 R4 挪进 gate 必须先删 `weight`；删完之后 `credit.total_weight` 声明必须同步改成 3，否则组装期直接抛错：
+
+```text
+W1 保留权重进 gate（layers）              -> REJECTED: R4_no_param_hallucination 是门禁，不允许带权重 1——门禁不计分
+W2 去权重但 total_weight 仍 4（build）    -> REJECTED: YAML 声明的 credit.total_weight=4，但 credit 断言权重之和=3
+W3 去权重且 total_weight=3（build）       -> ACCEPTED: ratio=1.0 total=3
+```
+
+**理由二：分母缩小会让"缺 trace"这一档虚高。** 同一任务、同一批夹具，只改分层：
+
+| 夹具 | A 现状 ratio | B R4→gate ratio | A pass/total | B pass/total |
+|---|---|---|---|---|
+| `raw-empty` | 0.0000 | 0.0000 | 0/4 | 0/3 |
+| `raw-fake-retry` | 0.2500 | **0.0000** | 1/4 | 0/3 |
+| `raw-no-file` | 0.0000 | 0.0000 | 2/4 | 1/3 |
+| `raw-no-trace` | 0.5000 | **0.6667** | 2/4 | 2/3 |
+| `raw-perfect` | 1.0000 | 1.0000 | 4/4 | 3/3 |
+
+挪完之后没有一份夹具的分数序变好：`fake-retry` 掉到 0（它唯一的 pass 是 R4，被抽走了），`no-trace` 从 0.50 升到 0.667（分母从 4 缩到 3）。**「少做一件事」反而更像"完成得不错"，方向反了。**
+
+**理由三（决定性）：Q2 提示的前提在当前实现里已不成立。** 直接调 R4 求值器六个场景：
+
+| trace 场景 | R4 判定 | 备注 |
+|---|---|---|
+| `none`（未上报） | `unscored` | `trace_not_reported` |
+| `zero_calls`（合法 trace、零次工具调用） | `unscored` | `trace_invalid`；note 原话「不把空集记为平凡 pass」 |
+| `write_only_skip_fetch`（只调 `write_report`，跳过数据工具） | `unscored` | 同上 |
+| `legal`（探针自锚点） | `pass` | 构造正确的证明 |
+| `limit_out_of_range`（`limit=20`） | `fail` | 归 `param_out_of_range` |
+| `missing_required`（缺 `limit`） | `fail` | 归 `param_missing_required` |
+
+`assertion_evaluator.py:1254-1265` 有一处明确防护，注释原话：「全称命题不能对空集平凡为真：没有任何目标工具的受检调用时，R4 无证据可判」。所以「33% 地板分」那个机制**不是靠把 R4 挪进 gate 拆掉的**，是靠「空集不平凡为真 + 分母固定」拆掉的——两件事都已经在实现里。
+
+而如果真把 R4 设成门禁，它在最该拦的两个场景（无 trace、零次目标调用）判 `unscored`，门禁 `on_unscored=do_not_disqualify` **不拦**。门禁在唯一需要它的地方失效，这是第三条理由，也是最硬的一条。
+
+**Q2 的另一半「有没有更该设门禁的检查」**：有，且已定位，见 §59.6（`task_git_hash` 无执行者）。它属于「不可补偿的前提条件」——任务版本对不上时，断言 id 与期望值都可能失效，比 R4 更符合 gate 的定义。**但改动属产品口径，本轮只登记不改。**
+
+### 59.3 Q1 专答：`ratio=0` 与 `credit_pass=2` 并存会不会困惑
+
+**先看事实**（`diagnosis_report.py --fixture fixtures/raw-no-file.json`，`raw-no-file` 即「没交产物但其它都对」）：
+
+```json
+"score": {
+  "weighted_sum": 0, "credit_pass_weight": 2, "total_weight": 4,
+  "ratio": 0.0, "denominator_policy": "fixed_at_credit_total_weight",
+  "disqualified": true, "disqualifying_assertions": ["R1_file_exists"],
+  "by_state": {"pass": 3, "fail": 1, "blocked": 1, "unscored": 0}
+},
+"notes": ["门禁未通过（R1_file_exists）：本次提交无资格评分，ratio 记 0。
+           credit 层断言仍照常判定（若算分可得 2/4），该值仅用于诊断，不计入分数"]
+```
+
+**判断**：字段层面已经自解释（`disqualified` + `disqualifying_assertions` + `denominator_policy` + 一条 notes），但**数字层面确实会误读**——同一对象里 `ratio: 0.0` 与 `credit_pass_weight: 2` 并列，读者很容易把 2 当分子、算出 0.5 再和 0 打架。真实风险不在「学生看不懂」，在**第三方拿报告二次汇总时把 `credit_pass_weight` 当分数**（这正是 Q1 担心的「分数误导」）。
+
+**两个可本地验证的改法**（属呈现口径，归人拍板；本轮不动 schema）：
+
+| 候选 | 做法 | 怎么验证它成立 |
+|---|---|---|
+| **P（建议）** | 保留两个值，但**改名 + 加前缀**：`credit_pass_weight` → `counterfactual_credit`（"若过门禁能得几分"），`ratio` 保持唯一分数语义 | 写一条 schema 测试：`score` 里键名含 `counterfactual` 的字段不得被任何汇总函数当分数读；用 `grep -rn "credit_pass_weight" src/` 确认改名后 0 残留 |
+| R | `score` 只留 `ratio` + `disqualifying_assertions`，把反事实值搬到 `diagnostics.credit_if_qualified` 子对象 | schema 校验 `score` 的 properties 集合不含反事实字段；五夹具报告全部过 schema 且 `ratio` 不变 |
+
+我倾向 P：改动小、不削诊断信息、不动 §12 已拍的「门禁只管分数不管观测」；R 更彻底但要让所有读取方改路径，收益不成比例。**不拍 = 维持现状 = 零改动，不影响本轮任何实测。**
+
+### 59.4 Q5 专答：(c) 「写死答案、跳过工具调用」还剩多少空间
+
+**现状拆开看**，攻击者实际能拿到的分：
+
+1. **零工具调用（不报 trace）**：`R1/R5` gate 过（文件在、正常退出），`R2` 照常判——若报告数值写对，`R2` pass 得 2 分；`R3/R4` 因 trace 缺失被强制 `unscored`。**净得 0.5**（就是 `raw-no-trace` 的 0.50）。
+2. **零目标工具调用（报合法 trace）**：R4 已判 `unscored`（§59.2 理由三），拿不到那 1 分；`R3` 判 `fail`（`no_retry`）。净得 0.5，与上一条相同。
+3. **合法重叠分页绕开故障点**：TD-013 的 0.75，仍挂在 P3/M2，未修。
+
+所以 Q5(c) 的真实成本是 **0.5 分 + 拿不到诊断报告**，而不是「零成本」；但也**没有被判异常**——报告里没有任何字段记录「结果全对却零过程证据」这件事。这是可判定的缺口。
+
+**三条判定标准**（都给可执行判据，不是思路）：
+
+| 判据 | 判定式 | 实现成本 | 与既有决策的关系 |
+|---|---|---|---|
+| **D1** | `R2.state == pass` 且 `trace_audit.call_count == 0` ⇒ 报告打 `unverifiable_result` 标，且该 pass 不计入 `credit_pass_weight` | 低（报告层派生，不动断言求值） | **与 P2(b)「照常计分」直接冲突**；采用与否取决于 P2 拍板，不能自行上 |
+| **D2** | `R2` 的数值必须能由 `trace.tool_calls[*].result_summary` 复算出来（容差同 R2 的 0.01）；复算不出 ⇒ `blocked` 而非 `pass` | 中（要消费 `result_summary`，而它现在是 TD-026「已声明无消费者」） | 就是 P3 的 R6，TD-013 同族；不改口径，只补执行者 |
+| **D3** | 同一次提交里 `write_report` 的 `content` 与 `fetch_orders` 的 `result_summary` 数值对不上 ⇒ `suspicious` | 中（需要 trace 里保留工具返回值） | 与 D2 同源，可作为 D2 的弱化前置 |
+
+**结论**：能给判定标准，但**采用哪条是产品口径**（会改分数与掌握度口径）。D1 最便宜且能立刻堵住 0.5 那档，但它同时推翻 P2(b) 的建议值，所以必须与人拍板一起走。本轮只登记，不改代码。
+
+### 59.5 Q6 专答：7 条决策的「证据强度」表（排序不代拍）
+
+Q6 要的是按**评审可信度**排序。排序本身是评委视角的价值判断，我不替人排；能给的是每条决策在仓内**有多少可核验证据**，这是客观的：
+
+| # | 决策 | 仓内证据类型 | 可复核位置 | 缺口 |
+|---|---|---|---|---|
+| 1 | 首发域 = Agent 开发学习 | 范围声明，无需技术证据 | — | 无（声明类） |
+| 2 | 评测层 = 自研断言层 + 可选旁证画像 | **最强**：A2E 三级证伪（代码/运行/语义）+ 5 类断言执行器 + 652 测试 | `spike/README.md`、`src/arena/assertion_evaluator.py`、`tests/` | 旁证画像层未开工 |
+| 3 | 复习项 = 可执行任务，FSRS 只答何时 | 弱：设计声明 + py-fsrs 库已核 | 计划书 §4.2 第 3 条 | **零实现、零数据**；「错题重放修复成功率」仍是【占位】 |
+| 4 | 评分两段式 gate/credit | 强：五夹具实测分数 + 分层校验有执行者 + 本轮 W1/W2/W3 三变体 | `review-packet.md` §4.1、`diagnosis_report.py:207-215`、`scripts/q2_gate_probe.py` | 无 |
+| 5 | 门禁只管分数不管观测 | 强：`credit_pass_weight` 与 `disqualified` 实测并存 | 同上 `raw-no-file` 报告 | 呈现口径待定（§59.3） |
+| 6 | P5：不新增第 4 技能，走 gate 通道留痕 | 强：`disqualifying_assertions` + `unattributed_patterns` 实测有值 | `raw-no-file` 报告的 `unattributed_patterns` | 无 |
+| 7 | 数据缺失 ≠ 能力不足 | 强：`attribution_policy` 输出 + trace 强制改写 unscored 的测试 | `diagnosis_report.py:382-387`、`tests/test_trace_pipeline.py` | 无 |
+
+**若一定要我给倾向**（仅作参考、不代替排序）：**最像"一眼就信"的是 4/5/6/7**——它们背后是能现场跑的夹具报告和报错信息，评委随口一问就能当场验；**最像"一眼就疑"的是 3**——它只有设计声明，一处实测数据都没有，且复习负担、队列上限全是【占位】。第 2 条证据最强但**要索取 `spike/README.md` 才看得到**，盲审材料里若只写结论、不附摘要，反而容易被当成"自说自话"。
+
+### 59.6 新发现：`task_git_hash` 是「声明无执行者」的第二个实例
+
+Q2 问「是否漏了更该设门禁的检查」。查证结果：
+
+```text
+docs/diagnosis-report.schema.json:23  "required": [..., "task_git_hash", ...]
+docs/diagnosis-report.schema.json:27  "pattern": "^[0-9a-f]{7,40}$",
+                                      "description": "产生本报告的 YAML 版本；没有它，报告里的断言 id 无法与任务对齐"
+grep -rn "task_git_hash" src/ tests/   → 0 命中（只有 schema 里那两行）
+```
+
+即：schema 强制要求这个字段、连格式都约束了、描述还写明「没有它断言 id 无法对齐」，但**没有任何一行代码把提交里的 `task_git_hash` 与当前任务版本比对**。这正是 TD-026（条件必填无执行者）的同款问题，只是换了个字段。
+
+**为什么它比 R4 更该进 gate**：任务版本对不上时，`R2` 的期望值（17 / 1837.99）与五条断言 id 都可能已失效，此时算出来的分数**语义上无效**，属不可补偿的前提条件（符合 §59.2 之外、计划书第 7 条的判据①②③）。按同一套判据，R4 属能力维度（可补偿），不该在 gate；`task_git_hash` 才是该在 gate 的那类。
+
+**处置**：登记 **TD-038**（新增），本轮**不实现**——原因是实现要先拍板「版本不符时是判不合格、还是拒绝出报告」，两者对外可解释性不同，属产品口径。十分钟验证：`grep -rn "task_git_hash" src/ tests/` 现在应为 0 命中；实现后应为非 0 且有一条负向测试（喂错版本号必须报错）。
+
+### 59.7 计划书改动（仓外文件，不进 git）
+
+在 `项目计划书草稿-v0.4.md` §4.2 末尾新增第 7 条「评分分两段（gate → credit），分界判据是"可补偿性"而不是"重要性"」，包含：gate/credit 各自收什么、准入 gate 的三条判据（不可补偿 / 有明确后果 / 不吞诊断）、Wheeler (1993) combined model 与 National Academies (2011) ch.5 的对应、**「正当性不来自更准」的限定**（Yocarini 2018、Ock & Oswald 2018）、以及一条诚实边界（「顺序筛除降成本」在本项目不成立，已删）。末条写反证条件：若某条件失败时仍能给出有意义的 credit 解释，它就该移入 credit。
+
+**为什么先写进计划书而不是代码**：这是设计层论证，代码侧行为早已实现（gate 不计权重、`disqualify_ratio=0`、`credit_pass_weight` 并存），本轮只是把「为什么这样分」写清楚。**零代码改动。**
+
+### 59.8 十分钟验证（可复核，不以自评代替）
+
+```bash
+# ① Q2/Q5 探针：10 条判据应全 PASS、退出码 0
+python scripts/q2_gate_probe.py; echo "RC=$?"
+
+# ② Q1 的现状事实（ratio=0 与 credit_pass_weight=2 并存 + notes 解释）
+python src/arena/diagnosis_report.py --fixture fixtures/raw-no-file.json
+
+# ③ R4 空集防护的代码位置（注释原话「全称命题不能对空集平凡为真」）
+grep -n "全称命题不能对空集平凡为真" -A 8 src/arena/assertion_evaluator.py
+
+# ④ 门禁不许带权重的执行者（不是注释约定）
+grep -n "是门禁，不允许带权重" -B 3 src/arena/diagnosis_report.py
+
+# ⑤ task_git_hash 无执行者（应为 0 命中，只余 schema 两行）
+grep -rn "task_git_hash" src/ tests/
+
+# ⑥ 计划书第 7 条已落地；「降成本」只在否定句里出现（不得作为依据）
+grep -n "分界判据是" 项目计划书草稿-v0.4.md
+grep -n "顺序筛除降低评估成本" 项目计划书草稿-v0.4.md   # 应只命中「不成立」那一行
+```
+
+**反证条件**：① 若有判据 FAIL，本节对应结论作废；② 若 `zero_calls` 场景判成 `pass`，则「空集不平凡为真」的防护已回退，§59.2 理由三须重写；③ 若 `grep task_git_hash src/` 非 0 命中，§59.6 的 TD-038 应销项而不是新增。
+
+### 59.9 状态与下一步
+
+- **本轮零产品代码 / 零测试 / 零判定语义 / 零分数改动**。新增一个只读探针 `scripts/q2_gate_probe.py`（10 条判据全 PASS），文档 §59，计划书 §4.2 第 7 条，HANDOFF round-69 状态块，登记 TD-038。
+- **实测**：探针 `VERDICT=PASS checks=10 failed=0`、`RC=0`；五夹具分数序不变（`0/0/0.25/0.5/1.0`）；`--check` 与包字节 sha 待本轮收尾复核（见 §59.10）。
+- **待人拍板的仍是产品口径**：P1/P2/P3（§10 第 3 节）、由 §58.6② 引出的 P1(b) 措辞、§59.3 的 Q1 呈现候选、§59.4 的 D1（与 P2(b) 冲突）、§59.6 的 TD-038 处置方式。**不拍 = 维持现状 = 零改动。**
+- **下一步可做且不需拍板**：核证 Q3/Q4 之外尚未逐条对齐的文献（计划书 §三 相关工作、§八 风险），以及把 §59.5 的证据强度表补成「每条决策的现场演示脚本」——两者都不动产品口径。**Q4(d) 实现仍按 §51.7 不插队。**
+
+### 59.10 本轮收尾实测
+
+| 判据 | 命令 / 结果 |
+|---|---|
+| Q2/Q5 探针 | `python scripts/q2_gate_probe.py` → **`VERDICT=PASS checks=10 failed=0`**，`RC=0` |
+| 全量单测 | `pytest tests/ -q --basetemp=.pytest-tmp-r69` → **652 passed in 116.21s**，`RC=0`（用例数未变，未新增测试） |
+| 评审包一致性 | `review_packet.py --check` → **`OK (7974ca6f877d3e6a)`**，`RC=0`；NOTE 为「锚点落后 HEAD 6 个提交」，按既定口径不为对齐而重生成 |
+| 包字节指纹 | `sha256sum docs/review-packet.md` → `839eb4b66a954ba7` **未变** |
+| 五夹具分数序 | 未变：`0 / 0.25 / 0.5 / 1.0`（探针里 A 组即现状，见 §59.2 表） |
+| 计划书第 7 条 | `grep -n "分界判据是"` → 命中 `:108`；「顺序筛除降成本」仅命中 `:112` 的否定句 |
+| R4 空集防护 | `grep -n "全称命题不能对空集平凡为真"` → `assertion_evaluator.py:1255`（有执行者的 `if target_calls == 0: return unscored(...)`） |
+| `task_git_hash` | `grep -rn "task_git_hash" src/ tests/` → **0 命中**（仅 schema 两行），TD-038 成立 |
+| 仓内改动 | `git status --porcelain` = `M HANDOFF.md` / `M docs/review-response-v1.md` / `?? scripts/q2_gate_probe.py` |
+
+> 两条环境留痕：① `--basetemp` 产生的 `.pytest-tmp-r69/` **不入库**，用 `.git/info/exclude` 本地排除（不动 `.gitignore`、不加仓库改动）；② 本轮 pytest 全程未触碰既有临时目录，无批量删除行为。
+
+
 
 
 
