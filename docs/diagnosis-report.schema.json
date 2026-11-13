@@ -296,6 +296,7 @@
       }
     },
     "traceInvalidReason": {
+      "description": "status_error_without_http_status 为保留取值（reserved, no producer）：§28.6 D3 已拍板保留不产出，当前五夹具与七种变异均无生产者；允许值集合不等于必须产出集合。",
       "enum": [
         "not_reported",
         "call_index_not_sequential",

@@ -245,29 +245,62 @@ def _status_enum(requirements: dict | None, rid: str) -> list:
     return enum
 
 
+def call_sequence_problems(calls: list[dict], status_enum: list) -> list[tuple[int, str]]:
+    """调用序列可信度检查的**单一真相源**（TD-024 / round-65 Step B）。
+
+    返回 `(第几条, 问题码)` 列表，按上报顺序收集全部问题、不去重。
+    执行器用它生成人类可读原因，F1 派生器用它生成 schema 枚举内的原因码；
+    两边**只做输出格式映射**，规则不再各写一份。不排序、不重编号、不丢弃
+    可疑调用——任何不一致都判数据不可信，避免把「上报数据坏」记成能力不足。
+
+    Q12(a)：`status` 必须在 YAML 枚举内、`params` 必须是对象；少了这两项，
+    JMESPath 投影会静默丢弃畸形调用。
+    """
+    problems: list[tuple[int, str]] = []
+    for i, item in enumerate(calls, 1):
+        if not isinstance(item, dict):
+            problems.append((i, "item_not_object"))
+            continue
+        idx = item.get("call_index")
+        if idx is None:
+            problems.append((i, "call_index_missing"))
+        elif isinstance(idx, bool) or not isinstance(idx, int):
+            problems.append((i, "call_index_type_invalid"))
+        elif idx != i:
+            problems.append((i, "call_index_not_sequential"))
+        status = item.get("status")
+        if status is None:
+            problems.append((i, "status_missing"))
+        elif status not in status_enum:
+            problems.append((i, "status_invalid"))
+        if not isinstance(item.get("params"), dict):
+            problems.append((i, "params_type_invalid"))
+    return problems
+
+
 def _validate_calls(calls: list[dict], status_enum: list) -> str | None:
     """校验调用序列可信度；返回违规原因，None 表示可用。
 
-    不排序、不重编号、不丢弃可疑调用：任何不一致都判数据不可信。
-    Q12(a) 补两项：`status` 必须在 YAML 枚举内、`params` 必须是对象。
-    少了这两项，JMESPath 投影会静默丢弃畸形调用，把「上报数据坏」判成
-    「Agent 不会重试」（fail），污染掌握度与错误模式。
+    规则来自 `call_sequence_problems()`；这里只把**第一条**问题映射成人类可读消息，
+    不在此复刻规则（TD-024 Step B）。
     """
-    for i, item in enumerate(calls):
-        if not isinstance(item, dict):
-            return f"第 {i + 1} 条调用不是对象（{type(item).__name__}）"
-        idx = item.get("call_index")
-        if isinstance(idx, bool) or not isinstance(idx, int):
-            return f"第 {i + 1} 条调用缺 call_index 或类型非整数：{idx!r}"
-        if idx != i + 1:
-            return f"call_index 不连续或与上报顺序不符：第 {i + 1} 条为 {idx}"
-        if item.get("status") not in status_enum:
-            return (f"第 {i + 1} 条调用 status 非法：{item.get('status')!r}，"
-                    f"允许值 {list(status_enum)}")
-        if not isinstance(item.get("params"), dict):
-            return (f"第 {i + 1} 条调用 params 不是对象："
-                    f"{type(item.get('params')).__name__}")
-    return None
+    problems = call_sequence_problems(calls, status_enum)
+    if not problems:
+        return None
+    i, code = problems[0]
+    item = calls[i - 1]
+    if code == "item_not_object":
+        return f"第 {i} 条调用不是对象（{type(item).__name__}）"
+    idx = item.get("call_index")
+    if code in ("call_index_missing", "call_index_type_invalid"):
+        return f"第 {i} 条调用缺 call_index 或类型非整数：{idx!r}"
+    if code == "call_index_not_sequential":
+        return f"call_index 不连续或与上报顺序不符：第 {i} 条为 {idx}"
+    if code in ("status_missing", "status_invalid"):
+        return (f"第 {i} 条调用 status 非法：{item.get('status')!r}，"
+                f"允许值 {list(status_enum)}")
+    return (f"第 {i} 条调用 params 不是对象："
+            f"{type(item.get('params')).__name__}")
 
 
 def _judge(spec: dict, calls: list[dict], expr: str) -> tuple[bool, list[dict], int, int]:
@@ -1316,7 +1349,13 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
     probe = detection.get("probe")
     if not probe:
         raise EvaluatorError(f"{spec['id']}: 缺少 error_pattern_detection.probe")
-    offsets = jmespath.search(probe, {"calls": calls}) or []
+    projected_offsets = jmespath.search(probe, {"calls": calls}) or []
+    # TD-025：对象投影把缺 params.offset 的调用保留成 {"offset": null}，
+    # 原位还原成标量序列（不丢弃、不重排、不挪末尾）；旧标量 probe 仍兼容。
+    offsets = [
+        item.get("offset") if isinstance(item, dict) else item
+        for item in projected_offsets
+    ]
     statuses = [p.get("s") for p in projected]
     observed = {
         "offsets": offsets,

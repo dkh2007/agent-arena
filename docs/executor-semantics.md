@@ -14,6 +14,14 @@
 **禁止实现成**：两条调用在数组中必须相邻；或中间不得有任何其他调用——那会误伤合理的失败恢复路径
 （如 `offset=10 失败 → offset=5 补拉成功 → offset=10 重试成功`）。
 
+**条件必填的层归属（round-59，层错位改述）**：任务 YAML `trace_requirements.minimum.tool_calls.note`
+中「`http_status` 仅 `status=error` 必填」**由执行器层承担，不由结构层校验**：R3 的
+`_ambiguous_step()` 在「失败步 spec 声明了 `http_status`、候选调用缺该字段」时判
+`unscored / trace_invalid`；`_trace_audit_issues()` 不读条件必填，`audit.schema_valid`
+不因此变 false（§28.6 D2「仅执行器层，audit 不同步」）。注意 note 的条件式表述与执行器
+实际口径不等价：执行器按**失败步 spec 声明的字段**取输入，不按 `status=error` 做全量
+条件必填。`error` / `result_summary` 的条件声明当前无消费者，登记 TD-026、保留不删。
+
 ## 2. trace_param_schema_valid 的校验范围（R4）
 
 `check_schema: true` 的语义**同时覆盖四项**，缺一即该次调用违规（叠加 `mode: all_calls_must_be_valid`）：
@@ -52,8 +60,9 @@
 不再声明 `agent_id.required`，避免留下没有执行者的声明。
 
 同理，R4 的参数 schema 违规属于任务语义，不进 `invalid_reasons`；平台若将来要加
-时间戳单调性 / `status=error` 条件必填等更严规则，须先写进 `trace_requirements`
-并同步两处实现，否则 R1 严格对账会误伤合法提交（TD-024）。
+时间戳单调性 / `status=error` 条件必填等更严规则，须先写进 `trace_requirements`，
+由 `call_sequence_problems()` 单一内核供执行器与 F1 派生器共用（TD-024 已部分收敛，
+§55），否则 R1 严格对账会误伤合法提交。
 
 ---
 

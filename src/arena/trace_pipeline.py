@@ -14,7 +14,7 @@
 - **S3-3-6 起五条全现算**：`recompute_all()` 是主链路，`run_fixture()` 只走它。
   spec / trace 约束 / 工具声明全部从**传入的 task** 派生，不回落到默认 YAML。
 - **`recompute_r3()` 是 S3-2 的兼容入口**，只现算 R3，供 71 条历史锁继续调用；
-  它不在主链路上，**不经过 F1 派生对账**（已知旁路，登记 TD-024，本步不收敛）。
+  它不在主链路上，**不经过 F1 派生对账**（TD-024 剩余旁路，§55 下一小步收敛）。
 - **不改写夹具**：本模块返回深拷贝。夹具里手写 `assertion_results` 作为 S2 历史基线
   **保留在磁盘上但不再被读**，供一致性锁比对（§20.2 第 3 项）。
 - **不改 build_report 的语义**：trace 强制改写、依赖折叠、两段式计分仍归它管。
@@ -76,11 +76,23 @@ _REASON_MISSING = "missing_required_field"
 _REASON_TYPE = "field_type_invalid"
 
 
+_AUDIT_REASON_BY_CODE = {
+    "item_not_object": _REASON_TYPE,
+    "call_index_missing": _REASON_MISSING,
+    "call_index_type_invalid": _REASON_TYPE,
+    "call_index_not_sequential": "call_index_not_sequential",
+    "status_missing": _REASON_MISSING,
+    "status_invalid": _REASON_TYPE,
+    "params_type_invalid": _REASON_TYPE,
+}
+
+
 def _trace_audit_issues(trace: dict, requirements: dict) -> list[str]:
     """只检查 trace_requirements.minimum 已声明的结构规则，返回 schema 枚举内的原因码。
 
-    与 `_validate_calls()` 是两处独立实现（已知实现债 TD-024），本步不扩散到执行器，
-    避免同时改判定语义。语义 `trace_invalid` 有意不计入。
+    调用序列规则来自 `ae.call_sequence_problems()`（TD-024 / round-65 Step B）；
+    这里只把问题码映射成 schema 枚举内的原因码，不另写一份规则。
+    语义 `trace_invalid` 有意不计入（§4 分层纪律）。
     """
     calls_req = requirements.get("tool_calls") or {}
     status_enum = calls_req.get("status_enum")
@@ -94,24 +106,8 @@ def _trace_audit_issues(trace: dict, requirements: dict) -> list[str]:
     elif not isinstance(calls, list):
         reasons.append(_REASON_TYPE)
     else:
-        for i, item in enumerate(calls, 1):
-            if not isinstance(item, dict):
-                reasons.append(_REASON_TYPE)
-                continue
-            idx = item.get("call_index")
-            if idx is None:
-                reasons.append(_REASON_MISSING)
-            elif isinstance(idx, bool) or not isinstance(idx, int):
-                reasons.append(_REASON_TYPE)
-            elif idx != i:
-                reasons.append("call_index_not_sequential")
-            status = item.get("status")
-            if status is None:
-                reasons.append(_REASON_MISSING)
-            elif status not in status_enum:
-                reasons.append(_REASON_TYPE)
-            if not isinstance(item.get("params"), dict):
-                reasons.append(_REASON_TYPE)
+        for _, code in ae.call_sequence_problems(calls, status_enum):
+            reasons.append(_AUDIT_REASON_BY_CODE[code])
 
     final_req = requirements.get("final_status") or {}
     final = trace.get("final_status")
@@ -162,17 +158,16 @@ def _refuse_audit_conflict(supplied: dict, derived: dict) -> None:
         )
 
 
-def recompute_r3(raw: dict, spec: dict | None = None, vocab: set[str] | None = None) -> dict:
-    """返回 raw 的深拷贝，其中 R3 断言结果由 `raw.trace.tool_calls` 现算。"""
-    if spec is None:
-        spec = ae.load_r3_spec()
+def _check_raw_consistency(raw: dict) -> dict | None:
+    """T11：两个入口共用的真相源冲突检查，返回 `raw.trace`（可能为 None）。
 
-    out = copy.deepcopy(raw)
-    audit = out.get("trace_audit")
+    TD-024（round-65 Step A）：此前 `recompute_r3()` / `recompute_all()` 各写一份，
+    未来会漂移；合并为单一实现，规则与报错文本逐字不变。
+    """
+    audit = raw.get("trace_audit")
     if not isinstance(audit, dict):
         raise PipelineError("raw 缺 trace_audit：无法判断 trace 是否上报")
-
-    trace = out.get("trace", _MISSING)
+    trace = raw.get("trace", _MISSING)
     if trace is _MISSING:
         raise PipelineError("raw 缺 trace 字段：无法区分「未上报」与「字段漏写」")
     if trace is not None and not isinstance(trace, dict):
@@ -182,6 +177,16 @@ def recompute_r3(raw: dict, spec: dict | None = None, vocab: set[str] | None = N
             f"trace 与 trace_audit.reported 冲突（trace={'有' if trace is not None else '无'}, "
             f"reported={audit.get('reported')!r}）：两个真相源打架，拒绝组装"
         )
+    return trace
+
+
+def recompute_r3(raw: dict, spec: dict | None = None, vocab: set[str] | None = None) -> dict:
+    """返回 raw 的深拷贝，其中 R3 断言结果由 `raw.trace.tool_calls` 现算。"""
+    if spec is None:
+        spec = ae.load_r3_spec()
+
+    out = copy.deepcopy(raw)
+    trace = _check_raw_consistency(out)
 
     results = out.get("assertion_results")
     if not isinstance(results, list):
@@ -212,21 +217,9 @@ def recompute_all(raw: dict, task: dict | None = None,
     vocab_set = vocab if vocab is not None else dr.load_vocabulary()
 
     out = copy.deepcopy(raw)
-    # 与 recompute_r3 同一套入口防御（T11：真相源冲突在 pipeline 入口拒绝）。
-    # 两个入口历史并存，此处不抽私有函数，避免动到 S3-2 的 71 条锁。
-    audit = out.get("trace_audit")
-    if not isinstance(audit, dict):
-        raise PipelineError("raw 缺 trace_audit：无法判断 trace 是否上报")
-    trace = out.get("trace", _MISSING)
-    if trace is _MISSING:
-        raise PipelineError("raw 缺 trace 字段：无法区分「未上报」与「字段漏写」")
-    if trace is not None and not isinstance(trace, dict):
-        raise PipelineError(f"raw.trace 类型非法：{type(trace).__name__}")
-    if bool(audit.get("reported")) != (trace is not None):
-        raise PipelineError(
-            f"trace 与 trace_audit.reported 冲突（trace={'有' if trace is not None else '无'}, "
-            f"reported={audit.get('reported')!r}）：两个真相源打架，拒绝组装"
-        )
+    # T11 真相源冲突检查：两个入口共用一份实现（TD-024 Step A）。
+    trace = _check_raw_consistency(out)
+    audit = out["trace_audit"]
 
     handwritten = out.get("assertion_results")
     if not isinstance(handwritten, list):
@@ -240,7 +233,7 @@ def recompute_all(raw: dict, task: dict | None = None,
         )
 
     # F1：trace_audit 改为派生值。手写声明只用于对账，对不上就在入口拒绝。
-    # 兼容入口 recompute_r3() 不经过这里（已知旁路 TD-024，本步不收敛）。
+    # 兼容入口 recompute_r3() 不经过这里（TD-024 剩余旁路，§55 下一小步收敛）。
     if not isinstance(requirements, dict):
         raise PipelineError("任务缺 trace_requirements.minimum，无法派生 trace_audit")
     derived = _derive_trace_audit(trace, requirements)

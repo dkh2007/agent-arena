@@ -5174,3 +5174,448 @@ $py = "$env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.e
 D5/D6 → Q4(d) 不变；`builder` 引用评分策略常量仍建议暂不做（§40.6）。
 D5/D6 开工前先按 §28.6 出**只读决策包**（尤其 D6 的 TD-024 与分数变化），不与工具链改动混步。
 
+---
+
+## 52. round-59：六条拍板落仓、批次 A 决策与文档层收口（2026-11-13）
+
+### 52.1 授权与我方决定
+
+人回「这个只是外部建议，但你现在必须马上做出决定，尽快进行下一步」，并逐条给出 6 项裁断。
+**我方决定**：开 **批次 A：决策与文档层收口**，把 6 条拍板一次落仓；范围严格限定为
+**零产品代码、零新增测试、零判定语义改动、不动 `_snapshot()` 覆盖量**。
+D5/D6 **实现**仍按 §51.7 顺序，留到下一批次，本轮不动判定代码。
+
+不这么切的硬理由：`_pytest_count()` 把 `pytest tests/ --collect-only` 的用例数写进
+`_snapshot()`（§51.3），只要加一条正向锁就必然让 `--check` `STALE`、须重生成评审包，
+与本次拍板第 6 条「预期 `--check` 仍 OK」直接冲突。故本轮**只能**做不进快照的文档层改动。
+
+### 52.2 六条拍板逐条落仓
+
+| # | 人的裁断 | 落仓动作 | 状态 |
+|---|---|---|---|
+| 1 | Q4(d) 移入 A 线，但**交付物是决策包不是代码**；只提前决策时点，**不改 §51.7「D5/D6 → Q4(d)」实现顺序** | 新增 `docs/decision-packet-q4d.md`（A 线决策输入，明确「不授权改代码」「实现顺序不变」）；§51.7 原文**不回改** | 已落 |
+| 2 | 附 B「判 0」是文本选择：**分数语境只需补「不计掌握度」半句**；能力语境才须改写为 `unscored`（仓库已有 `:108-112`、`:32` 两处同类订正） | `../项目计划书草稿-v0.4.md:270` 保留「采纳」历史正文，追加补注「此处『判 0』仅指分数贡献为 0，不计入掌握度、不产出错误模式」 | 已落 |
+| 3 | `http_status` 定 **格 2（层错位）→ 改述 / 移位置，不删**；**不要补结构层**（会推翻 D2「仅执行器层」） | `tasks/dbg-001-order-report.yaml` note 改述并点明执行层；`docs/executor-semantics.md` §1 补「条件必填的层归属」作为移位置落点；**未**在 `_trace_audit_issues()` 或结构层加任何校验 | 已落 |
+| 4 | `error` / `result_summary` **保留声明** + note 内标 **TD-026**（已登记，不新开）；夹具形状测试 `:60-70` 只校验自家样例，**不算执行者** | note 内明写「待实现声明，登记 TD-026，当前无消费者」，声明不删、TD 不新开 | 已落 |
+| 5 | **批次化可接受**；§4.4 已补每步 `--collect-only` 计数增量与 **node id 集合 diff**；**语义 pytest 不能后移** | 写成 §52.4 的放行契约（本轮只落契约、不触发） | 已落 |
+| 6 | 枚举 description 标 `reserved` 可采纳；包不嵌 schema，预期 `--check` 仍 OK | `docs/diagnosis-report.schema.json` `$defs.traceInvalidReason` 加 `description`（**不改 enum 数组**）；实跑 `--check` 验证 | 已落并验证 |
+
+### 52.3 分歧留痕（按 §1428 不回改历史正文）
+
+- round-58 我方曾据 `_ambiguous_step()`（`assertion_evaluator.py:292-316`）收窄：执行器查的是
+  「失败步 spec 声明的字段缺失」，不是 note 声称的「`status=error` ⇒ 必填」，故主张落**格 3**。
+- **人拍板格 2**，依据 D2 已拍「仅执行器层，audit 不同步」：不补结构层是硬约束。
+- 本轮按格 2 执行（改述 / 移位置、不删），同时在 `executor-semantics.md` §1 **如实写明**
+  「note 的条件式表述与执行器实际口径不等价：执行器按失败步 spec 声明的字段取输入，
+  不按 `status=error` 做全量条件必填」——定性归人，技术事实不因定性而改写。
+- `tests/test_task_yaml.py:60-70` 只校验 rubric `expected` 结构与依赖类型；
+  `:130` 的 `item_fields` 断言只核 YAML 声明完整性，均非条件必填规则的消费者。
+
+### 52.4 批次 A 放行契约（供下一批次 D5/D6 使用，本轮不触发）
+
+1. 每步记录 `pytest tests/ -q --collect-only` 的**计数增量**（期望 +n，+0 即查同名覆盖）。
+2. 每步另存 **node id 集合 diff**：只数条数挡不住「同名覆盖 + 另加一条」的抵消（回件 §4.2 反例），
+   集合 diff 能直接看出被替换的 node id。这是对回件 §4.4 第 1 条的加强。
+3. **语义 pytest 不能后移**：每步各自跑针对性 pytest + 字节级变异 + `git diff`，
+   `--check` 只作**批次末**的一次性检查点，不替代逐步语义验收。
+4. 改到 `_snapshot()` 覆盖量（用例数 / 五夹具分数 `0/0/0.25/0.5/1.0` / 锚点 / 任务结构）
+   的步骤**不并入批次**，单独重生成评审包。
+5. 批次末 `--check OK`，并在提交说明里列出每步计数增量与 node id 集合 diff。
+6. 「每步独立可验证」的正式定义取「**语义可独立验证、包按批次**」（回件 §4.5 第 3 条）；
+   若定义为「每步 `--check OK`」，批次化按定义失效，不得启用。
+
+### 52.5 改前核证（决定能不能零重生成落地）
+
+| 核证项 | 结果 |
+|---|---|
+| `_task_struct()`（`review_packet.py:200-247`） | 只输出 task_id / 断言数 / 计分式 / rubric 层 id·type·weight·skill_id 数量，**不读 `trace_requirements`、不读 `note`** |
+| `build()` / `check()`（`:317-425`） | 内容段为快照 / 五夹具分数 / 任务结构 / 环境 / 单测行重放，**不含 `diagnosis-report.schema.json` 内容** |
+| 结论 | 改 YAML note 与 schema `description` 均**不进内容指纹** ⇒ 无需重生成评审包 |
+| `:32` 同类订正 | `on_timeout` 注记「R3 无证据 → unscored（不是判 0）」，与附 B 补注同口径 |
+| `:108-112` 同类订正 | 明写「判 0 与 unscored 的**分数**贡献相同，真正区别在**归因**」⇒ 附 B 属分数语境，补半句即可 |
+
+### 52.6 落仓清单
+
+| 文件 | 改动 |
+|---|---|
+| `docs/review-response-v1.md` | 追加 §52 |
+| `HANDOFF.md` | 索引 round-59 行 + 状态块最新状态 |
+| `docs/decision-packet-q4d.md` | **新建**：Q4(d) A 线决策包 |
+| `../项目计划书草稿-v0.4.md` | `:270` 补注（仓外交付物，人明确授权） |
+| `tasks/dbg-001-order-report.yaml` | `:126` note 改述 + 2 行注释 |
+| `docs/executor-semantics.md` | §1 补「条件必填的层归属」 |
+| `docs/diagnosis-report.schema.json` | `$defs.traceInvalidReason` 加 `description`，**enum 不变** |
+
+### 52.7 实测验证（本轮，改后）
+
+| 判据 | 结果 |
+|---|---|
+| `python -m json.tool docs/diagnosis-report.schema.json` | `RC=0` |
+| YAML `safe_load` + `task_id` | `YAML_OK dbg-001-order-report`，`RC=0` |
+| `pytest tests/test_task_yaml.py -q` | **23 passed** |
+| `pytest tests/test_trace_pipeline.py -q -k f3_td018` | **16 passed, 154 deselected** |
+| `review_packet.py --check` | **`OK (7974ca6f877d3e6a)`** + 锚点落后 4 提交 NOTE（设计行为，不阻塞） |
+| 评审包字节 sha | `839eb4b66a954ba7`，**未变** |
+| 全量 `pytest tests/ -q` | 见 §52.9 收尾复核 |
+| 匿名扫描 / `git status` | 见 §52.9 收尾复核 |
+
+### 52.8 状态与下一步
+
+- **Q4(d) 决策时点已提前，实现顺序未动**：§51.7「D5/D6 → Q4(d)」仍为现役顺序；
+  `docs/decision-packet-q4d.md` 待人拍 (a)/(b)/(c)，拍板结论另起新轮记录后才进入实现。
+- **TD 状态**：TD-026 维持「已登记、未实现」，声明保留；TD-024 / TD-025 / TD-030 / TD-031 一律不变。
+- **D5/D6 实现**：下一批次，按 §52.4 契约执行；开工前仍按 §28.6 出只读决策包。
+- `builder` 引用评分策略常量仍建议暂不做（§40.6）。
+- 本轮**不提外评**：依据全在仓内，6 项均为人已拍板的文本 / 契约选择，外评替代不了人拍板。
+
+### 52.9 收尾复核（本机实测，2026-11-13）
+
+| 判据 | 结果 |
+|---|---|
+| `pytest tests/ -q` | **652 passed in 71.07s**，`RC=0` |
+| `review_packet.py --check` | **`OK (7974ca6f877d3e6a)`**，`RC=0`；NOTE 锚点落后 4 提交（设计行为，不阻塞） |
+| `scripts/push_gate.py --self-test --dirty c830b1b` | `SELF_TEST_PASS=True`：正向 HEAD `CLEAN`、负向 `BLOCKED hits=2`、空范围不假绿 |
+| 评审包字节 sha | `839eb4b66a954ba7`，**未变**（未重生成，符合 §51 与「不为对齐 HEAD 重生成」） |
+| 匿名扫描（本轮 6 个改动 / 新建文件） | 真名 / 校名 / 昵称 / 本机绝对路径 / 凭据形态 **0 命中** |
+| `git status --porcelain` | 5 项 `M` + 1 项 `??`（`docs/decision-packet-q4d.md`），与 §52.6 清单一一对应 |
+| `git diff --stat` | 5 文件 `113 insertions(+), 1 deletion(-)`；新建决策包未计入 diff stat |
+| 行尾 | `core.autocrlf=true` 的 LF→CRLF 警告为历史已知行为（§48 / §51 实证不影响指纹），本轮 `--check` 与包字节 sha 均未变 |
+
+**本轮零 git 写操作**（未 commit / 未 push）；提交与 push 归人拍板。仓外日志追加 round-59。
+
+---
+
+## 53. round-61：Q4(d) 人给出新口径 —— 题目分类前置（决策记录，零代码）
+
+### 53.1 人类拍板口径（原文照录，产品意向，不改写）
+
+> 需要步骤的题：提交时必须有过程/思路；没有步骤就卡住，提示"请补步骤或写'没思路'"。
+> 写了"不会/没思路"也算交了步骤，不算能力失败。
+> 不需要步骤的题：只交答案即可，不强制步骤，也不因为没调工具而拦。
+> 缺步骤只算流程不完整：本次不打分、不记缺点、不拉低能力评估，可以留中性提醒，下次复习提示。
+> 别把"步骤"等同于"工具调用"：要求的是留下证据，不是必须调某个工具。
+> 这样你就把题目分成两类，门槛只加在明确要求过程的题上；零工具调用仍然按"归因不明"处理，不冤枉人。
+
+### 53.2 本机核证（只读，2026-11-13；事实挂路径，不以自评代替）
+
+| 口径 | 仓内现状（可复核） | 判定 |
+|---|---|---|
+| 不打分 / 不记缺点 / 不拉低能力评估 | `docs/review-packet.md:46` 决策 7「`blocked`/`unscored` 一律不计入掌握度、不产出错误模式」；`src/arena/assertion_evaluator.py:100-121`「未上报 trace → `unscored`（不判 0、不归因）」 | **现成支持** |
+| 不因没调工具而拦 | `tasks/dbg-001-order-report.yaml:144` `on_unscored: do_not_disqualify`；`src/arena/diagnosis_report.py:38,102,329` 常量与提示文本 | **现成支持** |
+| 零工具调用按「归因不明」 | `docs/executor-semantics.md:88-93`：`target_calls == 0` → `unscored / trace_invalid`，不计掌握度、不产错误模式（TD-030 语义借码） | **现成支持**，与决策包 (a) 同义，零改动 |
+| 可留中性提醒 | 决策 7 禁止 `error_patterns`；提醒须落在**不计掌握度**的观测字段 | **新落点**，见 §53.4 约束 2 |
+| 题目分成两类 | `grep -rn 'require_process\|require_steps\|步骤要求' tasks/ src/` **0 命中**；`tasks/dbg-001-order-report.yaml:114` 的 `trace_requirements` 是 **trace 数据结构约束**，不是题目分类维度 | **新契约**，仓内无此维度 |
+| 步骤 ≠ 工具调用 | `docs/review-packet.md:43`「`credit` = 结果正确 2 + 过程证据 1 + 无参数幻觉 1，分母恒为 4」；该「过程证据」由 `trace_*` 断言构成（YAML `:193 / :205 / :229 / :262`），**全部绑定工具调用记录** | **与现行实现冲突**，须新增「步骤」独立落点 |
+
+复核命令（仓库根，相对路径）：
+
+```bash
+grep -n 'on_unscored\|do_not_disqualify' tasks/dbg-001-order-report.yaml src/arena/diagnosis_report.py
+grep -n 'target_calls == 0' docs/executor-semantics.md
+grep -rn 'require_process\|require_steps' tasks/ src/          # 应为 0 命中
+grep -n '过程证据' docs/review-packet.md
+python src/arena/review_packet.py --check
+```
+
+### 53.3 口径定性：不是 (a)/(b)/(c)，是把判定前置到提交环节
+
+- 原三选一争的是「**没证据怎么算**」；本口径先按题目类型决定「**要不要收这份卷**」，让「缺证据」在明确要求过程的题上根本不进评审，从判卷问题变成收卷问题。
+- 对**零工具调用**：仍是 (a)「归因不明、不冤枉人」，判定代码不改、TD-030 语义借码维持。
+- 对**缺步骤**：新增「流程不完整」口径；不计掌握度、不产错误模式、可留中性提醒 ⇒ 与决策 7 相容，但需明确字段落点。
+- `docs/decision-packet-q4d.md` **保留作过程记录，不再作为待拍板清单**；其 §8 三问由本轮关闭。历史正文不回改。
+
+### 53.4 实现期约束（登记，本轮不实现）
+
+1. 「写了『没思路』也算交了步骤」⇒ 门槛只拦「忘写」，**拦不住「故意跳过」**。这是人已拍板的产品意向，不宣称防作弊。`docs/review-packet.md:113` 的 P3 / R6「trace 为空但结果全对 → 判异常」未来若落地，**只能标异常，不得变成拦截或记缺点**，否则与「不需要步骤的题不拦」冲突。
+2. 「中性提醒」**不得写入 `error_patterns` / `skill_gaps`**；一旦进入即实质等同 (b)，推翻本轮口径。
+3. **AI 拟定的实现层默认（假设，待实现轮核证）**：「流程不完整」作为**展示文案**，底层状态复用 `unscored`，**不新增第五态**——新增状态会动 DTO 四态与 `credit` 分母（恒为 4），并牵动现役评审包。此为技术实现选择，不属产品口径。
+4. 五夹具分数 `0 / 0 / 0.25 / 0.5 / 1.0` 为硬锁，任何实现不得改变。
+5. 新增题目分类维度属新契约：若改 `rubric_*` 结构或新增测试，`_task_struct()` / `_pytest_count()` 变化会让评审包 `STALE` 并须重生成。本轮只落文档，不触发。
+6. **实现顺序不变**：§51.7 仍是 `D5/D6 → Q4(d)`；本轮只关闭决策，不含实现授权。
+
+### 53.5 本轮边界与验证
+
+- 零产品代码、零新增测试、零判定语义改动；只追加决策记录与交接索引。
+- 十分钟验证：`python src/arena/review_packet.py --check` 应仍 `OK (7974ca6f877d3e6a)`、包字节 sha `839eb4b66a954ba7` 未变；全量 `pytest tests/ -q` 应仍 652 passed。
+- 依据全在仓内 + 产品意向由人给出 ⇒ **本轮不提外评**。
+- 本轮零 git 写操作（未 commit / 未 push）；提交与 push 归人拍板。仓外日志追加 round-61。
+
+---
+
+## 54. round-64：D5 落地 —— 投影原位保 null（人授权 AI 直接决策与实施）
+
+### 54.1 授权、外评判据与边界
+
+- 人明确授权：「这里你可以直接决策，不用我过目」，并允许按需开外部评测后直接动手。
+- **本轮不开外评（判据给出）**：本改动对 `state` / `error_patterns` / 五夹具分数**零影响**——分类谓词遇 `null` 不匹配 → 落 `default`，与现状「序列被改短同样不匹配 → `default`」同构；`_ambiguous_step()` 不改动。`docs/diagnosis-report.schema.json:222` 明写 `observed`「任意类型，可 null」。产品口径已由 round-61 / 62 / 63 定死（原位保 null、不打分、不记缺点、不冤枉人）。本地裁判（全量 pytest、五夹具分数、字节级变异、`--check`、闸门）全覆盖，不属语义 / 契约盲区 ⇒ 按「纯落地步不提」不发起。
+- **反证条件**：实施中若出现任一 `state` / `error_patterns` / 夹具分数变化，说明存在未预料的外溢 ⇒ 立即停手、主动发起外评。
+- 提交与 push 仍归人拍板；本轮只落工作区改动。
+
+### 54.2 本机核证（只读，事实挂路径）
+
+| 项 | 位置 | 结论 |
+|---|---|---|
+| R3 分类 probe（标量投影，吞 null） | `tasks/dbg-001-order-report.yaml:245` | **要改** |
+| R4 参数校验 probe（已是对象投影） | `tasks/dbg-001-order-report.yaml:274` | 不动 |
+| `offsets` 唯一消费点 | `src/arena/assertion_evaluator.py:1319` → `:1322`（evidence）/ `:1359`（分类 ctx） | **要加原位还原** |
+| 分类谓词 | `:380-383`（`offsets_equals` / `offsets_starts_with` 前缀比对） | 不改，遇 null 自然不匹配 |
+| 证据形状约束 | `docs/diagnosis-report.schema.json:222` | 允许 null |
+| 评审包生成 | `src/arena/review_packet.py:317-342` 只填 4 段；`_snapshot()` `:153-168` 现场 collect 计数；`_task_struct()` `:220-247` **不输出 probe** | **只要不新增测试用例且分数不变，`--check` 仍 OK，无需重生成** |
+
+### 54.3 AI 拍板（实现层，不属产品口径）
+
+**方案：YAML probe 改「保 null 的对象投影」；执行器把对象序列原位还原成含 `None` 的标量序列。**
+
+- 不改谓词、不改 `_ambiguous_step()`、不改 DTO 四态、不改 `credit` 分母、不新增第五态。
+- `null` **留在第 n 位**（round-63 契约：位置＝第 n 次调用；不挪末尾、不反转、不补值）。
+- **不新增测试用例**：现有测试改期望值并同时锁住 `state` / `error_patterns` / `ratio` 不变。理由：新增用例让 `_pytest_count()` +1 → 评审包 `STALE` → 锚点后移、历史各轮指纹过期；本改动不必付该代价。
+- 五夹具分数 `0 / 0 / 0.25 / 0.5 / 1.0` 硬锁不变。
+- 反证条件：若变异实证不能报红（正向锁强度不足），改为加专用正向锁并接受重生成代价。
+
+### 54.4 实施步骤（写→验→报）
+
+1. `tasks/dbg-001-order-report.yaml:245` probe → 对象投影。
+2. `src/arena/assertion_evaluator.py:1319` 原位还原（兼容旧标量 probe）。
+3. 跑 `pytest tests/ -q`，按实际结果逐个更新现有测试期望，不得手填猜测值。
+4. 字节级变异实证：临时把还原改回丢弃 null，针对性测试须报红；恢复后再绿。
+5. 收尾：全量 pytest、`--fixture all`、`--check`、包 sha、闸门自检、匿名扫描、`git status`。
+
+### 54.5 十分钟验证（可复核）
+
+```bash
+python -m pytest tests/test_trace_pipeline.py -q -k f3_td018
+python src/arena/diagnosis_report.py --fixture all
+python src/arena/review_packet.py --check
+```
+
+### 54.6 本轮实测（2026-11-13，本机可复核）
+
+| 判据 | 结果 |
+|---|---|
+| YAML `safe_load` | `YAML_OK dbg-001-order-report`，`RC=0` |
+| 改动后首轮 `pytest tests/ -q --tb=short` | **3 failed, 649 passed**；三条全为 `observed.offsets` 期望值，无 `state` / `error_patterns` / `ratio` 变化 |
+| `--fixture all` | `0.0000 / 0.2500 / 0.0000 / 0.5000 / 1.0000`，**五夹具分数一分未变** |
+| 三条期望值（按实测值改，非猜测） | `[]` → `[None, None, None, None]`；`[0, 10, 20]` → `[0, None, 10, 20]`；`[10, 10, 20]` → `[None, 10, 10, 20]` |
+| 改后 `-k f3_td018` | **16 passed, 154 deselected** |
+| 改后 `pytest tests/ -q` | **652 passed in 86.55s**，`RC=0` |
+| `review_packet.py --check` | **`OK (7974ca6f877d3e6a)`**，`RC=0`；NOTE 锚点落后 4 提交（设计行为，不阻塞） |
+| 评审包字节 sha | `839eb4b66a954ba7`，**未变**；`--collect-only` 仍 **652 tests collected** ⇒ **未重生成、锚点未后移、历史指纹未过期** |
+| 字节级变异（还原改回丢弃 null） | **3 failed, 13 passed**；报错显示的旧值正是 `[]` / `[0,10,20]` / `[10,10,20]` ⇒ 三条断言同时锁住「丢弃 null」 |
+| 恢复后 | `16 passed` / `--check OK` / 包 sha 未变 / `652 tests collected` |
+| `push_gate.py --self-test --dirty c830b1b` | `SELF_TEST_PASS=True`：正向 HEAD `CLEAN`、负向 `BLOCKED hits=2`、空范围不假绿 |
+
+**纠错留痕**：round-63 答复与图示把「空格」画在**第 3 位**，实测是**第 2 位**——`_f3_partial_hallucinated()` 改的是 `offset=10 && status=error` 那条（第 2 次调用），投影结果为 `[0, None, 10, 20]`。结论「位置＝第 n 次调用、不能挪动 / 反转」不变，但当时那个具体示例失真；按「历史正文不回改」在此订正留痕，round-63 对话与仓外图不回改。
+
+### 54.7 收尾复核
+
+- 匿名扫描（本轮 4 个改动文件）：真名 / 校名 / 昵称 / 本机绝对路径 / 凭据形态 **0 命中**。
+- `git status --porcelain`：7 项 `M` + 1 项 `??`（含 round-59 / round-61 既有未提交改动），HEAD 仍 `0ca8492`。
+- `git diff --stat`：7 文件 `275 insertions(+), 12 deletions(-)`；新建决策包未计入 diff stat。
+- 行尾 `core.autocrlf=true` 的 LF→CRLF 警告为历史已知行为（§48 / §51），本轮 `--check` 与包字节 sha 均未变。
+
+### 54.8 状态与下一步
+
+- **TD-025 销项**（D5 落地）。实现顺序 §51.7 不变：`D5 → D6 → Q4(d)`，故下一步为 **D6**（TD-026 + TD-024，牵动 B1 `0.75 → 0.5` 分数变化，须单独拆步）。
+- TD-026 / 027 / 030 / 031 一律不变；Q4(d) 口径依 §53，实现顺序不插队。
+- `builder` 引用评分策略常量仍建议暂不做（§40.6）。
+- **本轮零 git 写操作**（未 commit / 未 push）；提交与 push 归人拍板。仓外日志追加 round-64。
+
+> **订正注（round-66，外评回件 §2.1）**：本节「下一步为 D6（TD-026 + TD-024，牵动 B1 `0.75 → 0.5` 分数变化）」按 §28.6 的**旧定义**书写；round-59 人裁断已否决「补结构层」，§53.4 又把五夹具分数锁死。D6 的实际范围以 **§55 / §56** 为准：本轮只完成 **D6 的 TD-024 部分（零行为收敛）**；TD-026 保持「已登记、未实现」，结构层是**暂缓**不是取消。原文按「历史正文不回改」保留，此注用于防止下一批次按旧定义入场。
+
+---
+
+## 55. round-65：D6 范围冲突收口 + TD-024 实现债收敛（人授权 AI 直接决策与实施）
+
+### 55.1 授权与冲突核证（只读，事实挂路径）
+
+人授权：「这里你可以直接决策，不用我过目」「如果你想开外部评测的话，可以开一个然后直接动手」。
+
+开工核证发现 **D6 的原始定义已被后续拍板否决**，照字面执行会自相矛盾：
+
+| 来源 | 原文口径 | 冲突方向 |
+|---|---|---|
+| §28.6 D6（round-27 拍板） | 「单开『YAML 条件必填 + **结构层**』步骤…须同时解决 TD-024 并**接受分数变化**」；附录 B 实测 B1 `0.75 → 0.5` | 要求补结构层 + 改分数 |
+| §28.6 D2（同一轮拍板） | 「**仅执行器层，audit 不同步**」，同步会把 B1 `0.75 → 0.5` 且连带 R4/R5 `unscored` | 同轮内部即互斥 |
+| round-59 人裁断第 3 条 | `http_status` 定**格 2（层错位）→ 改述/移位置，不删；不要补结构层——那会推翻 D2 已拍的「仅执行器层」** | **明确否决结构层** |
+| round-59 人裁断第 4 条 | `error` / `result_summary` **保留声明 + note 内标 TD-026（已登记，不新开）**；夹具形状测试不算执行者 | TD-026 定位为「待实现声明」，非本轮实现项 |
+| `tasks/dbg-001-order-report.yaml:126`（round-59 已落） | note 明写「由 R3 执行器按失败步所需字段判定，**结构层不校验**」「待实现声明，登记 TD-026，**当前无消费者**」 | 磁盘现状与旧 D6 定义相反 |
+| §53.4 第 4 条 | 五夹具分数 `0 / 0 / 0.25 / 0.5 / 1.0` **硬锁**，任何实现不得改变 | 分数变更被禁止 |
+| 现行测试 | `test_f3_td018_audit_stays_structural_for_conditional_required()` 锁 `schema_valid=True` / `invalid_reasons=[]`；`test_f3_td018_missing_and_wrong_http_status_are_distinguishable()` 锁 B1=B2=`0.75` 且归因可区分；`test_f3_td018_schema_reason_code_stays_reserved()` 锁专用码无生产者 | 补结构层必红 ≥3 条核心锁 |
+| `docs/executor-semantics.md` §4 | 「派生 `schema_valid` 时不得扫描断言结果里的 `trace_invalid`」 | 分层纪律 |
+
+**结论（可判定）**：按「后拍板覆盖先拍板」，D6 的「条件必填 + 结构层 + 分数变化」一半已被人明确否决；若执行将同时推翻 D2、round-59 裁断、§53.4 硬锁与 3 条 F3 核心锁。
+
+### 55.2 外评判据（本轮**开**，但不停手）
+
+- **开的理由**：「两次人拍板冲突时 D6 该按哪个版本执行」属**契约 / 判据歧义**，本地裁判（pytest / 变异 / `--check` / 闸门）只能证明「按旧定义会红」，不能裁决优先级 ⇒ 符合「本地裁判覆盖不到的语义 / 契约盲区」。
+- **不等回件**：冲突的技术后果已由磁盘现状与测试锁钉死，无争议部分可立即推进；外评回件按「核证 → 登记 → 处置 → 落仓 → 人拍板」处理，不阻塞本批次。
+- **反证条件**：若回件给出「旧 D6 定义仍应执行」的可判定理由，或本批次实测出现任一 `state` / `error_patterns` / 五夹具分数变化 ⇒ 立即停手重评。
+- 委托包：`peer-brief-round65-d6.md`（仓外，自包含，含可直接复制的白话提问）。
+
+### 55.3 AI 拍板（实现层，不属产品口径；产品口径已由人给定）
+
+**D6 缩范围＝「契约收口 + TD-024 实现债收敛（零判定语义变化）」**：
+
+| 做 | 不做（挂依据） |
+|---|---|
+| TD-024 两处重复规则统一到**单一规则内核**，执行器与 F1 派生器各自映射输出格式 | 结构层条件必填校验（round-59 第 3 条） |
+| `recompute_r3` / `recompute_all` 两入口防御抽成共享函数 | `schema_valid=false` / `invalid_reasons` 新增码（D2 / §4） |
+| 过时注释与状态同步 | B1 `0.75 → 0.5`、五夹具分数变化（§53.4） |
+| 决策记录与交接索引 | 新增第五态、扩 DTO、`recompute_r3` 的 F1 旁路收敛（**下一小步**，见 55.8） |
+
+- **`recompute_r3` 旁路本轮不动**：给它加 F1 派生对账需要 `task` 参数并会改写 `test_f1_compat_entry_recompute_r3_still_bypasses_derivation` 现状锁的语义，属判定语义变化，不与「零行为变化重构」混步。
+- **零新增测试用例**：避免 `_pytest_count()` +1 → 评审包 `STALE` → 锚点后移、历史指纹过期；本轮改动不必付该代价。
+- 五夹具分数、B1 `0.75`、`state` / `error_patterns` / `invalid_reasons` **逐字不变**。
+
+### 55.4 实施步骤（写→验→报，按 §52.4 批次放行契约）
+
+1. 落 §55 决策记录 + 仓外外评委托包。
+2. **Step A**：抽两入口共享防御 `_check_raw_consistency(out)`，两处改为调用；跑针对性 pytest + 变异。
+3. **Step B**：在 `assertion_evaluator.py` 加单一规则内核 `call_sequence_problems()`；`_validate_calls()` 与 `_trace_audit_issues()` 改为共用，各自保留原输出格式；跑针对性 pytest + 变异。
+4. 批次末：全量 pytest、`--fixture all`、`--check`、包字节 sha、`--collect-only` 计数、闸门自检、匿名扫描、`git status`。
+5. 回填 55.6 实测与 55.7 收尾。
+
+### 55.5 十分钟验证（可复核）
+
+```bash
+python -m pytest tests/test_trace_pipeline.py -q -k 'f1 or f3_td018'
+python -m pytest tests/test_assertion_evaluator.py -q
+python -m pytest tests/test_param_schema.py -q
+python src/arena/diagnosis_report.py --fixture all
+python src/arena/review_packet.py --check
+```
+
+### 55.6 本轮实测（2026-11-13，本机可复核）
+
+| 判据 | 结果 |
+|---|---|
+| Step A 后 `pytest tests/test_trace_pipeline.py -q` | **170 passed / 7.36s**；`--check OK (7974ca6f877d3e6a)` |
+| Step B 后 `tests/test_trace_pipeline.py` | **170 passed / 7.65s** |
+| Step B 后 `test_assertion_evaluator.py + test_param_schema.py` | **159 passed / 15.58s** |
+| Step B 后 `--fixture all` | `0 / 0.25 / 0 / 0.5 / 1.0`，**五夹具分数一分未变**；`--check OK` |
+| **Step B 字节级变异**：`call_sequence_problems()` 的 `elif idx != i` → `elif False` | 结构派生侧 **4 failed, 166 passed**（`boundary_cases_match_executor[shuffled_call_index]`、`boundary_cases_survive_full_dto_pipeline[shuffled_call_index]`、`f1_td016_schema_valid_conflict_is_refused`、`f1_derive_audit_reason_codes[bad-index]`）；执行器侧 **3 failed, 156 passed**（`test_shuffled_call_index_is_unscored_not_pass`、`test_new_unscored_branch_survives_schema_validation`、`test_call_index_discontinuity_is_unscored_not_fail`）⇒ **只改一处内核、两侧同时报红，单一真相源生效** |
+| Step B 恢复后三文件合计 | **329 passed / 25.29s**；`--check OK`；包 sha `839eb4b66a954ba7` |
+| **Step A 补做变异**：`_check_raw_consistency()` 冲突检查 → `if False` | **2 failed, 168 passed**，失败为 `test_inconsistent_raw_is_refused[trace_null_but_reported]` / `[trace_present_but_not_reported]`；`test_assertion_evaluator.py` 55 passed 不受影响（预期） |
+| 全部恢复后 `pytest tests/ -q` | **652 passed / 88.64s** |
+| 最终 `review_packet.py --check` | **`OK (7974ca6f877d3e6a)`**；包字节 sha `839eb4b66a954ba7` **未变** |
+| `push_gate.py --self-test --dirty c830b1b` | `SELF_TEST_PASS=True`（正向 CLEAN / 负向 BLOCKED 2 命中 / 空范围不假绿） |
+| `--collect-only` 核查 | `COLLECTED_NODE_IDS=652`、`DUPLICATE_NODE_IDS=0` ⇒ 计数增量 **+0**、无同名覆盖 |
+
+**登记一处覆盖缺口（不掩饰）**：Step A 变异的两条失败均来自 `recompute_r3` 入口；`recompute_all` 侧该防御**无专属正向锁**，下游由 `_refuse_audit_conflict()` 兜底。本轮不新增用例（`_pytest_count()` +1 会让评审包 `STALE`），登记为 TD-024 收敛下一小步的核证项。
+
+### 55.7 收尾复核
+
+- 匿名扫描（6 个改动 / 新建文件 + 仓外委托包）：真名 / 校名 / 昵称 / 本机绝对路径 / 凭据形态 **0 命中**。
+- `git status --porcelain`：**8 项 `M` + 1 项 `??`**（含 round-59 / 61 / 64 既有未提交改动），HEAD 仍 `0ca8492`。
+- `git diff --stat`：8 文件 `484 insertions(+), 78 deletions(-)`；新建决策包未计入 diff stat。
+- **§52.4 批次契约逐条核对**：① 计数增量 +0，按第 1 条查同名覆盖（`DUPLICATE_NODE_IDS=0`）✓；② node id 集合 diff 为空（无增删）✓；③ 每步各自跑针对性 pytest + 字节级变异 ✓，**但逐步 `git diff` 未单独留存**，批次末统一执行 `git diff --stat` ⇒ **一处执行偏差，如实登记，不写成「完全符合」**；④ 未改 `_snapshot()` 覆盖量 ✓；⑤ 批次末 `--check OK` ✓；⑥ 按「语义可独立验证、包按批次」执行 ✓。
+- 行尾 LF→CRLF 警告为历史已知行为（§48 / §51），本轮 `--check` 与包字节 sha 均未变。
+
+### 55.8 状态与下一步
+
+- **TD-024 部分收敛**：两处规则重复与两入口防御重复已消除；`recompute_r3` 的 F1 旁路保留，登记为下一小步（收敛时须先复核 71 条历史锁与现状锁）。
+- **TD-026 保持「待实现声明」**，不实现、不销项（round-59 人裁断）。D6 本体按本轮缩范围收口。
+- 实现顺序 §51.7 不变；Q4(d) 口径依 §53，实现不插队。
+- 本轮零 git 写操作（未 commit / 未 push）；提交与 push 归人拍板。仓外日志追加 round-65。
+
+> **订正注（round-66，外评回件 §2.2）**：本节「D6 本体按本轮缩范围收口」不足以界定范围，准确登记是「本轮只完成 **D6 的 TD-024 部分**」；TD-026 保持「已登记、未实现」，结构层校验是**暂缓**（未获授权），不是取消。重构的依据是 TD-024 与 §28.6 D6 原文「须同时解决 TD-024」，并非 round-59 人裁断新授权。
+
+---
+
+## 56. round-66：round-65 外评回件核证与三个放行条件落地
+
+### 56.1 回件来源与结论
+
+- 回件：`review-round65-d6.md`（人转来，只读第二意见；自述未改仓库、未复跑全量裁判）。
+- **结论：有条件恰当** —— 认可「后拍板覆盖先拍板」与缩窄 D6 范围，但要求三个条件同时成立：
+  ① 订正 §54.8 仍按甲写的现役状态行；② 范围登记须写成「D6 的 TD-024 部分」，不得写成「D6＝重构 / D6 完成」；
+  ③ 补「零行为」的直接等价证据（变异只证明内核被执行，不证明新旧逐输入等价）。
+- 回件给的「改回条件」：新人拍板明确推翻乙**并**同时撤销 §53.4 分数硬锁、重写三条锁定测试；或举证「结构层校验可在三条测试全绿且分数不变下实现」。回件自述举证不出。**本轮两条均不成立**。
+
+### 56.2 核证总表（本机只读复核，2026-11-13）
+
+| # | 回件主张 | 核证 | 处置 |
+|---|---|---|---|
+| 1 | 甲＝§28.6 D6「条件必填＋结构层＋分数变化＋TD-026」 | **成立**（`:2572`） | 采纳 |
+| 2 | 乙＝§52.2 #3/#4；且 §52 **没有**「D6＝零行为重构」这句话 | **成立**（`:5198`）；后半句是重要提醒 | 采纳，见 56.3 |
+| 3 | D2「仅执行器层，audit 不同步」 | **成立**（`:2570`、`executor-semantics.md` §1） | 采纳 |
+| 4 | YAML 现状已按乙改写 | **成立**（`tasks/dbg-001-order-report.yaml:126-128`，工作区未提交） | 采纳 |
+| 5 | 三条测试锁 `0.75` / `schema_valid=True` / 专用码无生产者 | **成立**，行号偏移 **+3**（实际 `:898` / `:918` / `:928`，回件写 `:895` / `:915` / `:925`），断言内容一致 | 采纳＋登记偏移 |
+| 6 | 五夹具分数硬锁 | **成立**（`:5332`） | 采纳 |
+| 7 | §54.8 仍按甲写 D6 | **成立**（`:5418`）；另 `HANDOFF.md:162`（round-64 状态块）同类 | 采纳，见 56.4① |
+| 8 | 「按甲改三条测试必红」 | **推理成立、未做反向变异**：本轮未构造结构层实现去实测；矛盾链由三条测试＋硬锁＋§52.2 构成 | 部分采纳，如实标注推理 |
+| 回件 §4 命令 | `-k "missing_and_wrong_http_status or audit_stays_structural or schema_reason_code_stays_reserved"` | 实跑 **3 passed / 1.07s**，`RC=0` | 采纳 |
+| 推测 1 | §54.8 是陈旧状态行而非新拍板 | **成立**（位于「状态与下一步」、无拍板字样、round-64 是人授权 AI 决策轮而非新口径） | 采纳 |
+| 推测 2 | 「两处重复实现」＝派生器与 `_validate_calls()` | **成立**；并补齐回件未核对的「两个入口重复防御」＝`recompute_r3()` / `recompute_all()` 的 T11 真相源冲突检查（旧 `:170-184` / `:215-229`） | 采纳＋补信息 |
+| 待核证 1 | 本轮改动是否真零行为 | 回件未复跑；**本轮补做 git 对象基线对拍**，见 56.4③ / 56.8 | 修正采纳 |
+| 待核证 2 | 平台侧是否有 `trace_requirements` 契约消费者 | **本轮未重新核证**；引用 round-37 既有结论「无仓外任务 YAML 源、只将会话发给评测 Agent」。不改变甲/乙优先级判断 | 标注未核证 |
+
+### 56.3 五类处置
+
+| 项 | 处置 | 理由 |
+|---|---|---|
+| 结论「有条件恰当」 | **采纳** | 与 §55.1 冲突核证一致，且回件补上了「同一权威 / 同一对象 / 更晚且知情 / 独立加固 / 甲自带未收口冲突」五条可判定理由 |
+| 条件① 记录收口 | **采纳** | 加**订正注**（不回改历史正文，守 §17.7 纪律） |
+| 条件② 范围登记 | **采纳** | 明确写「本轮只完成 **D6 的 TD-024 部分**；TD-026 是**暂缓**不是取消；结构层未获授权也未作废」 |
+| 条件③ 零行为举证 | **修正采纳** | 回件建议「五夹具＋七变异抽样比对」；本轮改做**穷举规则分支的函数级对拍 ＋ 全链路 monkeypatch 对拍**，基线取自 `git show HEAD:` 的**真实 git 对象**（非手工重建），覆盖更全。仍如实声明：这不是「全输入空间的形式化证明」 |
+| 「不评价风格 / 不给补丁 / 不重排顺序」 | **遵守** | 本轮不重排 §51.7 顺序、不动判定语义 |
+
+### 56.4 三个条件的落实
+
+1. **状态行加注**：`review-response-v1.md` §54.8 末尾、`HANDOFF.md` round-64 状态块末尾各加一行订正注，原文**一字不改**；`HANDOFF.md` 新增 round-66 最新状态块点明「§54.8 与 round-64 块的 D6 描述按 §28.6 旧定义，已由 §55 / §56 取代」。
+2. **范围措辞收紧**：§55.8 与 HANDOFF round-65 块各加一行「本轮仅 D6 的 TD-024 部分；TD-026 暂缓非取消」；不改写既有句子。
+3. **零行为对拍**：临时脚本以 `git show HEAD:` 提取旧 `_validate_calls()` / `_trace_audit_issues()` / `recompute_r3()` / `recompute_all()`（这四个函数在 D5 中未改，故 HEAD 版＝「D5 后、D6 前」的准确基线），与新实现逐输入比对；跑完即删，不落仓。
+
+### 56.5 本轮新发现（回件未点名，双方共同盲点）
+
+`docs/diagnosis-report-schema.md:94-95` 原文：
+
+> **已知旁路**：兼容入口 `recompute_r3()` 不经过 F1 对账（TD-024，本步不收敛）；派生器与 `_validate_calls()` 是两处独立实现，未来须收敛以免规则漂移（同属 TD-024）。
+
+回件把它作为**事实 8** 全文引用，却未察觉**后半句已被 round-65 收敛**（前半句旁路仍成立）。这是本轮核证带出的第三处过时状态行，与 §54.8 同类。该文档是**现役契约文档**（非处置记录），按 round-59 / round-65 惯例直接改成新事实，原文在 56.5 留痕。
+
+### 56.6 落仓清单
+
+| 文件 | 改动 |
+|---|---|
+| `docs/review-response-v1.md` | 新增 §56；§54.8 / §55.8 各加一行订正注（不改原句） |
+| `HANDOFF.md` | round-64 / round-65 状态块各加一行注；新增 round-66 最新状态块 |
+| `docs/diagnosis-report-schema.md` | `:94-95` 过时描述改为新事实（原文在 §56.5 留痕） |
+| `scripts/equivalence_probe.py` | **新增可复跑等价对拍器**（177 行；基线 `0ca8492` 真实 git 对象；退出码 `0/1`）。不进 `_snapshot()` 覆盖量，不触发评审包过期 |
+| 仓外 `.workbuddy/memory/2026-11-13.md` | 追加 round-66 |
+
+### 56.7 十分钟验证（可复核）
+
+```bash
+python scripts/equivalence_probe.py          # RC=0 且 FINAL_MATCH=True 才是等价
+python -m pytest tests/ -q
+python src/arena/review_packet.py --check
+grep -n 'D6 的 TD-024 部分\|已由 §55 / §56 取代' docs/review-response-v1.md HANDOFF.md
+```
+
+### 56.8 本轮实测（2026-11-13，本机可复核）
+
+| 判据 | 结果 |
+|---|---|
+| 回件 §4 三条针对性命令 | **3 passed / 1.07s**，`RC=0` |
+| `scripts/equivalence_probe.py` | `BASELINE_REF=0ca8492`；**`L1_CHECKS=30 / L1_DIFFS=0`**；**`L2_CASES=20 / L2_DIFFS=0`**；`FINAL_MATCH=True`，`RC=0` |
+| L1 覆盖 | 16 个 trace 穷举规则分支（条目非对象、`call_index` 缺失 / bool / 字符串 / 乱序、`status` 缺失 / 非法、`params` 非对象、多问题组合、空数组、全坏）、容器边界（缺 `tool_calls` / 非数组）、终态边界（缺失 / 非法）；每个 trace 对 `_validate_calls()` 与 `_trace_audit_issues()` **两侧**比对 ⇒ 30 次检查 |
+| L2 覆盖 | 5 份夹具 + 9 种 F3 变异 + 1 个 `None` 对照 + 5 种结构变异 = **20 例**；逐例比对 `schema_valid` / `invalid_reasons` / `call_count` / `score.ratio` / 每条断言 `state·reason_code·error_patterns`，并过 `validate_report()` |
+| 基线来源 | `git show 0ca8492:<path>` 的**真实 git 对象**，按 `ast.FunctionDef` 行切片提取 4 个函数（`_validate_calls` / `_trace_audit_issues` / `recompute_r3` / `recompute_all`），**非手工重建**。这 4 个函数在 D5 中未改 ⇒ 基线＝「D5 后、D6 前」 |
+| 全量 `pytest tests/ -q` | **652 passed / 113.72s**。首次收尾命令被沙箱拦截（pytest 会话启动要清理自身旧临时目录，被判「批量删除」、人拒绝）；改用 `--basetemp=<全新目录>` 让 pytest 不触碰被拒路径，**未执行任何删除**，如实留痕 |
+| `review_packet.py --check` | **`OK (7974ca6f877d3e6a)`**；包字节 sha `839eb4b66a954ba7` **未变** |
+| `push_gate.py --self-test --dirty c830b1b` | `SELF_TEST_PASS=True`：正向 `CLEAN` / 负向 `BLOCKED`(2 命中) / 空范围不假绿 |
+| 匿名 / 状态 | 4 个改动文件 + 新脚本 **0 命中**；`git status` **9 项 `M` + 2 项 `??`**，HEAD 仍 `0ca8492` |
+
+**举证边界（不夸大）**：对拍是「规则分支穷举 ＋ 全链路 20 例抽样」的**直接等价证据**，**不是**全输入空间的形式化证明；回件 §2.3 要求的「新旧逐输入等价」在本轮覆盖范围内成立。相较回件建议的「五夹具＋七变异抽样」，本轮多了 L1 分支穷举与 9 + 5 个变异用例。
+
+### 56.9 状态与下一步
+
+- 外评回件按「核证 → 登记 → 处置 → 落仓 → 人拍板」处理完毕；**本轮无产品口径待人拍板**（三个条件均为实现层 / 记录层动作）。
+- D6 实现顺序 §51.7 不变；TD-026 维持「已登记、未实现」；TD-024 剩余项（`recompute_r3` 的 F1 旁路）仍为下一小步。
+- 本轮零 git 写操作（未 commit / 未 push）；提交与 push 归人拍板。仓外日志追加 round-66。
+
+
+
+
+

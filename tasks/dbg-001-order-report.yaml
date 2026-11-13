@@ -123,7 +123,9 @@ trace_requirements:
       # 这里不声明 required，避免留下没有执行者的声明（Q1(b) / §39.6 同一口径）。
       item_fields: [call_index, name, params, status, http_status, error, result_summary]
       status_enum: [success, error, timeout]
-      note: 'call_index 平台侧编号（1 起）；http_status/error 仅 status=error 必填，result_summary 仅 success 必填；attempt 不要求上报——由平台从同名同参调用序列推导（评审第 3 条的修正采纳）'
+      # round-59 层错位改述：以下条件描述改述并指明执行层，不删、不补结构层
+      # （§28.6 D2 已拍「仅执行器层，audit 不同步」）；夹具形状测试只校验自家样例，不算执行者。
+      note: 'call_index 平台侧编号（1 起），attempt 由平台从同名同参调用序列推导（平台侧行为，本仓不校验）；http_status 仅 status=error 必填——由 R3 执行器按失败步所需字段判定（docs/executor-semantics.md §1），结构层不校验；error/result_summary 仅对应 status 必填为待实现声明，登记 TD-026，当前无消费者'
 
 # ============================================================================
 # 计分与归因口径（第 6 轮评审：把「判 0」和「判 unscored」拆成两件事写死）
@@ -240,7 +242,9 @@ rubric_credit:
     error_pattern_detection:
       # 第 6 轮实测结论：判定（PASS/FAIL）一个表达式就够，分类必须另取序列——
       # 假重试与无重试的过滤后状态序列完全相同（都是 ["error"]），单靠 R3.expected 分不开。
-      probe: "calls[?name=='fetch_orders'].params.offset"
+      # TD-025：对象投影保留缺 params.offset 的调用（{"offset": null}），
+      # 执行器原位还原成含 None 的标量序列；标量投影会把 null 静默省略，改短证据。
+      probe: "calls[?name=='fetch_orders'].{offset: params.offset}"
       cases:                     # 顺序匹配，首命中即止
         - {match: {offsets_equals: [0, 10]}, pattern: no_retry}
         - {match: {offsets_equals: [0, 10, 0]}, pattern: retry_wrong_params}

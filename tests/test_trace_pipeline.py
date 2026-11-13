@@ -639,7 +639,7 @@ def test_f1_semantic_trace_invalid_does_not_flip_schema_valid():
 
 
 def test_f1_compat_entry_recompute_r3_still_bypasses_derivation():
-    """TD-024 现状锁：兼容入口不经过 F1，仍能组装矛盾报告（本步不收敛）。"""
+    """TD-024 剩余项现状锁：兼容入口不经过 F1，仍能组装矛盾报告（§55 下一小步收敛）。"""
     data = copy.deepcopy(raw("raw-perfect"))
     data["trace_audit"]["call_count"] = 999
     report = dr.build_report(TASK, tp.recompute_r3(data))
@@ -718,8 +718,9 @@ def test_f1_new_allof_rules(inst, want):
 #      `call_count` 改数目标工具调用条数，不再用投影后剩下的有效 offset 数。
 #   ② **P2**：失败步声明的 http_status 缺失/null → 同上；值写错仍判 fail，
 #      B1 / B2 在归因层可区分；audit 保持结构合规（§4 分层共存）。
-# 仍存边界：证据层投影仍丢 null（TD-025）、条件必填仍无全局执行者（TD-026）、
-# 专用原因码仍无生产者（TD-027）。F3 判定层已闭合，不在本步扩 DTO。
+# 已销项：证据层原位保 null（TD-025，§54），序列不再被改短。
+# 仍存边界：条件必填仍无全局执行者（TD-026）、专用原因码仍无生产者（TD-027）。
+# F3 判定层已闭合，不在本步扩 DTO。
 # ---------------------------------------------------------------------------
 
 
@@ -752,7 +753,7 @@ def _f3_only_write_report(d):
 
 
 def _f3_partial_hallucinated(d):
-    """只把 error 那条误写：投影丢一条，offsets 序列被悄悄改短。"""
+    """只把 error 那条（第 2 次调用）的 offset 键误写：该位读不到值，原位保 None。"""
     for c in d["trace"]["tool_calls"]:
         if (c["name"] == "fetch_orders" and c["params"].get("offset") == 10
                 and c["status"] == "error"):
@@ -851,8 +852,8 @@ def test_f3_td018_param_projection_loss_is_unscored_not_no_retry():
     assert r3["state"] == "unscored" and r3["reason_code"] == "trace_invalid"
     assert r3["error_patterns"] == []
     assert "params.offset" in r3["evidence"]["observed"]["ambiguous_match"]
-    # TD-025：证据层投影仍丢 null，本步只修判定、不修证据形状。
-    assert r3["evidence"]["observed"]["offsets"] == []
+    # TD-025 已销项：4 次目标工具调用全部缺 offset，每个位置原位保留 None，序列不再被改短。
+    assert r3["evidence"]["observed"]["offsets"] == [None, None, None, None]
     assert report["score"]["ratio"] == 0.5
 
 
@@ -870,14 +871,16 @@ def test_f3_td018_only_write_report_stays_no_tool_calls():
 
 
 def test_f3_td018_partial_projection_loss_is_unscored():
-    """① 投影丢 null 会改短 offsets；失败步所需的字段缺失，判据不成立。"""
+    """① 投影原位保 null 后序列不缩短；失败步所需字段缺失，判据不成立。
+    函数名保留历史命名（原指「投影丢值」），语义随 TD-025 销项更新，不改 node id。
+    """
     report = _report_from_raw(_f3_raw(_f3_partial_hallucinated))
     r3 = _f3_assertion(report, "R3_retry_evidence")
     assert r3["state"] == "unscored" and r3["reason_code"] == "trace_invalid"
     assert r3["error_patterns"] == []
     assert "params.offset" in r3["evidence"]["observed"]["ambiguous_match"]
-    # 证据层投影仍丢 null（TD-025），这里把现状钉住。
-    assert r3["evidence"]["observed"]["offsets"] == [0, 10, 20]
+    # TD-025 已销项：第 2 次调用（error 那条）缺 offset，None 留在第 2 位。
+    assert r3["evidence"]["observed"]["offsets"] == [0, None, 10, 20]
     assert report["score"]["ratio"] == 0.5
 
 
@@ -959,7 +962,7 @@ def test_f3_td018_null_offset_outside_retry_pair_keeps_pass():
     report = _report_from_raw(_f3_raw(_f3_null_offset_first))
     r3 = _f3_assertion(report, "R3_retry_evidence")
     assert r3["state"] == "pass"
-    assert r3["evidence"]["observed"]["offsets"] == [10, 10, 20]  # 投影仍丢 null
+    assert r3["evidence"]["observed"]["offsets"] == [None, 10, 10, 20]  # TD-025：第 1 位原位保 null
     r4 = _f3_assertion(report, "R4_no_param_hallucination")
     assert r4["state"] == "fail" and r4["error_patterns"] == ["param_type_mismatch"]
     assert report["score"]["ratio"] == 0.75
