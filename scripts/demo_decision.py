@@ -45,6 +45,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from arena import diagnosis_report as dr  # noqa: E402
 from arena import reconciliation as rc  # noqa: E402
+from arena import store  # noqa: E402
 from arena.assertion_evaluator import SUPPORTED_TYPES  # noqa: E402
 
 PACKET = ROOT / "docs" / "review-packet.md"
@@ -202,18 +203,6 @@ def demo_3() -> tuple[str, list[str]]:
     lines = []
     mods = sorted(p.name for p in (ROOT / "src" / "arena").glob("*.py"))
     lines.append(f"  src/arena 现有模块：{mods}")
-    # 词形注意：`review_packet.py` 是「评审包」（评审 = review of a packet），不是「复习」
-    # （复习 = spaced repetition）。中英撞名，判据只认无歧义词，避免把评审包当成复习层。
-    review_mods = [m for m in mods if re.search(r"fsrs|schedul|spaced|review_card|flashcard", m, re.I)]
-    lines.append(f"  复习/调度相关模块（按 fsrs/schedul/spaced/card 判）：{review_mods or '无'}")
-
-    content_hits = []
-    for p in sorted((ROOT / "src" / "arena").glob("*.py")):
-        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r"fsrs|spaced repetition|flashcard|review_card", line, re.I):
-                content_hits.append(f"{p.name}:{i}: {line.strip()[:60]}")
-    lines.append(f"  源码里出现复习层语义的行：{content_hits or '无'}")
-
     keys = sorted(build(raw("raw-perfect")).keys())
     lines.append(f"  诊断报告顶层字段：{keys}")
     leak = [k for k in keys if re.search(r"review|mastery|schedul|card", k, re.I)]
@@ -221,15 +210,49 @@ def demo_3() -> tuple[str, list[str]]:
     if leak:
         return FAIL, lines + [
             "反证条件已触发：诊断报告里出现复习/掌握度字段 ⇒ 决策 3 的边界（诊断层不建这些模型）被破坏。"]
-    if review_mods or content_hits:
+    # 判据升级（round-75）。旧判据是「源码里出现 fsrs/spaced 字样 ⇒ 复习层已出现 ⇒ 本演示过期」。
+    # 仓内建了 review_items 表之后，`fsrs_rating` 这种**待填的列名**就把它顶红了——
+    # 列名不是调度逻辑，旧判据是用代理指标冒充实质。
+    # 新判据直接判决策 3 的实质：**复习项是"可执行任务"还是"正反面文本卡片"**。
+    # 它仍可被证伪：把 kind 换成 flashcard、或删掉 task_id 引用，判定立刻变 FAIL（变异组见 §75）。
+    ddl = store.SCHEMA_SQL
+    if "CREATE TABLE IF NOT EXISTS review_items" not in ddl:
+        lines.append("  review_items 表：不存在")
+        lines.append("  结论：复习层尚未实现，「复习项 = 可执行任务」在当前仓库**没有载体可演示**。")
+        lines.append("  这不是失败，是阶段：设计只写在计划书 §4 与 docs/data-model.md，本脚本不代替它。")
+        return NOEXEC, lines
+
+    block = re.search(r"CREATE TABLE IF NOT EXISTS review_items \((.*?)\n\);", ddl, re.S)
+    body = block.group(1) if block else ""
+    kinds = set(re.findall(r"'([a-z_]+)'", body))
+    want = {"variant", "fault_injection", "timed", "replay"}
+    card_form = re.search(r"flashcard|card_front|card_back|front\s+TEXT|back\s+TEXT", body, re.I)
+    refs_task = "REFERENCES tasks(task_id)" in body
+    refs_sub = "REFERENCES submissions(submission_id)" in body
+    lines.append(f"  review_items.kind 取值：{sorted(kinds)}")
+    lines.append(f"  引用任务 / 历史提交：{refs_task} / {refs_sub}")
+    lines.append(f"  卡片正反面文本类字段：{'有' if card_form else '无'}")
+
+    ok_l, detail = _verdict([
+        ("kind 覆盖四种可执行形态", want <= kinds, str(sorted(kinds))),
+        ("没有卡片正反面文本字段", not card_form, "有" if card_form else "无"),
+        ("复习项引用任务与历史提交", refs_task and refs_sub, f"task={refs_task}, sub={refs_sub}"),
+    ])
+    lines += detail
+    if not ok_l:
         return FAIL, lines + [
-            "复习层已出现，本演示已过期：请把它改成对复习项形态的真实判定"
-            "（是 task_id 引用，还是卡片正反面文本）。"]
-    lines.append("  结论：复习层尚未实现，「复习项 = 可执行任务」在当前仓库**没有载体可演示**。")
-    lines.append("  这不是失败，是阶段：设计只写在计划书 §4 与 docs/data-model.md，本脚本不代替它。")
-    lines.append("  唯一可现场确认的是边界：诊断层没有偷偷建复习/掌握度模型（上面两个判据）。")
-    lines.append("  反证条件：出现 review_* 模块 或 报告里出现复习字段 ⇒ 本档位改为可演示（脚本需同步更新）。")
-    return NOEXEC, lines
+            "反证条件已触发：复习项形态偏离「可执行任务」⇒ 决策 3 未被执行（或表结构写歪了）。"]
+
+    used = []
+    for p in sorted((ROOT / "src" / "arena").glob("*.py")):
+        if re.search(r"INSERT INTO review_items|SELECT[^;]*FROM review_items",
+                     p.read_text(encoding="utf-8"), re.I):
+            used.append(p.name)
+    lines.append(f"  实际读写 review_items 的模块：{used or '无'}")
+    lines.append("  结论：**表结构**与决策 3 的形态一致（四种形态 + 引用任务/历史提交，无卡片正反面），")
+    lines.append("        但没有任何代码往里写或读——复习项生成（M4）与调度都没实现，所以只算 PARTIAL。")
+    lines.append("  反证条件：把 kind 改成 flashcard、或删掉 task_id 引用 ⇒ 立刻 FAIL（已用变异锁过）。")
+    return PARTIAL, lines
 
 
 # ---------------------------------------------------------------------------
@@ -400,12 +423,23 @@ def demo_8() -> tuple[str, list[str]]:
     lines.append(f"  报告顶层字段：{keys}")
     lines.append(f"  含掌握度/衰减/调度语义的字段：{leak or '无'}")
 
-    src_hits = []
+    # 判据升级（round-75）。旧判据是「源码里出现 stability/fsrs 字样」即判不成立。
+    # 建表后 `fsrs_rating INTEGER`、`fsrs_card TEXT` 这类**存卡片状态的列名**会被算成
+    # "把 S 当衰减系数"，那是误报——列名不是算式。新判据只认真的算了：
+    #   ① 赋给 alpha / decay / lambda_ 之类的衰减系数；② 直接参与乘除。
+    # 它比旧判据更严（旧判据抓不到 `alpha = f(card.stability)` 之外的形态，也会误伤列名），
+    # 且仍可证伪：写入 `alpha = card.stability * 0.1` 立刻 FAIL（变异组见 §75）。
+    wide_hits, expr_hits = [], []
     for p in sorted((ROOT / "src" / "arena").glob("*.py")):
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             if re.search(r"stability|fsrs", line, re.I) and "schedul" not in line.lower():
-                src_hits.append(f"{p.name}:{i}: {line.strip()[:70]}")
-    lines.append(f"  src/ 中出现 stability/fsrs 的代码行：{src_hits or '无'}")
+                wide_hits.append(f"{p.name}:{i}: {line.strip()[:70]}")
+            code = line.split("#", 1)[0]
+            if re.search(r"(alpha|decay|lambda_)\s*=\s*[^#]*(stability|\.s\b)", code, re.I) \
+                    or re.search(r"(stability|\.s\b)\s*[*\/]\s*[\d(]", code, re.I):
+                expr_hits.append(f"{p.name}:{i}: {line.strip()[:70]}")
+    lines.append(f"  src/ 中出现 stability/fsrs 字样的行（宽口径，仅展示）：{len(wide_hits)} 行")
+    lines.append(f"  其中构成「把 S 当衰减系数」算式的行：{expr_hits or '无'}")
 
     doc = (ROOT / "docs" / "data-model.md").read_text(encoding="utf-8")
     old_claim = "掌握度 = 本表 R 值" in doc
@@ -413,7 +447,7 @@ def demo_8() -> tuple[str, list[str]]:
 
     checks = [
         ("诊断报告不含掌握度/调度字段", not leak, str(leak)),
-        ("代码里没有把 stability 当衰减系数的算式", not src_hits, str(len(src_hits))),
+        ("代码里没有把 stability 当衰减系数的算式", not expr_hits, str(len(expr_hits))),
         ("旧口径「掌握度 = R 值」已从 data-model 撤下", not old_claim, str(old_claim)),
     ]
     ok_l, detail = _verdict(checks)

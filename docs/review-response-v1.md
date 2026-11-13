@@ -6645,3 +6645,96 @@ round-70 的 TD-002 三处对齐只处理了 `:121-122`，**漏了 §0**。
 - 骨架（ROADMAP）与台账（BACKLOG）已落仓，此后每轮改完必须同步这两份的状态行。
 - **待人拍板：无。** 本轮没有价值取舍，只有"盘点"和一处已拍板口径的文档订正。
 - 剩余待办不变：TD-039（B-20）、TD-038 宽松口（B-21）、TD-026/027（B-22/B-23，其中 B-22 需人拍）。
+
+---
+
+## 75. round-75：M1 第一步落地（持久化）+ 两处判据被新代码顶红后的改造
+
+**起因**：维护者回「按照你的想法来」，即按 round-74 的 BACKLOG 开工 B-01——它是 M1 的硬闸门，
+卡住 M2（任务库要能提交）、M3（掌握度要跨提交）、M5（端要调 API）。
+
+### 75.1 做了什么
+
+新增 `src/arena/store.py`（约 330 行），SQLite 起步、不引 ORM：
+
+- **7 张表**按 `docs/data-model.md` 字段逐项对齐：`users` / `skills` / `tasks` / `error_patterns` /
+  `submissions` / `user_skill_states` / `review_items`，外加 2 个查询索引（按用户+时间、复习队列）。
+- **种子导入**：3 个技能（分类学）+ 14 个错误模式（词表）+ 1 个任务（YAML），全部幂等 upsert。
+- **落库**：`save_submission(report, user_id=...)`；**读回**：`load_submission` / `load_report` / `list_submissions`。
+- 新增 `tests/test_store.py` 16 条约束锁。
+
+### 75.2 四条设计决定（都在模块文档里写了理由）
+
+| 决定 | 理由 |
+|---|---|
+| `user_id` 必须显式给，不从 `agent_id` 推 | fixture 只有 `agent_id`（学习者部署的服务名）。「谁交的」≠「哪个 agent 交的」，编一个会污染所有按人聚合的统计。缺了就 `StoreError` |
+| `detected_patterns` 是**派生列** | 值为 `state=fail` 的断言所带模式的去重保序汇总；真相源是 `diagnosis` 列（整份报告）。决策 7：`unscored`/`blocked` 不算检出 |
+| 重复 `submission_id` 抛错，不 UPSERT | 诊断记录要能回溯到"当时那份"；静默覆盖在分数争议时等于销毁证据 |
+| `created_at` 优先取 `submission.evaluated_at` | 复习间隔（M4）以它为时间轴。补录历史若记成"今天"，间隔会整段算错 |
+
+### 75.3 两个过程事件（必须留痕，否则下一轮会重犯）
+
+**① 第一版测试是假锁——变异 M2 报 MISSED。**
+「只收 `state=fail` 的模式」这条测试，用五份夹具根本测不出来：`raw-no-trace` 的轨迹断言
+被上游强制改写成 `unscored` 时，`error_patterns` 已被**清空**，于是"过滤"与"不过滤"结果相同。
+删掉过滤逻辑，测试照样绿。补锁方式：**构造**一条 `pass` 带模式 + 一条 `blocked` 带模式，断言一条都不进库。
+补锁后 M2 的表现变成 `1 failed, 1 passed`（夹具那条过、构造那条红），才是真锁。
+
+**② M2 第一次跑报 `1 error` 而不是 `1 failed`。**
+原因是变异串里的 `\n` 经 heredoc 写成 `/n`，`store.py` 变成语法错误、测试在 import 阶段就崩了。
+**error ≠ 证据**：它证明的是"变异自身坏了"，不是"逻辑被抓住"。已把判定函数改成区分二者
+（`DETECTED` / `INVALID(变异自身崩)` / `MISSED`），八组全部以 `1 failed` 计。
+
+### 75.4 演示台两条判据被新代码顶红——都改了判据，不是改代码
+
+建表后 `fsrs_rating` / `fsrs_card` / `review_items` 这些**列名**进了源码，触发了两条旧判据：
+
+| 决策 | 旧判据（被顶红） | 问题 | 新判据 | 档位变化 |
+|---|---|---|---|---|
+| 3 复习项=可执行任务 | 源码里出现 `fsrs\|spaced\|flashcard` 字样 ⇒ "复习层已出现，演示过期" | **列名不是调度逻辑**，用代理指标冒充实质 | 判 `review_items` 的**形态**：kind 覆盖 `variant/fault_injection/timed/replay`、引用 `tasks` 与 `submissions`、无卡片正反面文本字段；再查有无 `INSERT/SELECT review_items` | `NOT_EXECUTABLE` → `PARTIAL`（有形态、无读写） |
+| 8 掌握度≠卡片 stability | 源码含 `stability\|fsrs` 且不含 `schedul` ⇒ 判不成立 | 同上，`fsrs_card TEXT` 被当成"把 S 当衰减系数" | 只抓**算式**：赋给 `alpha/decay/lambda_`，或直接参与乘除 | 仍 `PARTIAL` |
+
+**改判据不是改到刚好通过**，三组变异证明新判据仍咬得住真问题：
+把 kind 里的 `timed` 换成 `flashcard` → FAIL；删掉 `task_id` 的 REFERENCES → FAIL；
+写入 `alpha = card.stability * 0.1` → FAIL。三组 rc 均为 1，`RESTORED: True`。
+
+连带订正 `tests/test_demo_decision.py`：原来断言"NOEXEC 必然存在"，现在 NOEXEC 归零
+（决策 3 有了载体），改为断言"必须有降级档"；另**新增**一条锁——`test_decision_3_stays_partial_
+until_review_items_are_written`，防止"建了张表就宣布复习闭环完成"。
+
+### 75.5 自指互锁：第一次生成 RC=2，第二次才收敛
+
+`test_test_count_matches_repo` 读 `DEFAULT_OUT` 的包正文，而生成流程要跑全量测试。
+于是：包还是旧的（700）→ 测试红 → 新包记录 `1 failed, 716 passed` → 返回码 2 → 再生成一次
+（此时包内已是 `717`）→ `717 passed / RC=0`。
+**这不是 bug 而是已知代价**，已登记 BACKLOG C-03 并给出解法（fixture 改成现场构建临时包，
+与 round-73 修 `test_td036_check_fails_on_policy_drift` 同一手法）。收工清单第 6 条已注明"要生成两次"。
+
+### 75.6 实测
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_store.py -q` | **16 passed** |
+| `pytest tests/ -q` | **717 passed / 717**（原 700 + 16 落库 + 1 演示档位锁） |
+| store 变异（8 组） | 全部 `DETECTED`（`1 failed`），`RESTORED: True` |
+| 演示台变异（3 组） | 全部 `DETECTED`（rc=1），`RESTORED: True` |
+| `review_packet.py --check` | **OK（`32bf34c5c2450d60`）** |
+| `review_packet.py --check --full` | **OK_FULL**（包内 0 failed/717，重跑 0 failed/717） |
+| 落库闭环手工验证 | 五份 fixture 落库 → 关连接 → 重开 → `count=5`，读回报告与现算**逐字段相等** |
+
+### 75.7 边界与反证
+
+- **只做了"存"，没做"用"**：`user_skill_states` / `review_items` 有表无读写；掌握度 P、热度、调度仍是零代码。
+  决策 3 因此判 PARTIAL 而非 PASS。
+- 时间戳记的是 `evaluated_at`（2026-11-07T06:5x:00Z，夹具里的值），**不是**本轮运行时刻——
+  这是"补录历史不能记成今天"那条决定的实证，不是时钟错误。
+- **反证条件**：① 若接真 Agent（B-03）后 `trace` 的形态超出 `submissions.trace` 这一列的容量假设
+  （例如需要按调用分行存），本表结构要重做，属破坏性变更；② 若 M3 发现"一个学习者多 agent"
+  需要 `agent_id` 独立成实体，`submissions.agent_endpoint_url` 这个快照列不够用；
+  ③ 若 B-06 落地后 `skill_gaps` 与现在逐例相同，映射表的"自研核心"地位应降级。
+
+### 75.8 状态
+
+- B-01 **部分完成**（`[~]`）：地基与落库完成，读写路径属 M3；BACKLOG / ROADMAP 状态行已同步。
+- **待人拍板：无。** 本轮全是技术实现与判据精度，没有产品口径取舍。
+- 新增待办：C-03（自指互锁，下一批）。B-02（HTTP）是 M1 的下一块。

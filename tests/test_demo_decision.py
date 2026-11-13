@@ -38,11 +38,26 @@ def test_demo_is_not_fail_now(n):
 
 
 def test_partial_and_noexec_are_not_counted_as_pass():
-    """PARTIAL / NOT_EXECUTABLE 不许被当成 PASS——四档必须互斥。"""
+    """PARTIAL / NOT_EXECUTABLE 不许被当成 PASS——四档必须互斥。
+
+    round-75 订正：NOEXEC 从 1 降到 0（M1 建了 `review_items` 表，决策 3 从"无载体"
+    变成"有形态、无读写"，档位由 NOT_EXECUTABLE 升到 PARTIAL）。这是**有载体的演进**，
+    不是把降级档偷偷升成 PASS，所以不再断言"NOEXEC 必然存在"；
+    保留"必须有降级档"这条底线——若哪天全变 PASS，这条仍会红。
+    """
     verdicts = {dd.DEMOS[n]()[0] for n in dd.DEMOS}
     assert verdicts <= {dd.PASS, dd.PARTIAL, dd.NOEXEC, dd.FAIL}
-    # 本仓当前确实存在 PARTIAL 与 NOT_EXECUTABLE；若全变 PASS，说明有人把降级档偷偷升级了
-    assert dd.PARTIAL in verdicts and dd.NOEXEC in verdicts
+    assert dd.PARTIAL in verdicts
+
+
+def test_decision_3_stays_partial_until_review_items_are_written():
+    """表建了但没有任何代码读写 `review_items` ⇒ 决策 3 只能是 PARTIAL。
+
+    这条红了的正常原因是 M4 真的落地了（有 INSERT/SELECT review_items）。
+    那时候把断言改成 PASS 并写清依据，**不要直接删掉**——删掉之后就没有东西
+    阻止"建了张表就宣布复习闭环完成"。
+    """
+    assert dd.DEMOS[3]()[0] == dd.PARTIAL
 
 
 def test_exit_code_zero_when_no_fail():

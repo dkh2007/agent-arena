@@ -33,8 +33,8 @@
 |---|---|---|---|---|
 | **1 任务层** | 3 技能 × 2–3 变体，任务库 ≤10；YAML + 原子 rubric + 技能节点 + 错误模式 + 故障注入 + Git 版本锁 | 1 个任务（5 条断言：gate 2 + credit 3）；3 个技能节点（`tool_param_validation` / `multi_step_planning` / `failure_retry`）；14 个错误模式；`variant_template_id: null`；故障注入位声明但未用 | **半有肉** | `tasks/dbg-001-order-report.yaml`；`docs/skill-taxonomy-v0.yaml`；`docs/error-patterns-v0.yaml` |
 | **2 评测层** | 轨迹捕获 + 自动断言 + LLM Judge + 轨迹分析出诊断报告 | 五条断言执行器全现算（R1–R5）；DTO v2 + schema 校验；两段式 gate/credit；反事实得分；过程门槛；作废态；P3 对账器（未接 rubric）；**judge 层未实现**；**trace 捕获未实现**（只认现成 fixture） | **有肉** | `src/arena/` 产品代码 2574 行（`assertion_evaluator` 1539 / `diagnosis_report` 561 / `trace_pipeline` 327 / `reconciliation` 147）；700 passed；`--fixture all` |
-| **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`（按**断言自带 `skill_id`**，不查词表映射）；词表 14 条里 9 条填了 `mapped_skill_ids`，但 **`src/` 0 个消费者**（只有 `tests/test_task_yaml.py:265,285` 做引用完整性校验）；掌握度 P 只有公式，零代码；无持久化 ⇒ 无跨提交状态 | **半有肉（且核心那条是纸面）** | `src/arena/diagnosis_report.py:449-466`；`grep -rn mapped_skill_ids src/` → 空 |
-| **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | 只有实体定义；`grep -rl fsrs src/` → 空 | **纸面** | `docs/data-model.md` ReviewItem；`data-model.md` §5.2 |
+| **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`（按**断言自带 `skill_id`**，不查词表映射）；词表 14 条里 9 条填了 `mapped_skill_ids`，但 **`src/` 0 个消费者**（只有 `tests/test_task_yaml.py:265,285` 做引用完整性校验）；掌握度 P 只有公式，零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **半有肉（核心那条仍纸面）** | `src/arena/diagnosis_report.py:449-466`；`grep -rn mapped_skill_ids src/` → 空；`src/arena/store.py` |
+| **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | 只有实体定义 + **DDL**（`review_items` 表的 kind 四值、引用 task/submission）；**没有任何代码往写或读**；`grep -rl fsrs src/` → 只有 `store.py` 的列名 | **纸面（有表无行为）** | `store.py:SCHEMA_SQL`；`scripts/demo_decision.py 3` → PARTIAL |
 | **5 排程层** | 四因子建议排期 + 动态避让 + 用户可一键调整 | 只有创新点陈述（计划书 §五 第 3 条） | **纸面** | — |
 | **端** | Web 提交 + Android/Kotlin Compose 四页 | 零 | **空** | `grep -rl "fastapi\|flask\|APIRouter" src/` → 空 |
 | **云** | FastAPI + PostgreSQL + 任务队列 | 零；数据模型只有文档，`grep -rl "sqlite\|sqlalchemy" src/ tests/` → 空 | **空** | 同上 |
@@ -42,7 +42,9 @@
 
 > 判据换算：五层里有肉的 1 层、半有肉 2 层、纸面 2 层、端与云全空。
 > **一次提交内**的东西基本都做了（评分、诊断、缺口聚合、作废、对账）；
-> **跨提交**的东西一件都没有（掌握度、热度、调度）——分界线就是持久化。
+> **跨提交**的东西一件都没有（掌握度、热度、调度）。
+> round-75 补上了分界线的**下半截**：现在**存得下**了（`store.py`，重启读回已实证），
+> 但**没有代码读历史**去改变下一次判定——所以"跨提交能力"仍算零，只是不再缺地基。
 
 ## 2. 三层证据不能互相冒充
 
@@ -65,7 +67,7 @@
 |---|---|---|---|
 | **M-1** spike | 同一任务接 A2E 与 agentevals 比集成成本 | ✅ 已完成（`spike/README.md` 三级证据；A2E 26 指标全聚合分/LLM judge，无任务级布尔断言 ⇒ 评测层自研） | — |
 | **M0** 单任务打穿 | 1 个调试任务跑通、能区分好坏 Agent、定数据模型字段 | ✅ 基本达成（`dbg-001` 五夹具 0/0/0.25/0/0.5/1.0 能区分；数据模型 v0.1 七实体） | 没跑过**真** Agent（只用合成 fixture）；无 reference-agent 对照 |
-| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | ❌ 未开始 | 持久化、HTTP 服务、真 trace 采集、judge 双评 |
+| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化已就位**（round-75：7 表 + 落库 + 重启读回 + 16 条锁） | HTTP 服务、真 trace 采集、judge 双评 |
 | **M2** 任务库+分类学 | 10 个任务；错误分类学 v1（5–8 模式 + 映射表）；变体模板 | 🟡 分类学已超（14 模式）；任务 1/10；变体模板 0 | 9 个任务、变体模板、映射表接进代码 |
 | **M3** 状态层 | 掌握度 + 映射表 + 规则推荐 + AUC 回测 | ❌ 零代码 | 全部 |
 | **M4** 复习层 | FSRS 调度 + 三种形态 + 每日上限 | ❌ 零代码 | 全部 |
@@ -104,7 +106,7 @@ M3/M4 的顺序不能反：没有持久化就没有"上一次表现"，掌握度
 | 一个任务从提交到出报告，现在能跑吗？ | **能**（合成提交） | `python src/arena/trace_pipeline.py --fixture all` ✓ |
 | 跑出来的报告，第三方能独立复核吗？ | **能** | `python src/arena/review_packet.py --check --full` ✓；`scripts/equivalence_probe.py` ✓ |
 | 同一份提交，隔一周再跑结果一样吗？ | **能**（同环境同版本） | 五夹具分数序 `0/0/0.25/0/0.5/1.0`（§60.7 登记过变更） |
-| 换个学习者，第二次提交会根据第一次变吗？ | **不能** | 无持久化（`grep -rl sqlite src/` → 空） |
+| 换个学习者，第二次提交会根据第一次变吗？ | **还不能** | 已能存（`store.py`，重启读回实证），但**没有任何代码读历史去改变第二次的判定**——掌握度 P 仍是零代码 |
 
 前三个问题回答"现在这份东西是不是真的"，第四个回答"闭环是不是真的"——
 **第四个不能，说明闭环目前只在纸面上成立。**这句话应该出现在任何对外材料里，而不是等评委问出来。

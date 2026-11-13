@@ -21,6 +21,8 @@
 | `tests/test_dependencies.py` | 依赖可复现性冒烟（Q8）：离线比对 pin 版本与已安装版本 + 核心模块 import。供 CI 调用；本地 `pytest tests/` 也会跑到 |
 | `src/arena/assertion_evaluator.py` | **S3-1 + S3-3-2/3/4/5：R3 / R5 / R1 / R2 / R4 五个断言执行器 + 错误模式分类器**。判定表达式与分类规则都从 `tasks/*.yaml` 派生；**S3-3-2 起 `evaluate_assertion()` 是唯一分发入口**（按 `type` 分派 R3 `trace_sequence` / R5 `trace_final_status` / R1 `file_exists` / R2 `json_field_equals` / **S3-3-5 的 R4 `trace_param_schema_valid`**，其余抛 `NotImplementedError`；`evaluate()` 仍是 R3 专用）。`load_task_config()` 只缓存文件文本、每次返回新 dict；五个 `_validate_*_spec()` 均加载期 + 判定期各校验一次（TD-003 同款纪律）。`_validate_calls()` 除 `call_index` 连续外，**Q12(a) 补 `status ∈ status_enum` + `params` 是 dict**，允许值从 YAML 派生。**R1/R2 共用第三个输入源 `artifacts`（产物本体），绝不从 trace 的 `write_report` 自述推断**；`artifacts` 缺 / 坏判 unscored、没交产物判 fail。**R2 按 `docs/executor-semantics.md` §3 实现 `subset` + `tolerance`（禁止浮点 `==`），分类「收集全部命中的 case」而非首命中即止；`depends_on` 折叠须显式传 `dependency_results`，缺了抛错**。**R4 按 `docs/executor-semantics.md` §2 实现 required / type / range / additional_properties 四项 + `all_calls_must_be_valid`，工具声明从 `expected.schema_ref` 指向的 YAML 表读（`load_tool_schemas()`），分类按 cases 首命中即止，`bool` 排除出 `integer`，未知工具名判 unscored**。`--demo` 打印九行对照表。**S3-3-6**：`load_tool_schemas()` 可传 `task`（工具声明不再回落默认 YAML）；R2 补 `parse_error` / `raw_excerpt` 结构化 evidence，三类坍缩可分（TD-015 销项），判定口径与词表 / DTO 未改。**S3-3-7（round-27 P1 + round-28 P2，§29/§30）**：`_filter_expr()` 投影补 `i: call_index`、`_judge()` 返回四元组、新增 `_ambiguous_step()`（P1 的 `params_match` 分支 + P2 的 `http_status` 缺失/null 分支，值写错仍判 fail）、失败步缺字段判 `unscored/trace_invalid`、`call_count` 改数目标工具调用条数；不碰 `_validate_calls()` / audit 派生器 / DTO。**F3 判定层已闭合（TD-018 销项）**。**S3-3-7（round-32，§33）F4/F5 落地**：R4 未知工具不再屏蔽已观测违规（有违规照判 `fail`，`unknown_tools` 降为注记，仅违规为空才 `unscored`）；`expected.target_tools` 非空数组必填（加载期 + 判定期 fail-fast，须在 `schema_ref` 覆盖内）；`checked_calls` 语义改为「受检数」（扣除未知工具）；无目标工具受检调用（含空集）判 `unscored/trace_invalid`（Q4=(b) 复用码）；TD-019a/019b/028 销项 |
 | `src/arena/trace_pipeline.py` | **S3-3-6：全链路入口，五条断言全现算**。`raw.trace` + `raw.artifacts` → `recompute_all()` 逐条走 `evaluate_assertion()` → 覆盖 `assertion_results`（手写结果只读 id 壳、内容一律不读）→ `build_report()` → `validate_report()`。`--fixture all` 跑五份夹具。spec / trace 约束 / 工具声明**全部从传入的 `task` 派生**（F2 消解）；`recompute_r3()` 是 S3-2 兼容入口，只现算 R3、不在主链路上，供 71 条历史锁调用。五夹具分数序与 S2 基线逐项一致 |
+| `src/arena/store.py` | **M1 第一步（round-75）：SQLite 落库**。7 张表按 `docs/data-model.md` 逐字段对齐（`users`/`skills`/`tasks`/`error_patterns`/`submissions`/`user_skill_states`/`review_items`）+ 2 索引；**外键真开启**（SQLite 默认关，忘设等于无约束）；建库幂等；技能/模式/任务三种种子幂等 upsert；`save_submission` / `load_submission` / `load_report` / `list_submissions`。四条设计决定见模块文档：`user_id` 必须显式给（不从 `agent_id` 推）、`detected_patterns` 是派生列（只认 `state=fail`，真相源是 `diagnosis` 列）、重复 `submission_id` 抛错不覆盖、`created_at` 优先取 `evaluated_at`（复习间隔的时间轴不能记成"今天"）。**只做了"存"，没做"用"**：后两张表有表无读写 |
+| `tests/test_store.py` | **16 条落库约束锁**（round-75）：建表幂等 / 外键真生效 / 关连接重开仍读回 / 只落 `ratio` 不落反事实分 / 派生列只认 fail（**含一条构造锁**：夹具测不出"过滤与不过滤"的差别，必须构造 pass+blocked 带模式才咬得住）/ 派生列不回写报告 / 重复 id 不覆盖 / 空 `user_id` 与未注册任务拒绝 / 坏报告不留半条 / 时间轴锚评测时刻 / 列表倒序 + limit / 范围约束在表上。8 组字节级变异全 `DETECTED` |
 | `fixtures/tool-call-cases.json` | **14 个**边界 trace 用例集（乱序/零调用/只拉首页/跳过故障点/穿插/假重试等）。**Q10-A** 把 4 个原走 default 的 case 改为明写规则命中；**TD-004** 把 `expect.source` 升级为完整 `classification_source` 字符串并新增 `expect.observed_offsets`；**Q12(a) 补 `bad_status_enum` / `params_not_object` 两个 case**（期望 `unscored/trace_invalid`）。后续补 case 仍先改这里 |
 | `fixtures/raw-*.json` | 五份 S2 原始提交夹具。**S3-3-3 按 Q13(a) 补顶层 `artifacts`**（产物本体，与 trace 是两份独立证据）；`raw-fake-retry` 刻意保留「trace 无 `write_report` 但产物存在」，留给 P3 的 R6 做交叉比对。手写 `assertion_results` **一字未改**（S3-3-6 起「不再被读」≠「已被删除」，留作 S2 基线）；`size_bytes`（TD-009）、`raw-empty` 的旧分数描述（TD-021 / F10）均已订正或销项 |
 | `tests/test_assertion_evaluator.py` | S3-1 的 **55 条**约束用例（含 `call_index` 乱序回归锁、Q10-A 四条明写规则锁、TD-003 八条坏 spec 参数化 + H1 原样反例 + 加载期校验、TD-004 精确来源点名锁、**Q12(a) 五条回归锁（畸形调用判 unscored、枚举派生、枚举缺失拒绝猜测）**、YAML 派生锁、输出可直喂 `build_report()`） |
@@ -344,6 +346,25 @@
 > 裁判：**700 passed**；`--check` → 0（`d6f253a6e8fbe6ba` 未变，因三份文档都不在 `_snapshot()` 内）；
 > `--check --full` → **OK_FULL**；闸门 `SELF_TEST_PASS=True`；演示台 `PASS 7 / PARTIAL 3 / NOT_EXECUTABLE 1 / FAIL 0`。
 > 待人拍板项：**无**（B-22 的口径边界需人拍，但不是本轮新产生的）。
+
+> **最新状态（round-75，§75，M1 持久化落地）**：人回「按照你的想法来」⇒ 按 BACKLOG 开 B-01
+> （M1 硬闸门，卡住 M2/M3/M5）。新增 `src/arena/store.py`：7 张表 + 2 索引、外键真开启、建库幂等、
+> 三种种子幂等导入、落库/读回/列表。四条设计决定各有理由（`user_id` 不从 `agent_id` 推；
+> `detected_patterns` 是派生列；重复 id 抛错不覆盖；`created_at` 锚 `evaluated_at` 而非落库时刻）。
+> **两个过程事件已留痕**：① 第一版「只认 fail」的测试是**假锁**——夹具里 `unscored` 的 `error_patterns`
+> 已被上游清空，"过滤"与"不过滤"结果相同，变异 M2 报 MISSED；补一条构造锁（pass+blocked 各带模式）才咬住。
+> ② 该变异第一次报 `1 error` 是变异串的 `\n` 被 heredoc 写成 `/n`（语法错误），**error ≠ 证据**，
+> 判定函数已改成区分 `DETECTED` / `INVALID` / `MISSED`。
+> **建表后两条演示判据被列名顶红，改的是判据不是代码**：决策 3 从"源码出现 fsrs 字样即复习层已实现"
+> 改为判 `review_items` 的**形态**（kind 四值 + 引用 task/submission + 无卡片正反面），档位
+> `NOT_EXECUTABLE → PARTIAL`（有形态、无读写）；决策 8 从"出现 stability 字样即算"收窄为只抓**算式**
+> （赋给 alpha/decay 或参与乘除）。三组变异（kind 掺 flashcard / 删 task_id 引用 / 写 `alpha=card.stability*0.1`）
+> 证明新判据仍咬得住，rc 均为 1。
+> 裁判：**717 passed / 717**；`--check` → 0（**`32bf34c5c2450d60`**）；`--check --full` → **OK_FULL**；
+> store 变异 8 组 + 演示变异 3 组全 `DETECTED`、`RESTORED: True`。
+> **已知代价**：`test_test_count_matches_repo` 与生成流程自指互锁——第一次生成必记 `1 failed`（RC=2），
+> 第二次才收敛；已登记 BACKLOG C-03，收工清单注明"要生成两次"。
+> 待人拍板项：**无**。下一步 B-02（黑盒提交 HTTP）。
 
 **匿名纪律（对 AI 同样适用）**：本文档与仓库内任何文件不含真实姓名/校名；请勿在 AI 对话中粘贴含真名/校名的材料；API key 与 PAT 绝不进入任何对话。
 

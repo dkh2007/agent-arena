@@ -63,14 +63,17 @@
 
 ## 2. B 线：实现（按里程碑，前面卡后面）
 
-### [!] B-01 持久化层：7 实体建表
+### [~] B-01 持久化层：7 实体建表
 
-- **是什么**：`docs/data-model.md` 定义了 User / Task / Skill / ErrorPattern / ReviewItem / Submission / UserSkillState，
-  `src/` 里**零持久化**（`sqlite|sqlalchemy` 0 命中）。所有结果都是一次性内存对象，跑完就没了。
-- **卡在哪**：**这是整条 B 线的硬闸门**。没有它，掌握度没有"上一次表现"，FSRS 没有卡片宿主，热度无法累计。
-- **做完判据**：五份 fixture 跑完能落库，重启进程后能读回同一份 Submission；`task_git_hash` 落库。
-- **验证**：跑两次（中间重启）→ 第二次能读到第一次的 submission_id
-- **谁推**：我（M1 第一件事）。
+- **已做（round-75）**：`src/arena/store.py` —— 7 张表（`users` / `skills` / `tasks` / `error_patterns` /
+  `submissions` / `user_skill_states` / `review_items`）+ 2 个索引；外键真开启；建库幂等；
+  技能/模式/任务种子导入；`save_submission` / `load_submission` / `list_submissions`；
+  五份 fixture 落库后**关连接重开仍读回**，且与现算报告逐字段相等；16 条约束锁 + 8 组字节级变异全 DETECTED。
+- **还剩什么**：`user_skill_states` / `review_items` 只有表、没有任何代码读写（属 B-07/B-08）；
+  掌握度 P 与热度统计要等 M3 才有消费者；`trace` 列目前由调用方传，接真采集属 B-03。
+- **做完判据**：状态层能读历史（至少一处 `SELECT ... FROM submissions WHERE user_id=?` 参与判定）。
+- **验证**：`pytest tests/test_store.py -q` → 16 passed；`grep -rn "INSERT INTO review_items\|FROM user_skill_states" src/`
+- **谁推**：我（M1 已完成地基；M3 接读写）。
 
 ### [ ] B-02 黑盒提交服务（HTTP）
 
@@ -218,6 +221,19 @@
 - **验证**：批次记录里每步有增量数字，末次 `--check` 返回 0
 - **谁推**：我（下一批自动触发）。
 
+### [ ] C-03 `test_test_count_matches_repo` 与生成流程自指互锁
+
+- **是什么**：这条测试从 `DEFAULT_OUT` 读包正文，比对"包里的数 == 现在 collected 的数"。
+  而生成包的流程要跑全量测试——此时包还是旧的 ⇒ 这条必红 ⇒ 新包被记录成 `1 failed` ⇒
+  返回码 2（不可发布）⇒ **必须再生成一次才收敛**。
+  round-75 实证：第一次生成记录 `1 failed, 716 passed`，第二次 `717 passed / RC=0`。
+- **为什么现在不做**：两次生成能收敛，是已知代价；改它要动测试（再触发一轮 STALE）。
+- **做完判据**：一次生成就得到可发布包，且该测试仍能抓住"包内数字漂移"。
+  做法：fixture 改成**现场构建一个临时包**，不读 `DEFAULT_OUT`——与 round-73 修
+  `test_td036_check_fails_on_policy_drift` 同一手法（那次也是读默认包导致的互锁）。
+- **验证**：改完连跑两次生成，第一次就 RC=0；再手工把包里的数改错 → 该测试变红
+- **谁推**：我（下一批）。
+
 ---
 
 ## 5. 收工清单（每次改完必跑，按顺序）
@@ -229,6 +245,8 @@
 4. python scripts/push_gate.py --self-test --dirty c830b1b → SELF_TEST_PASS=True
 5. python scripts/demo_decision.py --all            → FAIL 必须为 0
 6. 若改了测试 → 必须重生成评审包（`_pytest_count()` 会变 ⇒ 必 STALE）
+   **且要生成两次**：第一次会把"包内旧数字 ≠ 现在数字"记成 `1 failed`（RC=2），
+   第二次才收敛到 RC=0（自指互锁，见 C-03）
 7. 本文件与 ROADMAP 的状态行跟着改
 ```
 
