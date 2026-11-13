@@ -36,15 +36,17 @@
 | **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`（按**断言自带 `skill_id`**，不查词表映射）；词表 14 条里 9 条填了 `mapped_skill_ids`，但 **`src/` 0 个消费者**（只有 `tests/test_task_yaml.py:265,285` 做引用完整性校验）；掌握度 P 只有公式，零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **半有肉（核心那条仍纸面）** | `src/arena/diagnosis_report.py:449-466`；`grep -rn mapped_skill_ids src/` → 空；`src/arena/store.py` |
 | **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | 只有实体定义 + **DDL**（`review_items` 表的 kind 四值、引用 task/submission）；**没有任何代码往写或读**；`grep -rl fsrs src/` → 只有 `store.py` 的列名 | **纸面（有表无行为）** | `store.py:SCHEMA_SQL`；`scripts/demo_decision.py 3` → PARTIAL |
 | **5 排程层** | 四因子建议排期 + 动态避让 + 用户可一键调整 | 只有创新点陈述（计划书 §五 第 3 条） | **纸面** | — |
-| **端** | Web 提交 + Android/Kotlin Compose 四页 | 零 | **空** | `grep -rl "fastapi\|flask\|APIRouter" src/` → 空 |
-| **云** | FastAPI + PostgreSQL + 任务队列 | 零；数据模型只有文档，`grep -rl "sqlite\|sqlalchemy" src/ tests/` → 空 | **空** | 同上 |
+| **端** | Web 提交 + Android/Kotlin Compose 四页 | **协议层已就位**（round-76：`submission_api.py`，标准库 `http.server`，3 端点：提交/读回/探活）；**UI 侧零**（无 Web 页、无 Android 工程） | **半有肉（只有 API，没有界面）** | `src/arena/submission_api.py`；`grep -rli "kotlin\|compose" .` → 空 |
+| **云** | FastAPI + PostgreSQL + 任务队列 | 零；只有本机 SQLite（`store.py`），无 HTTP 框架、无独立数据库进程、无队列 | **空** | `grep -rl "fastapi\|postgres\|celery" src/` → 空 |
 | **治理（不算产品层）** | — | 评审包生成器 + 推送闸门 + 三支只读探针 + 变异实证 | **有肉** | `src/arena/review_packet.py`、`scripts/{push_gate,demo_decision,q2_gate_probe,td040_compare,equivalence_probe}.py` |
 
-> 判据换算：五层里有肉的 1 层、半有肉 2 层、纸面 2 层、端与云全空。
+> 判据换算：五层里有肉的 1 层、半有肉 2 层、纸面 2 层；端从"空"升到"半有肉"，云仍空。
 > **一次提交内**的东西基本都做了（评分、诊断、缺口聚合、作废、对账）；
 > **跨提交**的东西一件都没有（掌握度、热度、调度）。
 > round-75 补上了分界线的**下半截**：现在**存得下**了（`store.py`，重启读回已实证），
 > 但**没有代码读历史**去改变下一次判定——所以"跨提交能力"仍算零，只是不再缺地基。
+> round-76 又补了一条**对外通道**：外面能交进来了（`submission_api.py`），
+> 但交进来的东西仍只影响"这一次"，不会因为上次而变。
 
 ## 2. 三层证据不能互相冒充
 
@@ -67,7 +69,7 @@
 |---|---|---|---|
 | **M-1** spike | 同一任务接 A2E 与 agentevals 比集成成本 | ✅ 已完成（`spike/README.md` 三级证据；A2E 26 指标全聚合分/LLM judge，无任务级布尔断言 ⇒ 评测层自研） | — |
 | **M0** 单任务打穿 | 1 个调试任务跑通、能区分好坏 Agent、定数据模型字段 | ✅ 基本达成（`dbg-001` 五夹具 0/0/0.25/0/0.5/1.0 能区分；数据模型 v0.1 七实体） | 没跑过**真** Agent（只用合成 fixture）；无 reference-agent 对照 |
-| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化已就位**（round-75：7 表 + 落库 + 重启读回 + 16 条锁） | HTTP 服务、真 trace 采集、judge 双评 |
+| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化 + HTTP 入口已就位**（round-75 落库、round-76 三端点 + 逐字段对拍） | 真 trace 采集（B-03）、judge 双评（B-04）、鉴权 |
 | **M2** 任务库+分类学 | 10 个任务；错误分类学 v1（5–8 模式 + 映射表）；变体模板 | 🟡 分类学已超（14 模式）；任务 1/10；变体模板 0 | 9 个任务、变体模板、映射表接进代码 |
 | **M3** 状态层 | 掌握度 + 映射表 + 规则推荐 + AUC 回测 | ❌ 零代码 | 全部 |
 | **M4** 复习层 | FSRS 调度 + 三种形态 + 每日上限 | ❌ 零代码 | 全部 |

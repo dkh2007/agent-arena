@@ -223,6 +223,57 @@ def recompute_r3(raw: dict, spec: dict | None = None, vocab: set[str] | None = N
     return out
 
 
+def assemble_raw(submission: dict, task: dict, *, trace: dict | None = None,
+                 artifacts: dict | None = None,
+                 process_note: str | None = None) -> dict:
+    """黑盒提交入口（M1 / B-02）：外部只交「提交信息 + trace + 产物」，其余由平台派生。
+
+    与 `run_fixture()` 的分工：它读的是磁盘上已完整成型的 raw（带手写 `trace_audit`
+    与 `assertion_results` 壳），那是内部基线；本函数把「外部能提供什么」和
+    「平台必须自己算什么」分开——**这是黑盒的前提**，否则被测方可以自带审计结论：
+
+    | 字段 | 外部可给 | 理由 |
+    |---|---|---|
+    | `submission` | 是 | 提交者知道自己的身份与提交时刻 |
+    | `trace` / `artifacts` | 是 | 被观测的行为与产物，正是评测对象 |
+    | `trace_audit` | **否** | F1 决策：它是 trace 的派生物。外部填它等于让被测方自报审计结论 |
+    | `assertion_results` | **否**（只由平台生成 id 壳） | `recompute_all()` 会整条覆盖内容；外部给内容只会制造「看着像判定结果」的假证据 |
+
+    `assertion_results` 因此只生成 `{"id": ...}` 壳，顺序与 rubric（gate 在前）一致，
+    以满足 `recompute_all()` 的 id 集合校验；内容由执行器逐条现算。
+
+    **等价性判据**：同一份夹具，走「assemble_raw -> recompute_all -> build_report」
+    与走 `run_fixture()` 必须逐字段相等（见 `tests/test_submission_api.py` 的对拍）。
+    若不等价，说明 HTTP 入口和内部链路悄悄分叉了。
+    """
+    if not isinstance(submission, dict):
+        raise PipelineError(f"submission 必须是对象，实际 {type(submission).__name__}")
+    if trace is not None and not isinstance(trace, dict):
+        raise PipelineError(f"trace 类型非法：{type(trace).__name__}")
+    if artifacts is not None and not isinstance(artifacts, dict):
+        raise PipelineError(f"artifacts 类型非法：{type(artifacts).__name__}")
+
+    gate, credit = dr.rubric_layers(task)
+    requirements = (task.get("trace_requirements") or {}).get("minimum")
+    if trace is not None and not isinstance(requirements, dict):
+        # 先自己拦，别把 AttributeError 漏给调用方（_trace_audit_issues 假定它是 dict）
+        raise PipelineError("任务缺 trace_requirements.minimum，无法派生 trace_audit")
+
+    sub = copy.deepcopy(submission)
+    if process_note is not None:
+        if not isinstance(process_note, str):
+            raise PipelineError(f"process_note 必须是字符串，实际 {type(process_note).__name__}")
+        sub["process_note"] = process_note
+
+    return {
+        "submission": sub,
+        "trace": copy.deepcopy(trace),
+        "trace_audit": _derive_trace_audit(trace, requirements),  # 派生，不采信外部
+        "artifacts": copy.deepcopy(artifacts) if artifacts is not None else {},
+        "assertion_results": [{"id": s["id"]} for s in gate + credit],
+    }
+
+
 def recompute_all(raw: dict, task: dict | None = None,
                   vocab: set[str] | None = None) -> dict:
     """S3-3-6：五条断言全部由执行器现算，手写 `assertion_results` 只读 id 壳、不读内容。

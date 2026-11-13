@@ -23,6 +23,8 @@
 | `src/arena/trace_pipeline.py` | **S3-3-6：全链路入口，五条断言全现算**。`raw.trace` + `raw.artifacts` → `recompute_all()` 逐条走 `evaluate_assertion()` → 覆盖 `assertion_results`（手写结果只读 id 壳、内容一律不读）→ `build_report()` → `validate_report()`。`--fixture all` 跑五份夹具。spec / trace 约束 / 工具声明**全部从传入的 `task` 派生**（F2 消解）；`recompute_r3()` 是 S3-2 兼容入口，只现算 R3、不在主链路上，供 71 条历史锁调用。五夹具分数序与 S2 基线逐项一致 |
 | `src/arena/store.py` | **M1 第一步（round-75）：SQLite 落库**。7 张表按 `docs/data-model.md` 逐字段对齐（`users`/`skills`/`tasks`/`error_patterns`/`submissions`/`user_skill_states`/`review_items`）+ 2 索引；**外键真开启**（SQLite 默认关，忘设等于无约束）；建库幂等；技能/模式/任务三种种子幂等 upsert；`save_submission` / `load_submission` / `load_report` / `list_submissions`。四条设计决定见模块文档：`user_id` 必须显式给（不从 `agent_id` 推）、`detected_patterns` 是派生列（只认 `state=fail`，真相源是 `diagnosis` 列）、重复 `submission_id` 抛错不覆盖、`created_at` 优先取 `evaluated_at`（复习间隔的时间轴不能记成"今天"）。**只做了"存"，没做"用"**：后两张表有表无读写 |
 | `tests/test_store.py` | **16 条落库约束锁**（round-75）：建表幂等 / 外键真生效 / 关连接重开仍读回 / 只落 `ratio` 不落反事实分 / 派生列只认 fail（**含一条构造锁**：夹具测不出"过滤与不过滤"的差别，必须构造 pass+blocked 带模式才咬得住）/ 派生列不回写报告 / 重复 id 不覆盖 / 空 `user_id` 与未注册任务拒绝 / 坏报告不留半条 / 时间轴锚评测时刻 / 列表倒序 + limit / 范围约束在表上。8 组字节级变异全 `DETECTED` |
+| `src/arena/submission_api.py` | **M1 第二步（round-76）：黑盒提交服务（HTTP）**。标准库 `http.server`，**零新依赖**（`requirements.txt` 全 pin 且 `test_dependencies.py` 比对本机版本，引框架要连带核 license）。3 端点：`POST /submissions`（提交 → DTO v2）、`GET /submissions/{id}`（读回）、`GET /healthz`。**黑盒的含义**：`trace_audit` 与 `assertion_results` 的 id 壳由平台派生，外部填不了（外部能填审计字段 = 让被测方自报结论）。`task_version` 必填（B-21，缺则 400 专用码且不落库）；给错版本 ≠ 缺字段——走 `voided` 报告。端点只做 TCP 探测不发业务请求（发请求会让被测 Agent 真跑一次，污染 R3）；不可达 → 200 + 全 `unscored`（**不是 `blocked`**，见 schema 文档 §6 订正）。每请求新建 sqlite 连接（`ThreadingHTTPServer` 跨线程，连接不共享）。**无鉴权、只绑 `127.0.0.1`** |
+| `tests/test_submission_api.py` | **24 条**（round-76）。真 socket（`port=0` 系统分配），测的是真服务而不是假对象。最硬的一条是**五夹具逐字段对拍**：HTTP 入口与内部链路必须完全相等，把「薄协议层」从注释变成可验证事实。另有 B-21 不落库断言、端点不可达的全 unscored + 归因开关、**「文案不甩锅」锁**（不许出现「请补交步骤」）、重复 id 不覆盖、默认只绑本机。9 组变异全 `DETECTED` |
 | `fixtures/tool-call-cases.json` | **14 个**边界 trace 用例集（乱序/零调用/只拉首页/跳过故障点/穿插/假重试等）。**Q10-A** 把 4 个原走 default 的 case 改为明写规则命中；**TD-004** 把 `expect.source` 升级为完整 `classification_source` 字符串并新增 `expect.observed_offsets`；**Q12(a) 补 `bad_status_enum` / `params_not_object` 两个 case**（期望 `unscored/trace_invalid`）。后续补 case 仍先改这里 |
 | `fixtures/raw-*.json` | 五份 S2 原始提交夹具。**S3-3-3 按 Q13(a) 补顶层 `artifacts`**（产物本体，与 trace 是两份独立证据）；`raw-fake-retry` 刻意保留「trace 无 `write_report` 但产物存在」，留给 P3 的 R6 做交叉比对。手写 `assertion_results` **一字未改**（S3-3-6 起「不再被读」≠「已被删除」，留作 S2 基线）；`size_bytes`（TD-009）、`raw-empty` 的旧分数描述（TD-021 / F10）均已订正或销项 |
 | `tests/test_assertion_evaluator.py` | S3-1 的 **55 条**约束用例（含 `call_index` 乱序回归锁、Q10-A 四条明写规则锁、TD-003 八条坏 spec 参数化 + H1 原样反例 + 加载期校验、TD-004 精确来源点名锁、**Q12(a) 五条回归锁（畸形调用判 unscored、枚举派生、枚举缺失拒绝猜测）**、YAML 派生锁、输出可直喂 `build_report()`） |
@@ -365,6 +367,24 @@
 > **已知代价**：`test_test_count_matches_repo` 与生成流程自指互锁——第一次生成必记 `1 failed`（RC=2），
 > 第二次才收敛；已登记 BACKLOG C-03，收工清单注明"要生成两次"。
 > 待人拍板项：**无**。下一步 B-02（黑盒提交 HTTP）。
+
+> **最新状态（round-76，§76，M1 黑盒提交服务落地）**：人回「继续吧」⇒ 按 round-75 结尾承诺做 B-02，
+> 并把 B-21（`task_version` 必填）同批收紧。新增 `src/arena/submission_api.py`（标准库 `http.server`，
+> **零新依赖**）：3 端点、请求归一化、错误码表、端点 TCP 探测、每请求新建 sqlite 连接。
+> **判据订正一处（必须记住）**：B-02 原文要求「端点不可达返回 `blocked`」，**实测不可行**——
+> `blocked` 的语义是「前置断言已失败、无法判定」，`_assertion_item():266-270` 强制要求存在真失败的前置，
+> 而端点不可达时一条断言都没失败过。`tool_no_response` / `invoke_timeout` 因此在原文口径下是
+> **不可达组合**（写进枚举、无任何生产者，且写了也被 builder 拒）。改用 `unscored` + `tool_no_response`
+> （与 `artifact_invalid` 同类：平台采集故障），分数贡献同为 0、同样不计掌握度，只改原因归属。
+> `docs/diagnosis-report-schema.md` §6 已订正并留痕。
+> **架构边界**：`assemble_raw()` 只允许外部给 `submission` / `trace` / `artifacts`；
+> `trace_audit` 与 `assertion_results`（除 id 壳）由平台派生——这是「黑盒」一词的实际含义。
+> **等价性对拍是本项最硬的锁**：五夹具「HTTP 入口 vs 内部链路」逐字段相等。第一次五份全红，
+> 根因不是口径分歧而是**夹具比客户端旧**（写在 TD-038 之前，缺 `task_version`）；对照组补上后全等。
+> 裁判：**741 passed / 741**（717 + 24）；`--check` → 0（**`da575b9ab7d18a12`**）；
+> `--check --full` → **OK_FULL**（包内 0 failed/741，重跑 0 failed/741）；9 组变异全 `DETECTED`、`RESTORED: True`。
+> **C-03 本轮没触发**（一次收敛），但机制没改，仍挂着——别当成已修。
+> 待人拍板项：**无**。下一步 B-03（真 trace 采集）或 B-04（judge 双评）。
 
 **匿名纪律（对 AI 同样适用）**：本文档与仓库内任何文件不含真实姓名/校名；请勿在 AI 对话中粘贴含真名/校名的材料；API key 与 PAT 绝不进入任何对话。
 

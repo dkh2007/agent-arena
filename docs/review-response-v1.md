@@ -6738,3 +6738,129 @@ until_review_items_are_written`，防止"建了张表就宣布复习闭环完成
 - B-01 **部分完成**（`[~]`）：地基与落库完成，读写路径属 M3；BACKLOG / ROADMAP 状态行已同步。
 - **待人拍板：无。** 本轮全是技术实现与判据精度，没有产品口径取舍。
 - 新增待办：C-03（自指互锁，下一批）。B-02（HTTP）是 M1 的下一块。
+
+---
+
+## 76. round-76：黑盒提交服务落地（B-02 + B-21），一处判据订正与一处架构边界
+
+**起因**：维护者回「继续吧」，即按 round-75 结尾的承诺做 B-02（黑盒提交 HTTP 入口）。
+B-21（task_version 必填）按台账本就与 B-02 同批，一并收紧。
+
+### 76.1 做了什么
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| `src/arena/submission_api.py`（新，约 430 行） | 产品代码 | 3 端点（`POST /submissions`、`GET /submissions/{id}`、`GET /healthz`）；请求归一化；错误码表；端点 TCP 探测；每请求新建 sqlite 连接 |
+| `src/arena/trace_pipeline.py` | 加一个函数 | `assemble_raw()`：把「外部能提供什么」与「平台必须自己算什么」分开 |
+| `src/arena/diagnosis_report.py` | 加一个 kwarg | `build_report(..., unreachable_reason=)`：只改文案与归因说明，不改判定语义 |
+| `tests/test_submission_api.py`（新） | 测试 | 24 条；真 socket（`port=0` 由系统分配，不猜端口） |
+| `docs/diagnosis-report-schema.md` | 契约订正 | 第 6 节两个 reason_code 的状态从 `blocked` 改为 `unscored` + 留痕 |
+
+**为什么用标准库 `http.server` 而不是 FastAPI**：`requirements.txt` 每个版本都 pin 死，
+`tests/test_dependencies.py` 会比对**本机实际安装**版本；引入框架要连带核 license、
+记入计划书开源边界表。当前 3 个端点、无并发压测需求，标准库够用。
+真要上生产只需替换 `make_server()` 这一层，`prepare()` / `evaluate()` 不动。
+
+### 76.2 一处判据订正：`tool_no_response` 不是 `blocked`，是 `unscored`
+
+B-02 判据原文写「端点不可达时返回 `blocked` 而不是 500」。**实测不可行**：
+
+```
+$ 把 R1 标成 blocked + tool_no_response
+ReportError: R1_file_exists: 标了 blocked，但前置 [] 全部通过——blocked 无依据
+```
+
+根因是两条契约互斥：
+
+- `docs/diagnosis-report-schema.md` §6 表格把 `tool_no_response` / `invoke_timeout` 标为 `blocked`；
+- 同一文档 §7 的 **I4** 要求「`blocked` 必须有真失败的前置」，且 `_assertion_item():266-270` 有执行者；
+- 端点不可达时**一条断言都没失败过**（连跑都没跑起来）⇒ 永远够不到 `blocked` 的前提。
+
+所以这两个 reason_code 在原文口径下是**不可达组合**：写进枚举，却没有任何路径能产生它们
+（`grep -rn "tool_no_response" src/` → 改动前 0 个生产者）。这与 `mapped_skill_ids` 属同一类
+「有声明、无执行者」，但更隐蔽——它不只是没写，而是**写了也会被 builder 拒绝**。
+
+处置：改用 `unscored` + `tool_no_response`。
+依据是同类先例 `artifact_invalid`：表格原文就写「**平台采集故障**，不判成学生没交、不归因」。
+端点不可达正是平台采集故障。四态里 `blocked` 与 `unscored` 的**分数贡献完全相同**（都是 0）、
+同样不计掌握度，区别只在原因归属——所以这个订正不改变任何分数，只让原因说对。
+
+### 76.3 一处架构边界：黑盒的含义是「外部填不了审计字段」
+
+`assemble_raw()` 的字段白名单是这一轮最重要的设计决定：
+
+| 字段 | 外部可给 | 理由 |
+|---|---|---|
+| `submission` / `trace` / `artifacts` | 是 | 提交者知道自己的身份，行为与产物正是被评测对象 |
+| `trace_audit` | **否** | F1 决策：它是 trace 的派生物。外部填它 = 让被测方自报审计结论 |
+| `assertion_results` | **否**（只给 id 壳） | `recompute_all()` 整条覆盖内容；外部给内容只会制造「看着像判定结果」的假证据 |
+
+`assertion_results` 因此只生成 `{"id": ...}` 壳，顺序按 rubric（gate 在前），
+满足 `recompute_all()` 的 id 集合校验。
+
+### 76.4 等价性对拍（本项最硬的锁）与它第一次为什么红
+
+判据：同一份夹具，「`assemble_raw` → `recompute_all` → `build_report`」与 `run_fixture()`
+必须**逐字段相等**。这条把「HTTP 层只是一层薄协议」从注释声明变成可验证事实。
+
+第一次跑，五份全红。差异只在 `submission` 一处。根因不是口径分歧：
+**夹具写在 TD-038 之前，`submission` 里根本没有 `task_version`**，而 B-21 之后真实客户端必须带。
+对照组装错了对象——比出来的是「夹具比客户端旧」。对照组补上 `task_version` 后五份全等。
+
+留痕理由：以后再加夹具，若忘了新必填字段，这条测试会以同样的方式红；
+不知道自己红在哪，就会去改 API 而不是改夹具。
+
+### 76.5 变异（9 组，全部 DETECTED）
+
+| 变异 | 结果 |
+|---|---|
+| M1 `task_version` 改可选 | DETECTED（1 failed） |
+| M2 缺版本时用通用 `missing_field` 代替专用码 | DETECTED |
+| M3 不可达判成 `pass` | DETECTED（2 failed / 1 passed） |
+| M4 探测永远算可达 | DETECTED（3 failed） |
+| M5 不可达时不给 `unreachable_reason` | DETECTED |
+| M6 重复 `submission_id` 返 200 | DETECTED |
+| M7 协议层丢掉 `artifacts` | DETECTED（3 failed / 2 passed） |
+| M8 版本不一致直接 400 | DETECTED |
+| M9 可达无证据也放行（501→201） | DETECTED |
+
+`RESTORED: True`。判定沿用 round-75 的教训：区分 `DETECTED` / `INVALID(变异自身崩)` / `MISSED`，
+不把语法错误当证据。
+
+### 76.6 实测
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_submission_api.py -q` | **24 passed / 20.87s** |
+| `pytest tests/ -q` | **741 passed / 741**（原 717 + 24） |
+| 端口 | 真 socket，`server_address` 取实际端口 |
+| `POST` 完美夹具 | **201**，`ratio=1.0`，`validate_report()` 通过 |
+| `GET` 读回 | 与 POST 返回体**逐字段相等** |
+| 缺 `task_version` | **400 `task_version_missing`**，`count(submissions)==0` |
+| 版本不一致 | **201**，`voided=true`，`void_reason=task_version_mismatch`，`ratio=0` |
+| 端点不可达 | **201** 报告，`by_state` 全 `unscored`，`counts_toward_mastery=false`，`skill_gaps=[]` |
+| 端点可达但无证据 | **501 `endpoint_capture_not_implemented`**，不落库 |
+| 重复 `submission_id` | **409**，第二次请求后读回仍等于第一次 |
+| `review_packet.py --check` | **OK（`da575b9ab7d18a12`）** |
+| `review_packet.py --check --full` | **OK_FULL**（包内 0 failed/741，重跑 0 failed/741） |
+
+### 76.7 边界与反证
+
+- **本轮只做到「接得住 + 说得清」**：端点可达时不会主动调用、不会采集 trace（501 明说），
+  真采集仍是 B-03；无鉴权，只绑 `127.0.0.1`。
+- **`process_fact` 没改语义**：端点不可达时它仍如实记 `missing=true`（客观事实：这次确实没收到过程），
+  变的只是 note 的**责任归属措辞**。没有为了好看去改中性事实记录——那会让「谁的责任」变得不可查。
+- **C-03 本轮没触发**：round-75 那次评审包要生成两次才收敛，本轮两次 sha 相同（一次收敛）。
+  机制没改，所以 C-03 **仍挂着**；本轮只是碰巧顺序对上了，不能当成"已经修好"。
+- **反证条件**：
+  ① 若 B-03 接真采集后发现端点探测会成为瓶颈（每次提交多 1.5s），探测应改为可配置或异步；
+  ② 若出现「部分断言有证据、部分不可得」的混合提交（当前不支持，只能整体不可达），
+  `unreachable_report()` 的全 `unscored` 策略要改成逐条判定；
+  ③ 若上公网前仍未加鉴权，任何知道端口的人都能往库里灌提交——这是本轮明确留下的口子。
+
+### 76.8 状态
+
+- B-02、B-21 **已关闭**（`[x]`）。BACKLOG / ROADMAP / schema 文档均已同步。
+- **待人拍板：无。** 判据订正（`blocked`→`unscored`）不是产品口径取舍，
+  是既有决策 7 与 I4 规则推导出的唯一自洽结论，且不改变任何分数。
+- 下一步：B-03（真 trace 采集）或 B-04（judge 双评）。二者都依赖真提交，可并行推进。

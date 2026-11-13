@@ -346,10 +346,18 @@ def _report_attribution(policy: dict, by_state: dict, suppressed: bool) -> dict:
     }
 
 
-def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
+def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
+                 *, unreachable_reason: str | None = None) -> dict:
     """把「逐条断言结果 + trace 校验结果」组装成符合 schema 的诊断报告。
 
     raw 结构见 docs/diagnosis-report-schema.md 第 4 节（fixtures/ 下有真实例子）。
+
+    `unreachable_reason`（M1 / B-02）：平台没取到任何证据时（例如提交声明的 Agent
+    端点连不上），传一个原因码进来。它**只改文案与归因说明，不改判定语义**：
+    断言状态仍由各自 reason_code 表达（全部 `unscored`），分数仍为 0，
+    `process_fact` 仍如实记「要过程、这次没收到」——它记的是事实，不负责解释原因。
+    存在的唯一目的：别让报告写出「请补交步骤」而把平台采集失败算到学习者头上
+    （决策 7「数据缺失 ≠ 能力不足」的直接推论）。
     """
     vocab = vocab if vocab is not None else load_vocabulary()
     gate_specs, credit_specs = rubric_layers(task)
@@ -371,6 +379,13 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
     trace_audit = dict(raw["trace_audit"])
     trace_ok = bool(trace_audit["reported"]) and bool(trace_audit["schema_valid"])
     notes: list[str] = []
+    if unreachable_reason is not None:
+        # 放在最前：读者先知道「这次根本没评上」，再读下面的逐条判定才不会误解
+        notes.append(
+            f"本次未评测：平台未能取到任何证据（{unreachable_reason}）。"
+            "全部断言记 unscored —— 0 分、不计入掌握度、不产出错误模式，"
+            "**不视为能力不足**。请确认 Agent 端点可达后重新提交"
+        )
 
     assertions = [
         _assertion_item(spec["id"], spec, layer, results[spec["id"]], trace_ok, trace_audit, results, vocab)
@@ -382,7 +397,8 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
     disqualifying = [a["id"] for a in gate_assertions if a["state"] == "fail"]
     gate_unscored = [a["id"] for a in gate_assertions if a["state"] == "unscored"]
     disqualified = bool(disqualifying)
-    if gate_unscored:
+    # unreachable 时整份都没评测，这条"门禁无法判定"的细节会盖住真正原因，故跳过
+    if gate_unscored and unreachable_reason is None:
         # TD-021 / F6②：原文「分数不会因此变高」与实测 ratio=0.5 相反，按 S3-3-6 订正。
         notes.append(
             "门禁 " + ", ".join(gate_unscored) + " 无法判定（数据缺失）：按 on_unscored=do_not_disqualify 不拦，"
@@ -431,12 +447,20 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
             "以下断言判定基于提交版本，仅供参考"
         )
     if missing_process:
-        notes.append(
-            "本任务要求提交过程/思路：本次未收到过程（未上报 trace，也未写思路说明）。"
-            "按**流程不完整**处理——本次不计能力分、不计入掌握度、不产出错误模式，"
-            f"**不视为能力不足**（反事实得分 {counterfactual_credit}/{credit_total} 仅供参考）。"
-            "请补交步骤，或写一句「没思路」后重交"
-        )
+        if unreachable_reason is not None:
+            # 事实一样（这次确实没过程），责任归属不同：平台没采集 ≠ 学习者没交。
+            # 两者的处置都是"本次不计分"，但文案若混为一谈，学习者会以为被追责。
+            notes.append(
+                "本任务要求提交过程/思路：本次确实没有收到过程证据，但原因是平台未能采集"
+                f"（{unreachable_reason}），**不是学习者未提交**，因此不按「流程不完整」追责"
+            )
+        else:
+            notes.append(
+                "本任务要求提交过程/思路：本次未收到过程（未上报 trace，也未写思路说明）。"
+                "按**流程不完整**处理——本次不计能力分、不计入掌握度、不产出错误模式，"
+                f"**不视为能力不足**（反事实得分 {counterfactual_credit}/{credit_total} 仅供参考）。"
+                "请补交步骤，或写一句「没思路」后重交"
+            )
 
     attr_src = (task.get("scoring") or {}).get("attribution") or {}
     attribution_policy = {
@@ -470,7 +494,7 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None) -> dict:
         if a["state"] == "fail" and not a["skill_id"]
     ]
 
-    if not trace_audit["reported"]:
+    if not trace_audit["reported"] and unreachable_reason is None:
         notes.append("未上报 trace：轨迹类断言记 unscored（分数贡献 0，但不计入掌握度），不判 0")
     elif not trace_audit["schema_valid"]:
         notes.append(

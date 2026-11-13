@@ -209,9 +209,21 @@ P5 的最终处置是**不加第 4 技能**，走 gate 通道：`score.disqualif
 | `trace_not_reported` | `unscored` | Agent 完全没上报 trace |
 | `trace_invalid` | `unscored` | 报了但没通过前置校验（call_index 不连续、时间戳倒退等） |
 | `dependency_blocked` | `blocked` | 前置断言未通过，本断言无从判定 |
-| `tool_no_response` | `blocked` | 工具无响应，产物不可得 |
-| `invoke_timeout` | `blocked` | 调用超时 |
+| `tool_no_response` | `unscored`（原写 `blocked`，见下方订正） | 工具无响应，产物不可得 |
+| `invoke_timeout` | `unscored`（同上） | 调用超时 |
 | `artifact_invalid` | `unscored` | 产物本体（Q13(a) 的 `raw.artifacts`）缺失或结构非法：**平台采集故障**，不判成「学生没交」、不归因；S3-3-6 按 §20.2 第 1 项扩入 |
+
+> **M1（2026-11-13）订正：`tool_no_response` / `invoke_timeout` 的状态是 `unscored`，不是 `blocked`。**
+>
+> 原文把这两条标成 `blocked`，与下表 I4「`blocked` 必须有真失败的前置」直接冲突。
+> 实测（M1 接 HTTP 入口时）：把 R1 标成 `blocked + tool_no_response`，builder 当场拒绝——
+> `ReportError: R1_file_exists: 标了 blocked，但前置 [] 全部通过——blocked 无依据`。
+> 端点不可达时**没有任何断言失败过**（连跑都没跑起来），所以它永远够不到 `blocked` 的前提。
+>
+> 它们与 `artifact_invalid` 属同一类「平台采集故障」：分数贡献同为 0、同样不计掌握度、
+> 同样不产出错误模式，区别只在原因归属。原文「`blocked`」作废。
+> 实现见 `src/arena/submission_api.py:unreachable_report()`，锁见
+> `tests/test_submission_api.py::test_unreachable_is_unscored_not_fail`。
 
 ---
 

@@ -4,7 +4,7 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
-> 更新：2026-11-13（round-74）。
+> 更新：2026-11-13（round-76：B-02 / B-21 关闭，判据一处订正）。
 
 ---
 
@@ -75,19 +75,31 @@
 - **验证**：`pytest tests/test_store.py -q` → 16 passed；`grep -rn "INSERT INTO review_items\|FROM user_skill_states" src/`
 - **谁推**：我（M1 已完成地基；M3 接读写）。
 
-### [ ] B-02 黑盒提交服务（HTTP）
+### [x] B-02 黑盒提交服务（HTTP）
 
 - **是什么**：注册 → 填 Agent 端点 → 提交 → 返回诊断报告。计划书 M1。
 - **为什么排在 B-01 后**：服务本身是薄的，没有库就只能返回不能留痕。
 - **做完判据**：`POST /submissions` 带 trace + artifacts 能返回 DTO v2 并通过 schema 校验；
-  端点不可达时返回 `blocked` 而不是 500。
-- **验证**：起服务 → curl 一个 fixture → 返回体过 `validate_report()`
-- **谁推**：我。
+  端点不可达时返回**可读报告**而不是 500。
+  > **判据订正（round-76）**：原文写「返回 `blocked`」，实测不可行。`blocked` 的语义是
+  > 「前置断言已失败、无法判定」，builder 的 I4 规则强制要求存在**真失败的前置**；
+  > 端点不可达时一条断言都没失败过（连跑都没跑起来），套 `blocked` 会被当场拒绝。
+  > 改用 `unscored` + `tool_no_response`——与 `artifact_invalid` 同类（平台采集故障）。
+  > 分数贡献同为 0、同样不计掌握度，区别只在原因归属。
+- **落地**：`src/arena/submission_api.py`（标准库 `http.server`，**零新依赖**）：
+  `POST /submissions` / `GET /submissions/{id}` / `GET /healthz`；
+  `trace_audit` 与 `assertion_results` 的 id 壳全部由平台派生，外部填不了（这才是黑盒）；
+  端点只做 TCP 探测不发业务请求（发请求会让被测 Agent 真跑一次，污染 R3）；
+  每请求新建 sqlite 连接（`ThreadingHTTPServer` 跨线程，连接不共享）。
+- **验证**：`pytest tests/test_submission_api.py -q` → 24 passed；9 组变异全 DETECTED；
+  五夹具「HTTP 入口 vs 内部链路」**逐字段对拍相等**（这条是本项最硬的锁）。
+- **还剩什么**：无鉴权、只绑 `127.0.0.1`；端点可达时还不能主动采集（返回 501，属 B-03）。
 
 ### [ ] B-03 真 trace 采集（OTel GenAI 打桩）
 
 - **是什么**：现在所有结论都建立在**合成 fixture** 上，从没跑过真 Agent（ROADMAP R-4）。
 - **为什么现在不做**：要有可调的 Agent 端点；且 OTel GenAI 语义约定截至 2026-11 仍是 Development，属性名变过。
+- **前置已就绪**：B-02 的 HTTP 入口能接住外部提交，端点探测与「可达但不会采集 → 501」这条边界已经实现。
 - **做完判据**：一个 reference-agent 跑 `dbg-001`，采到的 trace 能直接喂进 `recompute_all()` 且不触发 `trace_invalid`；
   所用属性名 pin 进代码注释与 `requirements.txt`。
 - **验证**：真 Agent 跑一次 → `trace_audit.schema_valid == True` 且 `call_count > 0`
@@ -167,13 +179,17 @@
 - **验证**：`--fixture all` 分数序 + `tests/test_diagnosis_report.py` 的 `SCORE_ORDER` 一致
 - **谁推**：我（单开一批，不能并入其它步）。
 
-### [ ] B-21 TD-038 宽松口：任务版本必填
+### [x] B-21 TD-038 宽松口：任务版本必填
 
 - **是什么**：`task_version` 已实现（`score.voided` + `void_reason`），但**提交侧缺省不比对**。
-- **为什么现在不做**：现在提交走 fixture，没有真实入口能强制填；等 B-02 接 API 时收紧才不漏。
 - **做完判据**：提交缺 `task_version` ⇒ 拒绝入队（不是静默放过）。
-- **验证**：缺字段提交 → 返回明确错误码，不产生 Submission
-- **谁推**：我（M1，与 B-02 同批）。
+- **落地**（round-76）：`prepare()` 用 `_str_field(..., missing_code="task_version_missing")`，
+  缺字段 → 400 + 专用码；校验在落库之前，因此**不产生 Submission**。
+  关键区分：**缺字段 = 客户端太老（拒绝）；版本不一致 = 一次合法但需重交的提交（出 voided 报告）**。
+  这两种处置必须分开，否则要么漏拒、要么把「版本旧」误报成「客户端坏了」。
+- **验证**：`test_missing_task_version_is_rejected_and_creates_nothing`（同时断言 `count()==0`）；
+  变异 M1（改可选）/ M2（改回通用码）均 DETECTED。
+- **谁推**：我（已于 M1 随 B-02 完成）。
 
 ### [~] B-22 TD-026：YAML 条件必填无执行者
 
@@ -269,3 +285,5 @@
 | TD-037 | `--check` 覆盖边界 | round-49 拍 B：只写清口径，不改实现 |
 | Q4(d) / TD-038 | "没调工具"怎么算 / 版本不符 | round-61 / round-70 落地（决策 9 / 11） |
 | P1/P2/P3 | 掌握度定义 / 缺过程 / 防作弊 | round-70 落地（决策 8/9/10），评审包 §5 待拍板 0 条 |
+| B-02 | 黑盒提交服务（HTTP） | round-76 落地：3 端点 + 五夹具逐字段对拍 + 9 组变异全 DETECTED；判据 `blocked`→`unscored` 已订正 |
+| B-21 | TD-038 宽松口（版本必填） | round-76 随 B-02 收紧：缺字段 400 专用码且不落库，变异 M1/M2 DETECTED |
