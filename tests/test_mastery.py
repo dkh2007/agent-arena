@@ -97,6 +97,9 @@ def test_partial_pass_within_one_skill_is_fractional():
     """
     report = {
         "submission": {"submission_id": "mini", "evaluated_at": "2026-11-01T00:00:00Z"},
+        # 门禁状态是必填项（缺了会报错，见 test_missing_score_is_loud_not_defaulted_to_ok）：
+        # 手搭最小报告时也得带上，否则测的就不是"权重累计"而是"缺字段必炸"。
+        "score": {"disqualified": False, "voided": False},
         "attribution_policy": {
             "pass": {"counts_toward_mastery": True},
             "fail": {"counts_toward_mastery": True},
@@ -184,6 +187,58 @@ def test_gate_failure_still_lifts_credit_skills():
     assert m.skill_evidence(report, FR).c == 1.0
     assert m.skill_evidence(report, TPV).c == 1.0
     assert not m.skill_evidence(report, MSP).counts, "R2 是 blocked，不进证据"
+
+
+def test_one_white_paper_looks_like_a_perfect_run():
+    """现状锁（B-07b）：**一份"没交产物"的提交 = 一次满分**，在 P 上不可区分。
+
+    这条把"漏洞有多大"从观感问题量化成数字（外部评审 round-81 提的第 3 个未知量）：
+    白卷的 `c` 是 1.0，而 `p0=None` 时**首次观测播种** `P_1 = c_1`
+    ⇒ 第一份白卷就把 `P` 直接顶到 1.0000，与真做对一次完全相同。
+    所以"刷几十次才涨一点"这个乐观假设不成立：**一次就够**。
+
+    只有已积累过证据的用户才会被 EMA 拉平：从 P=0 起 7 次白卷到 0.9176（`1-0.7^7`）。
+    改口径（C 降权 / B 排除）时这条必红，正好提醒同步改文档与 `gate_status` 过滤。
+    """
+    white = _report("raw-no-file", submission_id="fp-1", at="2026-11-01T00:00:00+00:00")
+    perfect = _report("raw-perfect", submission_id="ok-1", at="2026-11-01T00:00:00+00:00")
+    assert white["score"]["ratio"] == 0.0 and white["score"]["disqualified"] is True
+
+    p_white = m.replay([m.skill_evidence(white, FR)], user_id=USER, skill_id=FR).p
+    p_perfect = m.replay([m.skill_evidence(perfect, FR)], user_id=USER, skill_id=FR).p
+    assert p_white == p_perfect == 1.0
+
+
+def test_gate_status_is_recorded_but_does_not_change_p():
+    """A2 护栏（round-81）：门禁状态**留痕但不参与计算**，切换成本才是低的。
+
+    现行口径是 A（证据照记）。若将来切 C（降权）或 B（排除），只需在计入层按
+    `gate_status` 过滤——但前提是历史每一步都记了它，否则只能追溯改历史。
+    这里同时锁住：记录不影响 P（口径没变），且拼错的状态名会报错而不是静默溜过。
+    """
+    white = _report("raw-no-file", submission_id="fp-1", at="2026-11-01T00:00:00+00:00")
+    ev = m.skill_evidence(white, FR)
+    assert ev.gate_status == "disqualified"
+
+    series = m.replay([ev], user_id=USER, skill_id=FR)
+    assert series.p == 1.0, "现行口径＝A：留痕字段不许偷偷改变结果"
+    assert series.steps[0].gate_status == "disqualified"
+    assert series.to_dict()["steps"][0]["gate_status"] == "disqualified"
+
+    ok = m.skill_evidence(_report("raw-perfect"), FR)
+    assert ok.gate_status == "ok"
+
+    typo = m.Evidence("s1", MSP, "2026-11-01T00:00:00+00:00", 1.0, 1.0, gate_status="白卷")
+    with pytest.raises(m.MasteryError, match="gate_status"):
+        m.replay([typo], user_id=USER, skill_id=MSP)
+
+
+def test_missing_score_is_loud_not_defaulted_to_ok():
+    """缺 `score.disqualified` 不许默认成 `ok`——那正好抹掉切 B/C 唯一要的信号。"""
+    report = _report("raw-no-file")
+    report.pop("score")
+    with pytest.raises(m.MasteryError, match="score.disqualified"):
+        m.skill_evidence(report, FR)
 
 
 def test_missing_attribution_policy_is_loud():

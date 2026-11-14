@@ -41,6 +41,17 @@
      推论：**P 不会随自然时间下降**。这是已知缺口，写进了测试（现状锁，待 B-08 反转），
      也不得在任何对外材料里说成"掌握度会随时间遗忘"。
 
+5. **门禁状态只留痕，不参与计算（为 A→C→B 留切换口）。**
+   现行口径是 **A**：整份不合格（`disqualified`）时，credit 层照常判定的证据**照样计入** P
+   （依据 data-model §5.1「门禁只管分数，不管观测」）。这条口径有个不利后果，已被实测固定：
+   **一份"没交产物"的提交会让该技能的 `c = 1.0`**，而初值播种使**首次观测直接等于 1.0** ——
+   即"交白卷一次"与"真做对一次"在 P 上不可区分（`test_one_white_paper_looks_like_a_perfect_run`）。
+   但**改不改是产品口径**，本模块不擅自改；它做的是把切换成本降下来：
+   每条证据与每一步递推都记 `gate_status`（`ok` / `disqualified` / `voided`），
+   将来切到 C（降权计入）或 B（排除）**只需在计入层加一条过滤**，
+   不必回头改已积累的历史，也**不必**把报告里的 credit 断言改标 `blocked`
+   （那会用评分逻辑吞掉诊断数据，是多份文档明确禁止的实现方式）。
+
 ## 不落库
 
 `user_skill_states` 表当前只有 `fsrs_card` / `updated_at`，没有承接 P 的字段；
@@ -59,6 +70,9 @@ from typing import Any, Iterable, Sequence
 # 取 0.3（新证据占三成、历史占七成）落在 EMA 类掌握度估计的常用区间内，
 # 但必须经 B-07b 的回测（同技能变体的达标预测）才能定值。改这个数不影响公式正确性。
 LAMBDA_DEFAULT = 0.3
+
+# 门禁状态词表。只三种，且在 `replay()` 里校验——拼错会静默躲过将来的过滤规则。
+GATE_STATUSES = ("ok", "disqualified", "voided")
 
 
 class MasteryError(ValueError):
@@ -95,6 +109,10 @@ class Evidence:
     passed_weight: float
     counted_weight: float
     ignored: tuple[Ignored, ...] = ()
+    # 这份提交当时的门禁状态：`ok` / `disqualified` / `voided`。
+    # **只留痕、不参与计算**（现行口径仍是 A：证据照记）。留它的唯一目的是让
+    # 「A → C（降权）→ B（排除）」成为计入层的一条过滤，而不是回头改已积累的历史。
+    gate_status: str = "ok"
 
     @property
     def counts(self) -> bool:
@@ -125,6 +143,7 @@ class Evidence:
             "c": _round(self.c) if self.counts else None,
             "passed_weight": _round(self.passed_weight),
             "counted_weight": _round(self.counted_weight),
+            "gate_status": self.gate_status,
             "ignored": [i.to_dict() for i in self.ignored],
         }
 
@@ -154,6 +173,18 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
     policy = report.get("attribution_policy")
     if not isinstance(policy, dict) or not policy:
         raise MasteryError(f"{submission_id} 缺 attribution_policy，无法判断哪些状态计入掌握度")
+
+    # 门禁状态只如实记录，不改任何判定（现行口径＝A）。缺字段就报错而不是默认 `ok`：
+    # 默认成 `ok` 会把"整份不合格"记成"合格"，正好抹掉将来切 B/C 唯一需要的那个信号。
+    score = report.get("score")
+    if not isinstance(score, dict) or "disqualified" not in score or "voided" not in score:
+        raise MasteryError(f"{submission_id} 缺 score.disqualified / score.voided，无法记录门禁状态")
+    if score["disqualified"]:
+        gate_status = "disqualified"
+    elif score["voided"]:
+        gate_status = "voided"
+    else:
+        gate_status = "ok"
 
     passed = counted = 0.0
     ignored: list[Ignored] = []
@@ -189,6 +220,7 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
         passed_weight=passed,
         counted_weight=counted,
         ignored=tuple(ignored),
+        gate_status=gate_status,
     )
 
 
@@ -228,6 +260,7 @@ class Step:
     p_after: float
     counted_weight: float
     seeded: bool  # 这一步是"初值播种"（P_1 = c_1），没走递推式
+    gate_status: str = "ok"  # 这份提交当时的门禁状态，只留痕
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -238,6 +271,7 @@ class Step:
             "p_after": _round(self.p_after),
             "counted_weight": _round(self.counted_weight),
             "seeded": self.seeded,
+            "gate_status": self.gate_status,
         }
 
 
@@ -330,6 +364,11 @@ def replay(
             ignored[reason] = ignored.get(reason, 0) + count
         if ev.skill_id != skill_id:
             raise MasteryError(f"证据的技能是 {ev.skill_id}，与本次回放的 {skill_id} 不一致")
+        if ev.gate_status not in GATE_STATUSES:
+            raise MasteryError(
+                f"{ev.submission_id} 的 gate_status={ev.gate_status!r} 不在 {GATE_STATUSES}"
+                "——拼错的状态名会让将来的降权/排除过滤漏掉这一条"
+            )
         if not ev.counts:
             skipped.append(Skipped(ev.submission_id, ev.at, "no_counted_assertion"))
             continue
@@ -337,12 +376,14 @@ def replay(
         if p is None:
             if p0 is None:
                 p = c
-                steps.append(Step(ev.submission_id, ev.at, c, None, p, ev.counted_weight, True))
+                steps.append(Step(ev.submission_id, ev.at, c, None, p, ev.counted_weight, True,
+                                  ev.gate_status))
                 continue
             p = float(p0)
         before = p
         p = update_p(p, c, lam)
-        steps.append(Step(ev.submission_id, ev.at, c, before, p, ev.counted_weight, False))
+        steps.append(Step(ev.submission_id, ev.at, c, before, p, ev.counted_weight, False,
+                          ev.gate_status))
 
     return MasterySeries(
         user_id=user_id,

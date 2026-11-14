@@ -154,7 +154,14 @@
 >   所以**一份 `disqualified=True`、`ratio=0` 的提交仍会抬高它通过的那几个技能的 P**。
 >   实测 `raw-no-file`（没交产物）会让 `failure_retry` 与 `tool_param_validation` 的 c 都到 1.0。
 >   这不是 bug 而是口径的推论，但意味着"不交产物、重试规范"能刷高掌握度。
->   要不要给门禁开例外属产品口径，登记 `docs/BACKLOG.md` B-07b，**在拍板前不改代码**。
+>   **量级已实测**（round-81）：因初值「首次观测播种」，**一份白卷的 P 就是 1.0000**，
+>   与真做对一次不可区分（`test_one_white_paper_looks_like_a_perfect_run`）；从 P=0 起刷 7 次到 0.9176。
+>   ⇒ "刷几十次才涨一点"的乐观假设不成立。要不要给门禁开例外属产品口径（A 现状 / B 排除 / C 降权），
+>   登记 `docs/BACKLOG.md` B-07b，**在拍板前不改代码**。
+> - **门禁状态逐条留痕（A2，round-81）**：每条证据与每一步递推都记 `gate_status`
+>   （`ok` / `disqualified` / `voided`），但**不参与计算**。目的是把 A→C→B 的切换降成
+>   计入层的一条过滤/乘子，而不是回头改已积累的历史。**切换时禁止**把报告里的 credit 断言改标
+>   `blocked`（那会用评分逻辑吞掉诊断数据，见 `diagnosis-report-schema.md` §1 第 4 条）。
 > 「掌握度 = FSRS 的 R 值」的原写法**作废**；两种口径并存的过渡状态随之结束。
 > ReviewLog（py-fsrs 的复习日志）**后置**：M0 不建表，复习事件可从 Submission + ReviewItem 重建；M1 接入参数优化时再加。
 

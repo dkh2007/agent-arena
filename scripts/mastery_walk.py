@@ -124,6 +124,37 @@ def main() -> int:
             print(f"  λ={lam_value:<4} {path}{marker}")
 
         print()
+        print("=== 白卷压力测试（B-07b 的量级证据：A 口径的漏洞有多大） ===")
+        print("  `raw-no-file` = 没交产物（门禁 R1 fail、整份 disqualified、ratio=0），")
+        print("  但 R3/R4 真过了 ⇒ 它的 c=1.0。问题在于初值「首次观测播种」P_1=c_1。")
+        for n in (1, 3, 7):
+            wp = [
+                m.skill_evidence(
+                    _report("raw-no-file", f"fp-{k}", (base + timedelta(days=k)).isoformat()),
+                    "failure_retry", at=(base + timedelta(days=k)).isoformat(),
+                )
+                for k in range(1, n + 1)
+            ]
+            s = m.replay(wp, user_id=USER, skill_id="failure_retry", lam=lam)
+            gates = {e.gate_status for e in wp}
+            print(f"  交白卷 {n:>2} 次 → P = {s.p:.4f}　（gate_status 记录为 {sorted(gates)}，只留痕不计）")
+        print("  ⇒ 第 1 次就到 1.0000，与真做对一次不可区分。**不是「刷几十次才涨」**。")
+        # 有新用户之外的另一半：已有历史的用户从 P=0 起步被抬到多少（EMA 摊薄才在这里起作用）
+        s7 = m.replay(
+            [
+                m.skill_evidence(
+                    _report("raw-no-file", f"fz-{k}", (base + timedelta(days=k)).isoformat()),
+                    "failure_retry", at=(base + timedelta(days=k)).isoformat(),
+                )
+                for k in range(1, 8)
+            ],
+            user_id=USER, skill_id="failure_retry", lam=lam, p0=0.0,
+        )
+        print(f"  ⇒ 已有历史的用户（P 从 0 起）刷 7 次 → {s7.p:.4f}（= 1-{1-lam:g}^7），"
+              "刷得越久越接近满格")
+        print("  ⇒ 改 A→C（降权）/B（排除）时，只需在计入层按 gate_status 过滤，不必回改历史。")
+
+        print()
         print("说明：λ 的具体数值属**假设**（无答题数据可标定，见 docs/BACKLOG.md B-07b）；")
         print("      本脚本证明的是「公式落地正确」，不是「λ=0.3 是对的」。")
         print("      另：衰减尚未实现（依赖复习间隔 B-08），所以 P 不随自然时间下降。")
