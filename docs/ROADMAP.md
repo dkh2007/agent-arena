@@ -16,7 +16,9 @@
 
 这不等于"进度落后"——初赛只交项目计划书、盲审，本阶段本来就应该往评测层里扎。
 真正的风险是另一件事：**计划书 §4.1 把「错误模式 → 技能缺口映射表」标为"自研核心"，
-而这条映射在 `src/` 里没有消费者**（见 §1 状态层与 §4 风险 R-2）。
+而这条映射在 `src/` 里长期没有消费者**。round-78 把它接成了**兜底归因**，同时实测到
+「接上之后五份夹具的归因逐例不变」——于是风险从「没有消费者」变成**「消费者在今天的任务上不产生影响」**，
+两句话的分量完全不同，前者能靠写代码解决，后者只能靠改口径（见 §4 风险 R-2 与 `docs/BACKLOG.md` B-06b）。
 
 ## 1. 产品骨架：五层 × 四档状态
 
@@ -33,7 +35,7 @@
 |---|---|---|---|---|
 | **1 任务层** | 3 技能 × 2–3 变体，任务库 ≤10；YAML + 原子 rubric + 技能节点 + 错误模式 + 故障注入 + Git 版本锁 | 1 个任务（5 条断言：gate 2 + credit 3）；3 个技能节点（`tool_param_validation` / `multi_step_planning` / `failure_retry`）；14 个错误模式；`variant_template_id: null`；**故障注入自 round-77 起真会失败**（`mock_tools.py` 执行 YAML 声明） | **半有肉** | `tasks/dbg-001-order-report.yaml`；`docs/skill-taxonomy-v0.yaml`；`docs/error-patterns-v0.yaml`；`tests/test_mock_tools.py` |
 | **2 评测层** | 轨迹捕获 + 自动断言 + LLM Judge + 轨迹分析出诊断报告 | 五条断言执行器全现算（R1–R5）；DTO v2 + schema 校验；两段式 gate/credit；反事实得分；过程门槛；作废态；P3 对账器（未接 rubric）；**judge 层未实现**；**trace 捕获未实现**（只认现成 fixture） | **有肉** | `src/arena/` 产品代码 2574 行（`assertion_evaluator` 1539 / `diagnosis_report` 561 / `trace_pipeline` 327 / `reconciliation` 147）；700 passed；`--fixture all` |
-| **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`（按**断言自带 `skill_id`**，不查词表映射）；词表 14 条里 9 条填了 `mapped_skill_ids`，但 **`src/` 0 个消费者**（只有 `tests/test_task_yaml.py:265,285` 做引用完整性校验）；掌握度 P 只有公式，零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **半有肉（核心那条仍纸面）** | `src/arena/diagnosis_report.py:449-466`；`grep -rn mapped_skill_ids src/` → 空；`src/arena/store.py` |
+| **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`：**优先断言自带 `skill_id`，缺了才查词表 `mapped_skill_ids` 兜底**（round-78 / B-06，`attributed_by` 标明来源）；掌握度 P 只有公式，零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **半有肉（核心那条仍纸面）** | `src/arena/diagnosis_report.py`（`load_pattern_skills` / `_attribute`）；`grep -rn mapped_skill_ids src/` → 命中；`src/arena/store.py` |
 | **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | 只有实体定义 + **DDL**（`review_items` 表的 kind 四值、引用 task/submission）；**没有任何代码往写或读**；`grep -rl fsrs src/` → 只有 `store.py` 的列名 | **纸面（有表无行为）** | `store.py:SCHEMA_SQL`；`scripts/demo_decision.py 3` → PARTIAL |
 | **5 排程层** | 四因子建议排期 + 动态避让 + 用户可一键调整 | 只有创新点陈述（计划书 §五 第 3 条） | **纸面** | — |
 | **端** | Web 提交 + Android/Kotlin Compose 四页 | **协议层已就位**（round-76：`submission_api.py`，标准库 `http.server`，3 端点：提交/读回/探活）；**UI 侧零**（无 Web 页、无 Android 工程） | **半有肉（只有 API，没有界面）** | `src/arena/submission_api.py`；`grep -rli "kotlin\|compose" .` → 空 |
@@ -85,7 +87,7 @@ M3/M4 的顺序不能反：没有持久化就没有"上一次表现"，掌握度
 | ID | 风险 | 现在是否已发生 | 反证/缓解 |
 |---|---|---|---|
 | **R-1** | 计划书三层零代码，评委追问"M3/M4 怎么保证"只能靠纸面 | 纸面论证已备（计划书 §4.2 第 8 条 + 文献边界三句话） | 反证：若初赛要求"可运行系统"而非计划书 ⇒ 整个排期要重排（约束表已确认只需计划书） |
-| **R-2** | **"映射表是自研核心"但代码里没有消费者**，报告走的是另一条路（断言自带 `skill_id`） | 已发生（`src/` 0 命中） | 两条路不等价：映射表能表达"一个模式映射多个缺口"，断言 `skill_id` 只能一对一。详见 `docs/BACKLOG.md` B-24 |
+| **R-2** | **"映射表是自研核心"但代码里没有消费者**，报告走的是另一条路（断言自带 `skill_id`） | **已降级（round-78）**：映射表接进 `build_report()` 作**兜底**（`load_pattern_skills()` / `attributed_by`），但实测五夹具 `skill_gaps` 逐例不变 ⇒ 在今天的词表与任务上它不带来新信息 | 反证条件已触发并如实记录：计划书「自研核心」改为「兜底归因 + 词表集中管理」。要让映射表真参与，须先推翻 Q10=A 的边界（B-06b，需人拍板） |
 | **R-3** | 9 处 `【占位】` 在纸面上被读成"没想清楚" | 已存在（计划书 v0.4） | 每处应补"什么时候定、用什么判据定"，而不是填一个假数 |
 | **R-4** | 真 trace 从未跑过：所有结论建立在合成 fixture 上 | **降级但未消除**（round-77：确定性参考 Agent 真跑通过，产物 trace 能喂进链路且 `schema_valid=True`；但 trace 仍是 Agent 自报、决策体仍是写死流程） | 缓解：mock 工具服务由任务 YAML 驱动 + 四形态证明断言分得开；**剩余风险**：自报的 `call_index` 可被改写以藏起重试 ⇒ B-03b 平台侧抓包；反证：真 LLM Agent 若出现 fixture 未覆盖的形态，判定层需重审 |
 

@@ -55,6 +55,56 @@ def load_vocabulary(path: str | Path = VOCAB_PATH) -> set[str]:
     return {p["pattern_id"] for p in yaml.safe_load(Path(path).read_text(encoding="utf-8"))["patterns"]}
 
 
+def load_pattern_skills(path: str | Path = VOCAB_PATH) -> dict[str, tuple[str, ...]]:
+    """`pattern_id -> mapped_skill_ids`（B-06 / ROADMAP R-2）。
+
+    词表里 `mapped_skill_ids` 自第 6 轮评审起就写好了，但 `src/` 长期没有消费者：
+    报告里的 `skill_gaps` 走的是断言自带的 `skill_id`（能一对一，不能一对多）。
+    本函数把词表变成代码可查的映射，供 `build_report()` 在断言**未声明** skill_id 时兜底。
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for pattern in yaml.safe_load(Path(path).read_text(encoding="utf-8"))["patterns"]:
+        out[pattern["pattern_id"]] = tuple(pattern.get("mapped_skill_ids") or ())
+    return out
+
+
+def _clean_number(value: float) -> int | float:
+    """整数值收成 int：报告是给人看的，别让 1 变 1.0，也免掉逐字比对时的浮点噪声。"""
+    value = round(float(value), 6)
+    return int(value) if value == int(value) else value
+
+
+def _split_weight(weight: int | float, n: int) -> int | float:
+    return _clean_number(weight / n) if n else weight
+
+
+def _attribute(
+    assertion: dict, pattern_skills: dict[str, tuple[str, ...]]
+) -> tuple[list[str], str]:
+    """一条失败断言 -> (归因到的技能列表, 归因来源)。
+
+    来源只有两种，且**互斥**：`assertion`（断言自己声明了 skill_id）/
+    `mapping`（没声明，靠词表兜底）。断言声明了就不查词表 —— 这是 Q10=A 的边界，
+    否则「按 spec.skill_id 归因」就变成了「按词表归因」（TD-001 未销项）。
+
+    词表里查不到该 pattern 时**报错**而不是返回空：返回空会把兜底悄悄变成
+    "这条失败没有技能归属"，映射表失效却没有任何报错，正是 TD-001 想避免的那类静默。
+    """
+    declared = assertion.get("skill_id")
+    if declared:
+        return [declared], "assertion"
+    mapped: list[str] = []
+    for code in assertion["error_patterns"]:
+        if code not in pattern_skills:
+            raise ReportError(
+                f"{assertion['id']}: 错误模式 {code} 不在归因映射里——兜底归因会静默失效，拒绝产出报告"
+            )
+        for skill_id in pattern_skills[code]:
+            if skill_id not in mapped:
+                mapped.append(skill_id)
+    return mapped, "mapping"
+
+
 def load_schema(path: str | Path = SCHEMA_PATH) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -347,7 +397,8 @@ def _report_attribution(policy: dict, by_state: dict, suppressed: bool) -> dict:
 
 
 def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
-                 *, unreachable_reason: str | None = None) -> dict:
+                 *, unreachable_reason: str | None = None,
+                 pattern_skills: dict[str, tuple[str, ...]] | None = None) -> dict:
     """把「逐条断言结果 + trace 校验结果」组装成符合 schema 的诊断报告。
 
     raw 结构见 docs/diagnosis-report-schema.md 第 4 节（fixtures/ 下有真实例子）。
@@ -360,6 +411,7 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
     （决策 7「数据缺失 ≠ 能力不足」的直接推论）。
     """
     vocab = vocab if vocab is not None else load_vocabulary()
+    pattern_skills = pattern_skills if pattern_skills is not None else load_pattern_skills()
     gate_specs, credit_specs = rubric_layers(task)
     specs = [("gate", s) for s in gate_specs] + [("credit", s) for s in credit_specs]
     by_id_spec = {s["id"]: s for _, s in specs}
@@ -471,28 +523,53 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
         for s in STATES
     }
 
-    # 技能缺口只做聚合：失败的断言按 YAML 已声明的 skill_id 归类，weight_lost 是权重之和
+    # ── 技能缺口聚合（B-06 / ROADMAP R-2）────────────────────────────────
+    # 归因优先级：**断言自己声明的 skill_id 永远优先，词表只作兜底**。
+    # 这是 Q10=A 的边界（"不改 build_report() 按 spec.skill_id 的归因"，见
+    # docs/verify-brief-s3-3-1.md §Q10）——有 skill_id 时词表完全不参与，一对多 / 权重分摊
+    # 都不发生，所以既有的逐例归因一位不变；TD-001（跨技能归因）仍未销项。
+    # 兜底只在一种情况下生效：任务作者漏写 skill_id。此前这种失败要么静默消失（P5 教训），
+    # 要么只能进 unattributed_patterns；现在能经 mapped_skill_ids 找回技能归属。
     gaps: dict[str, dict] = {}
+    unattributed: list[dict] = []
     for a in assertions:
-        if a["state"] != "fail" or not a["skill_id"]:
+        if a["state"] != "fail":
             continue
-        gap = gaps.setdefault(
-            a["skill_id"],
-            {"skill_id": a["skill_id"], "failed_assertions": [], "patterns": [], "weight_lost": 0},
-        )
-        gap["failed_assertions"].append(a["id"])
-        gap["weight_lost"] += a["weight"]
-        for code in a["error_patterns"]:
-            if code not in gap["patterns"]:
-                gap["patterns"].append(code)
+        skills, by = _attribute(a, pattern_skills)
+        if not skills:
+            # 有错误模式却没有技能归属的失败（R1/R5 属此类）——不进 skill_gaps，但绝不静默丢弃。
+            # P5 的教训：无文件时 skill_gaps 曾是空数组，"没交产物"这件事在报告里完全不留痕。
+            unattributed.append(
+                {"assertion_id": a["id"], "layer": a["layer"], "patterns": a["error_patterns"]}
+            )
+            continue
+        # 兜底路径可能出现一对多：按技能数等分，保证 Σweight_lost ≤ credit_total（下面有硬校验）。
+        share = _split_weight(a["weight"], len(skills))
+        for skill_id in skills:
+            gap = gaps.setdefault(
+                skill_id,
+                {
+                    "skill_id": skill_id,
+                    "failed_assertions": [],
+                    "patterns": [],
+                    "weight_lost": 0.0,
+                },
+            )
+            gap["failed_assertions"].append(a["id"])
+            gap["weight_lost"] = _clean_number(gap["weight_lost"] + share)
+            gap.setdefault("attributed_by", set()).add(by)
+            for code in a["error_patterns"]:
+                if code not in gap["patterns"]:
+                    gap["patterns"].append(code)
 
-    # 有错误模式却没有技能归属的失败（R1/R5 属此类）——不进 skill_gaps，但绝不静默丢弃。
-    # P5 的教训：无文件时 skill_gaps 曾是空数组，"没交产物"这件事在报告里完全不留痕。
-    unattributed = [
-        {"assertion_id": a["id"], "layer": a["layer"], "patterns": a["error_patterns"]}
-        for a in assertions
-        if a["state"] == "fail" and not a["skill_id"]
-    ]
+    for gap in gaps.values():
+        gap["attributed_by"] = "+".join(sorted(gap["attributed_by"]))
+    lost_total = _clean_number(sum(g["weight_lost"] for g in gaps.values()))
+    if lost_total > credit_total + 1e-9:
+        # 归因分摊若写错（例如每个技能都记满权重），这里会立刻炸，而不是等状态层算掌握度时才发现
+        raise ReportError(
+            f"技能缺口 weight_lost 之和 {lost_total} 超过 credit 总权重 {credit_total}，归因必有多记"
+        )
 
     if not trace_audit["reported"] and unreachable_reason is None:
         notes.append("未上报 trace：轨迹类断言记 unscored（分数贡献 0，但不计入掌握度），不判 0")

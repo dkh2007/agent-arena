@@ -7009,3 +7009,107 @@ summary = 对账失败：找不到出处的数值 valid_count=17.0、total_amoun
 - **待人拍板：无。** 本轮改动都是"让已声明的语义真的发生"与"不让结论超出证据"，
   没有产品口径取舍。
 - 下一步：B-04（judge 双评，需模型端点）或 B-06（映射表接进 `skill_gaps`，ROADMAP R-2）。
+
+---
+
+## 78. round-78：映射表接进代码（B-06 / R-2）——接上了，同时把「自研核心」自己拆了
+
+**起因**：维护者回「重来，先做 B-06」。开工先核了一个冲突：Q10=A 曾人拍板过
+「**不改 `build_report()` 按 `spec.skill_id` 的归因**」，跨技能归因登记 TD-001 至今未销项
+（`docs/verify-brief-s3-3-1.md` §Q10 / 本文件 §12.4）。而 B-06 的判据是「删掉断言的 `skill_id`
+后缺口仍能经映射表产出」。两者不矛盾，但只有一种实现能同时满足：
+
+> **映射表只作兜底。** 断言写了 `skill_id` 就只认它，词表一次都不查；没写时才查词表，查不到直接报错。
+
+### 78.1 做了什么
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| `src/arena/diagnosis_report.py` | 产品代码 | 新增 `load_pattern_skills()`（词表 → `pattern_id: mapped_skill_ids`）、`_attribute()`（两条路的选择器）、`_split_weight()`；`build_report()` 加关键字参数 `pattern_skills=`（可注入，测试用） |
+| `docs/diagnosis-report.schema.json` | 契约 | `skill_gaps[]` 增可选字段 `attributed_by`（`assertion` / `mapping` / `assertion+mapping`），描述改为「两条路 + 分摊 + 守恒」 |
+| `docs/diagnosis-report-schema.md` | 契约说明 | §5 重写归因优先级表；新增不变量 **I12**（归因守恒 + `Σweight_lost ≤ total_weight` + 查不到映射即报错） |
+| `tests/test_diagnosis_report.py` | 测试 | +6 条（`test_b06_*`）：正向锁 / Q10 边界 / 一对多分摊 / 静默即报错 / 五夹具对账 / 归因守恒 |
+
+三条硬约束，都写成了代码而不是注释：
+
+1. **Q10=A 不得被偷偷推翻**：有 `skill_id` 时词表不参与，`weight_lost` 也不被摊薄。
+   测法是把词表故意指向另一个技能，看报告会不会被带偏。
+2. **静默降级一律报错**：兜底路径查不到该 `pattern_id` 时 `ReportError`。返回空会让「词表改了 id、
+   兜底悄悄失效」这种坏法在报告里看不出来——报告仍"看着正常"。
+3. **权重守恒**：兜底允许一对多，按技能数等分，且 `Σ weight_lost ≤ credit.total_weight` 有硬校验。
+   防止把 1 分的失败记成 2 分（那会让掌握度侧凭空多扣）。
+
+### 78.2 反证条件被自己触发了（本轮最重要的一条）
+
+§64 给 R-2 写过反证条件：**「若 B-06 落地后 `skill_gaps` 与现在逐例相同，说明映射表可被断言 `skill_id` 完全替代，映射表的『自研核心』地位应降级。」**
+
+实测：
+
+| 夹具 | 改动前 `skill_gaps` | 改动后 | `attributed_by` |
+|---|---|---|---|
+| `raw-empty` | `failure_retry` 1 分 `[no_retry]` | **完全相同** | `assertion` |
+| `raw-fake-retry` | `multi_step_planning` 2 分 + `failure_retry` 1 分 | **完全相同** | `assertion` |
+| `raw-no-file` / `raw-no-trace` / `raw-perfect` | `[]` | `[]` | — |
+
+原因很朴素：`dbg-001` 的四条断言**全都写了 `skill_id`**，而 Q10=A 又要求「有声明就只认声明」。
+于是映射表在本任务上一次都没被查过。
+
+**结论按反证条件执行，不含糊**：计划书 §4.1 的「映射表＝自研核心」降级为
+**「兜底归因 + 词表集中管理」**。它在今天值两件事——① 任务作者漏写 `skill_id` 时归因不丢；
+② 归因规则集中在一份 YAML 里而不是散落在 10 个任务的 rubric 上。
+它**不值**「核心创新」四个字，因为没有任何一例证明它比 `skill_id` 说了更多。
+
+这不是失败，是核对。原先的风险是「没有消费者」（能靠写代码解决），
+现在变成「消费者在今天的任务上不产生影响」（只能靠改口径或改任务解决）。
+后者诚实得多，也更容易被评委问死——所以写在最前面。
+
+### 78.3 变异（证明测试真的在管这些事）
+
+源码改坏 → 跑对应用例 → 还原。判定沿用 round-75 的三档（`DETECTED` / `INVALID` / `MISSED`），
+`INVALID`（变异自身崩、锚点未命中）**不算抓住**。
+
+| 变异 | 期望被哪条测试抓住 | 结果 |
+|---|---|---|
+| M1 词表抢过断言声明（Q10 被破） | `test_b06_declared_skill_id_is_never_overridden_by_vocabulary` | `DETECTED` |
+| M2 映射查不到就静默当无归属 | `test_b06_missing_mapping_is_loud_not_silent` | `DETECTED` |
+| M3 一对多不分摊（每技能记满权重） | `test_b06_mapping_one_to_many_splits_weight` | `DETECTED` |
+| M4 去掉兜底、整个回退旧实现 | `test_b06_gap_survives_missing_skill_id_via_vocabulary` | `DETECTED` |
+| M5 不写归因来源字段 | `test_b06_gap_survives_missing_skill_id_via_vocabulary` | `DETECTED` |
+
+M1 第一次跑报 `INVALID`（锚点没命中），换成单行锚点后重跑才是 `DETECTED`——
+这正是 round-75 立「error ≠ 证据」的原因：变异脚本自己的 bug 会让它看起来像"抓住了"。
+
+### 78.4 实测
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_diagnosis_report.py` | **63 passed**（原 57 + 6） |
+| `pytest tests/ -q` | **776 passed / 776**（原 770 + 6） |
+| `review_packet.py --check` | **OK（`bd82caa5f38a8742`）** |
+| `review_packet.py --check --full` | **OK_FULL**（包内 0 failed/776，重跑 0 failed/776） |
+| `scripts/demo_decision.py --all` | **无 FAIL**（可跑 7 / 部分 4 / 无载体 1） |
+| `scripts/push_gate.py` | **CLEAN**（`b2ba3c5`，1 个待推提交，0 命中） |
+| 变异 | 5 组全 `DETECTED` |
+
+生成评审包时撞了一次 **C-03 自指互锁**：第一次生成时包内还写着 770，`test_test_count_matches_repo`
+因此红 → 实测行变成「1 failed」→ 包被标不可发布 → sha `571de430`；重新生成后变绿 → sha `bd82caa5`；
+第三次生成 sha 不变，才收敛。**两次生成不足以收敛，是三次**——这一点之前没写下来，现在写下来。
+
+### 78.5 边界与反证
+
+- **不宣称「映射表可表达跨技能归因」**：兜底路径确实支持一对多，但词表 14 条里 9 条填了映射、
+  **全是一对一**，所以「一对多」目前只有测试锁、没有真实用例。TD-001 仍在册。
+- **不宣称「自研核心」**：见 78.2。要翻案，得先有真跨技能的模式（B-06b），那是产品口径，归人拍。
+- **反证条件**：① 若出现第二个任务、其断言仍全部声明 `skill_id`，则映射表在任务库扩张后依然零参与
+  ⇒ 应直接删掉 `mapped_skill_ids` 字段而不是留着好看的 YAML；
+  ② 若某任务出现「一条断言失败对应两个技能」的真实需求，`skill_id` 单值字段就不够用，
+  rubric 需要改成 `skill_ids` 数组，那是破坏性变更；③ 若状态层（B-07）真用上 `skill_gaps` 的
+  `weight_lost` 做掌握度，则分摊规则会被放大——届时必须先用两个任务验证分摊不会让 P 值出现反直觉跳变。
+
+### 78.6 状态
+
+- **B-06 关闭**（兜底口径），拆出 **B-06b**（让映射表真参与，需人拍板）。
+- **R-2 降级**，ROADMAP §4 与 §1 状态层表已同步；`docs/BACKLOG.md` 写明「这不是失败，是核对结论」。
+- **待人拍板：无。** 本轮所有取舍都在既有拍板（Q10=A / 决策 5 / TD-001）划定的边界内，
+  唯一"新"结论是反证条件触发，而反证条件本身就是事先写好的。
+- 下一步：B-04（LLM judge 双评，需模型端点与配额）或 B-07（掌握度 P，依赖 B-01 历史 + 断言 `skill_id`）。

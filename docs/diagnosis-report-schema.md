@@ -35,8 +35,8 @@ attribution_policy   四态 × {是否计入掌握度, 是否产出错误模式}
 report_attribution   整份开关（派生值）：本次报告能否计入掌握度 / 产出错误模式
 process_fact         流程事实：这道题要不要过程、这次交没交（round-70 / P2，中性记录）
 assertions[]         逐条断言：layer / weight / state / skill_id / error_patterns / evidence
-skill_gaps[]         技能缺口聚合（只含 fail 且有 skill_id 的断言）
-unattributed_patterns[]  有错误模式但无技能归属的失败（R1/R5）——不进 skill_gaps，但不许丢
+skill_gaps[]         技能缺口聚合（fail 且能归到技能的断言）
+unattributed_patterns[]  有错误模式但两条归因路都走不通的失败——不进 skill_gaps，但不许丢
 notes[]              可选。报告出现"未覆盖情况"时必须在这里说明，不许静默
 ```
 
@@ -190,9 +190,22 @@ schema 只校验"是对象且含 observed/expected"，语义要求写在 YAML �
 
 ## 5. `skill_gaps[]` 与 `unattributed_patterns[]`
 
-`skill_gaps` 只做聚合：`fail` 且 `skill_id` 非 null 的断言按技能归类，`weight_lost` 是权重和，按它降序。
+`skill_gaps` 只做聚合：`fail` 且能归到技能的断言按技能归类，`weight_lost` 是权重和，按它降序。
 
-`unattributed_patterns` 收容另一类：`fail` 但 `skill_id` 为 null 的断言（当前是 R1/R5 这类门禁）。
+**归因有两条路，优先级固定（B-06 / ROADMAP R-2，round-78）：**
+
+| 顺序 | 来源 | 生效条件 | `attributed_by` |
+|---|---|---|---|
+| 1 | 断言自己声明的 `skill_id` | 一直生效；**有它就只认它** | `assertion` |
+| 2 | 词表 `docs/error-patterns-v0.yaml` 的 `mapped_skill_ids` | 仅当断言**没写** `skill_id` | `mapping` |
+
+第二条是**兜底不是主路**：Q10=A 拍板过「不改 `build_report()` 按 `spec.skill_id` 的归因」（`docs/verify-brief-s3-3-1.md` §Q10），跨技能归因仍登记在 TD-001 未销项。所以有 `skill_id` 时词表一次都不查，既有的逐例归因一位不变。
+
+兜底路径允许一对多（词表现在 9 条填了映射，全是一对一）：分摊权重，且 **`Σ weight_lost ≤ score.total_weight`** 有硬校验（I12），不会把 1 分的失败记成 2 分。词表里查不到该模式时**直接 `ReportError`**，不返回空——静默返回空会让兜底悄悄失效而报告仍"看着正常"。
+
+> **反证条件已实测触发（务必读）。** 本任务的四条断言全写了 `skill_id`，所以映射表**一次都没参与**：五份夹具的 `skill_gaps` 与改动前逐例相同，`attributed_by` 全是 `assertion`（`tests/test_diagnosis_report.py::test_b06_five_fixtures_unchanged_declared_path_wins` 就是这条对账锁）。结论要如实写：**在今天的词表与任务上，映射表不带来任何新信息，它的价值只有"断言漏写 skill_id 时仍能归因"这一条**。计划书里「自研核心」的说法据此降级为「兜底归因 + 词表集中管理」，见 `docs/review-response-v1.md` §78。要让映射表真正干活，得先改一条断言的声明方式（例如让 R3 不再写 `skill_id`），那属于 `docs/BACKLOG.md` B-06b，不是现在顺手做的事。
+
+`unattributed_patterns` 收容另一类：`fail` 且**两条归因路都产不出技能**的断言（当前是 R1/R5 这类门禁，它们的模式 `mapped_skill_ids` 为空）。
 
 > **为什么必须有第二类（P5）。** v1 里"没交产物"的那个提交，`skill_gaps` 是**空数组**——R1 没有技能归属，于是这件事在技能层完全不留痕，状态层推不出任何复习项。极端对比：什么活都没干的 `raw-empty` 反而有诊断（它的 R3 记了 `no_retry`），**做得更多、诊断更少**。
 >
@@ -252,6 +265,7 @@ schema 管结构（能表达的），builder 管语义（schema 表达不了的�
 | I9 | R1/R5 失败时其模式进 `unattributed_patterns`，不进 `skill_gaps` | builder | 归因策略 |
 | I10 | `voided` / `process_fact.missing` **不改写断言状态**，只压 `ratio` 与 `report_attribution`（round-70；决策 5 的延伸：门禁只管分数，不管观测） | builder | 策略判断 |
 | I11 | `voided=true ⇒ void_reason` 必填且 `ratio=0`、`weighted_sum=0`（TD-038） | schema（allOf）+ builder | — |
+| I12 | 归因守恒：每条 `fail` 恰好落在 `skill_gaps` 或 `unattributed_patterns` 之一（不重不漏）；`Σ weight_lost ≤ total_weight`；兜底路径查不到映射即报错（B-06 / round-78） | builder | 算术 + 跨条目汇总 |
 
 ---
 

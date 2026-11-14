@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from arena.diagnosis_report import (  # noqa: E402
     ReportError,
     build_report,
+    load_pattern_skills,
     load_schema,
     load_task,
     load_vocabulary,
@@ -671,3 +672,128 @@ def test_td038_report_attribution_is_derived():
                                           for s in states),
             }
         assert report["report_attribution"] == expect, name
+
+
+# ---------------------------------------------------------------------------
+# B-06 / ROADMAP R-2：错误模式 → 技能缺口映射表接进代码（只作兜底归因）
+# ---------------------------------------------------------------------------
+
+
+def _task_without_skill_id(rid: str) -> dict:
+    """造一份"任务作者漏写 skill_id"的任务副本——这不是假想场景：rubric 只要漏一个字段就发生。"""
+    task = copy.deepcopy(TASK)
+    for layer in ("rubric_gate", "rubric_credit"):
+        for item in task[layer]:
+            if item["id"] == rid:
+                item["skill_id"] = None
+                return task
+    raise AssertionError(f"rubric 里没有 {rid}")
+
+
+def _gaps_by_skill(report: dict) -> dict:
+    return {g["skill_id"]: g for g in report["skill_gaps"]}
+
+
+def test_b06_gap_survives_missing_skill_id_via_vocabulary():
+    """正向锁（B-06 的判据）：删掉断言的 skill_id，缺口仍能经词表 mapped_skill_ids 产出。
+
+    改动前这条失败只能掉进 unattributed_patterns——"该练失败重试"这个结论就丢了。
+    """
+    task = _task_without_skill_id("R3_retry_evidence")
+    report = build_report(task, _raw("raw-fake-retry"), VOCAB)
+    gaps = _gaps_by_skill(report)
+    assert set(gaps) == {"multi_step_planning", "failure_retry"}
+    assert gaps["failure_retry"]["failed_assertions"] == ["R3_retry_evidence"]
+    assert gaps["failure_retry"]["weight_lost"] == 1
+    assert gaps["failure_retry"]["attributed_by"] == "mapping", "来源必须可审计，不能只说'有缺口'"
+    assert report["unattributed_patterns"] == [], "能归因就不该再进无归属留痕"
+    validate_report(report, SCHEMA)
+
+
+def test_b06_declared_skill_id_is_never_overridden_by_vocabulary():
+    """Q10=A 的边界：断言声明了 skill_id 就只认它，词表不得插嘴（TD-001 仍未销项）。
+
+    做法是把词表指向"另一个技能"，看报告会不会被带偏。带偏了就说明归因从"按 spec.skill_id"
+    偷偷改成了"按 pattern.mapped_skill_ids"——那正是人拍板说现在不要做的 B 方案。
+    """
+    hijacked = dict(load_pattern_skills())
+    hijacked["retry_wrong_params"] = ("multi_step_planning",)
+    report = build_report(TASK, _raw("raw-fake-retry"), VOCAB, pattern_skills=hijacked)
+    gaps = _gaps_by_skill(report)
+    assert [g["skill_id"] for g in report["skill_gaps"]] == ["multi_step_planning", "failure_retry"]
+    assert gaps["failure_retry"]["weight_lost"] == 1, "词表不参与时权重不能被摊薄"
+    assert gaps["failure_retry"]["attributed_by"] == "assertion"
+    assert gaps["multi_step_planning"]["failed_assertions"] == ["R2_report_correct"]
+
+
+def test_b06_mapping_one_to_many_splits_weight():
+    """兜底路径可能出现一对多：权重按技能数等分，总量不得凭空变大。
+
+    词表当前没有一对多条目（14 条里 9 条填了，全是一对一），所以这条是**机制锁**而非现状描述：
+    将来某条模式真的属于两个技能时，这里先保证不会把 1 分的失败记成 2 分。
+    """
+    task = _task_without_skill_id("R3_retry_evidence")
+    split = dict(load_pattern_skills())
+    split["retry_wrong_params"] = ("failure_retry", "multi_step_planning")
+    report = build_report(task, _raw("raw-fake-retry"), VOCAB, pattern_skills=split)
+    gaps = _gaps_by_skill(report)
+    assert gaps["failure_retry"]["weight_lost"] == 0.5
+    assert gaps["multi_step_planning"]["weight_lost"] == 2.5, "R2 的 2 分 + R3 分摊来的 0.5"
+    assert sum(g["weight_lost"] for g in report["skill_gaps"]) == 3 <= CREDIT_TOTAL
+    assert gaps["failure_retry"]["failed_assertions"] == ["R3_retry_evidence"]
+    validate_report(report, SCHEMA)
+
+
+def test_b06_missing_mapping_is_loud_not_silent():
+    """词表查不到该模式时必须报错，不能当成"没有技能归属"。
+
+    静默降级正是这类映射最常见的坏法：词表改了 pattern_id，兜底悄悄失效，报告仍"看着正常"。
+    """
+    task = _task_without_skill_id("R3_retry_evidence")
+    with pytest.raises(ReportError, match="兜底归因会静默失效"):
+        build_report(task, _raw("raw-fake-retry"), VOCAB, pattern_skills={})
+
+
+def test_b06_five_fixtures_unchanged_declared_path_wins():
+    """对账 + 反证条件的实测：现有五夹具的归因与「纯断言路径」逐例相同。
+
+    这不是"改动无害"的自证，而是**反证条件被触发**的证据：本任务四条断言都写了 skill_id，
+    所以映射表一次都没参与，`attributed_by` 全是 assertion。也就是说在今天的词表与任务上，
+    映射表不带来任何新信息，只值"兜底"两个字——计划书里"自研核心"的说法应据此降级（见 §78）。
+    """
+    for name in NAMES:
+        report = _build(name)
+        expect: dict[str, dict] = {}
+        for a in report["assertions"]:
+            if a["state"] != "fail" or not a["skill_id"]:
+                continue
+            gap = expect.setdefault(
+                a["skill_id"], {"failed_assertions": [], "patterns": [], "weight_lost": 0}
+            )
+            gap["failed_assertions"].append(a["id"])
+            gap["weight_lost"] += a["weight"]
+            for code in a["error_patterns"]:
+                if code not in gap["patterns"]:
+                    gap["patterns"].append(code)
+        got = {
+            g["skill_id"]: {
+                "failed_assertions": g["failed_assertions"],
+                "patterns": g["patterns"],
+                "weight_lost": g["weight_lost"],
+            }
+            for g in report["skill_gaps"]
+        }
+        assert got == expect, name
+        assert all(g["attributed_by"] == "assertion" for g in report["skill_gaps"]), name
+
+
+def test_b06_every_failure_is_accounted_exactly_once():
+    """归因守恒：每条失败要么进 skill_gaps、要么进 unattributed_patterns，不许两边都记或都不记。"""
+    for name in NAMES:
+        report = _build(name)
+        in_gaps = {i for g in report["skill_gaps"] for i in g["failed_assertions"]}
+        in_unattr = {u["assertion_id"] for u in report["unattributed_patterns"]}
+        fails = {a["id"] for a in report["assertions"] if a["state"] == "fail"}
+        assert in_gaps | in_unattr == fails, name
+        assert not (in_gaps & in_unattr), name
+        assert sum(g["weight_lost"] for g in report["skill_gaps"]) <= CREDIT_TOTAL, name

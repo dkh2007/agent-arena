@@ -302,7 +302,7 @@
     },
     "skill_gaps": {
       "type": "array",
-      "description": "只做聚合，不做推断：失败的断言按 YAML 已声明的 skill_id 归类，weight_lost 是这些断言的权重之和。skill_id 为 null 的断言不进本数组（改由 unattributed_patterns 留痕）。",
+      "description": "只做聚合，不做推断：失败断言按技能归类，weight_lost 是这些断言的权重之和。归因优先级＝断言自己声明的 skill_id（Q10=A，一位不改）；只有断言**没声明** skill_id 时才查 docs/error-patterns-v0.yaml 的 mapped_skill_ids 兜底（B-06 / ROADMAP R-2），兜底出现一对多时权重按技能数等分，且 Σweight_lost ≤ credit.total_weight（builder 有硬校验）。两条路都产不出技能归属的失败（R1/R5）不进本数组，改由 unattributed_patterns 留痕。",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -311,7 +311,11 @@
           "skill_id": { "type": "string", "minLength": 1 },
           "failed_assertions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
           "patterns": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-          "weight_lost": { "type": "number", "minimum": 0 }
+          "weight_lost": { "type": "number", "minimum": 0 },
+          "attributed_by": {
+            "enum": ["assertion", "mapping", "assertion+mapping"],
+            "description": "该缺口由哪条路归因：assertion＝断言自带 skill_id；mapping＝词表 mapped_skill_ids 兜底；加号＝两类失败落在同一技能上。可选字段（旧报告没有），但新报告一律写——否则审计时无法区分「归因来自任务作者声明」与「来自词表兜底」，B-06 是否真生效就无从判断"
+          }
         }
       }
     },
