@@ -1,0 +1,135 @@
+{
+  "_note": "B-04 双评一致性实测原始记录。三批实验按时间顺序排列，全部为本机真调用 deepseek-flash 的结果，未做任何修饰。token 只记数量不折算金额（单价会变，编一个数比不报更糟）。",
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com",
+  "task": "dbg-001-order-report",
+  "experiments": [
+    {
+      "batch": 1,
+      "purpose": "通道验证：只跑一份、两次，确认能通再放量",
+      "runs_per_fixture": 2,
+      "max_tokens": 1024,
+      "rows": [
+        {
+          "fixture": "raw-fake-retry",
+          "ratings": [2, 2],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": ["retry_wrong_params", "wrong_total_amount", "wrong_valid_count"],
+          "latency_ms": [3389, 5388]
+        }
+      ],
+      "failures": [],
+      "tokens": { "prompt": 1194, "completion": 911, "reasoning": 815 }
+    },
+    {
+      "batch": "2a",
+      "purpose": "放量第一次：max_tokens=1024 被思考吃光，raw-fake-retry 直接报错。raw-empty 已成功。这一条是真失败记录，不是推测。",
+      "runs_per_fixture": 2,
+      "max_tokens": 1024,
+      "rows": [
+        {
+          "fixture": "raw-empty",
+          "ratings": [1, 1],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": ["no_output_file"],
+          "latency_ms": [2683, 1947]
+        }
+      ],
+      "failures": [
+        {
+          "fixture": "raw-fake-retry",
+          "error": "JudgeError: 第 1/2 次评价失败：LLMError: 正文为空且 finish_reason=length：1024 个 token 全被思考吃光，max_tokens 需要调大（当前 1024）。这不是接口故障。"
+        }
+      ],
+      "tokens": { "prompt": 0, "completion": 0, "reasoning": 0 },
+      "tokens_note": "0 表示**未采集**，不是没花钱：该批脚本在中途失败后直接退出，没写回统计。raw-empty 那 2 次调用的 token 实际未记录。"
+    },
+    {
+      "batch": 2,
+      "purpose": "放量到 BACKLOG 要求的 10 次规模（预算提到 4096 后重跑全量）",
+      "runs_per_fixture": 2,
+      "max_tokens": 4096,
+      "rows": [
+        {
+          "fixture": "raw-empty",
+          "ratings": [1, 1],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": ["no_output_file"],
+          "latency_ms": [1794, 1717]
+        },
+        {
+          "fixture": "raw-fake-retry",
+          "ratings": [2, 2],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": ["retry_wrong_params", "wrong_total_amount", "wrong_valid_count"],
+          "latency_ms": [5390, 3256]
+        },
+        {
+          "fixture": "raw-no-file",
+          "ratings": [1, 1],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": ["no_output_file"],
+          "latency_ms": [1862, 2171]
+        },
+        {
+          "fixture": "raw-no-trace",
+          "ratings": [3, 2],
+          "agreement": 0.0,
+          "pattern_agreement": 1.0,
+          "spread": 1,
+          "suspected": [],
+          "latency_ms": [13980, 12138]
+        },
+        {
+          "fixture": "raw-perfect",
+          "ratings": [4, 4],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [],
+          "latency_ms": [2175, 2883]
+        }
+      ],
+      "failures": [],
+      "tokens": { "prompt": 5542, "completion": 3485, "reasoning": 3041 },
+      "summary": "5 份 5 对比较中 4 对一致，均值 0.800；唯一分歧在 raw-no-trace"
+    },
+    {
+      "batch": 3,
+      "purpose": "定位 batch 2 里唯一的分歧：是偶发还是系统性？同一份评三次",
+      "runs_per_fixture": 3,
+      "max_tokens": 4096,
+      "rows": [
+        {
+          "fixture": "raw-no-trace",
+          "ratings": [3, 3, 3],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [],
+          "latency_ms": [18671, 19579, 17766]
+        }
+      ],
+      "failures": [],
+      "tokens": { "prompt": 968, "completion": 2921, "reasoning": 2840 },
+      "summary": "三对比较全部一致 ⇒ batch 2 的 2 档是偶发漂移，不是系统性档位歧义"
+    }
+  ],
+  "observations": [
+    "raw-no-trace 是唯一出现分歧的样本，累计 5 次评价档位为 [3,2,3,3,3] —— 漂移 1/5，方向单一（只往低档掉一次，没有出现 4 档）。",
+    "raw-no-trace 的耗时稳定在 12–20 秒，其他样本 1.7–5.4 秒。「答案对但过程记录全空」这个形态让模型反复权衡，即便最终收敛到同一档。",
+    "思考 token 占输出 token 的 87%（batch 2：3041/3485）。这是 max_tokens=1024 不足以完成任务的原因，也是成本不可预测的原因。",
+    "judge 在 raw-fake-retry 上自主指出「只拉到首页 10 条 ⇒ 答案必然错」，未接触 expected 值 —— 说明材料白名单挡住了抄答案的路径，判断来自推理而非比对。",
+    "全部 17 次评价、10 对比较中 9 对一致（0.900）。但这个数字**不能当总体一致率估计**：样本只有 5 个提交对象、且 5 对集中在同一任务上，唯一的分歧对也来自同一份提交（raw-no-trace）。要谈总体一致率，得先有 M2 的多任务库。"
+  ]
+}

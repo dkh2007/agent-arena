@@ -94,8 +94,8 @@
 | agent_endpoint_url | TEXT | 本次评测实际调用的端点快照 |
 | trace | JSON | OTel GenAI 标准轨迹（最小 trace schema 为提交格式一部分） |
 | assert_score | REAL | 硬分 = **两段式**：门禁未过记 0，否则 credit 层加权通过率（分母恒为 credit 权重和 4），见下方口径 |
-| judge_scores | JSON | 双评软分数组 |
-| judge_agreement | REAL, 可空 | 双评一致率（4.2-4 机制） |
+| judge_scores | JSON | 双评软分数组：每项 `{rating: 1–4, suspected_patterns: [...], rationale, model, latency_ms}`（round-79 定形，见下注） |
+| judge_agreement | REAL, 可空 | 双评一致率（4.2-4 机制）：两两比较中 `rating` 相同的比例 |
 | detected_patterns | JSON（FK 数组） | 轨迹分析检出的错误模式 |
 | diagnosis | JSON | 诊断报告 DTO **v2**，结构见 `docs/diagnosis-report-schema.md` + `docs/diagnosis-report.schema.json`；由 `src/arena/diagnosis_report.py` 组装并过 schema 校验 |
 | fsrs_rating | INTEGER 1–4 | 本次表现映射成的 FSRS 评分，用于更新卡片 |
@@ -111,6 +111,16 @@
 > "什么都不做"自动拿 2/6 = 33%，四份质量递进的提交全撞在 0.5。改造后为 0 / 0 / 0.25 / 0.50 / 1.00。
 > 一句话：**分数惩罚"没交东西"，归因不把"没数据"当成"不会"**；两者混写是 A2E 那类满分的根源（见 `spike/README.md` 2.2）。
 > 另一条：**门禁只管分数，不管观测**——门禁失败时 credit 断言照常判定并记录，只不计分（见 DTO §1 第 4 条）。
+
+> **judge 侧的三条「不」（round-79 落地时定，改要人拍）**：
+> judge 是**软分侧证**，不是判定层。它产出 `judge_scores` 与 `judge_agreement` 两个字段，
+> 且：① **不进 `assert_score` / `ratio`**（确定性断言才是可复算的对账地基，决策 10）；
+> ② **不进 `detected_patterns`**（`docs/error-patterns-v0.yaml` 里每条模式都有唯一的
+> `detection_rule.assertion_id`，judge 给的是"怀疑"，字段名因此是 `suspected_patterns`）；
+> ③ **不驱动 `fsrs_rating`**（判据不明时不得污染掌握度，与四态里 `unscored` 同理）。
+> judge 存在的意义只有一个：**换一个观察者重看同一份提交，能不能得出同样的结论**。
+> `judge_agreement` 低说明的是「判据表述有歧义」，不是「模型不行」也不是「考生答错」——
+> 处置是进人工仲裁，不是调分。
 
 ### 5.2 UserSkillState（用户×技能的 FSRS 卡片宿主）
 

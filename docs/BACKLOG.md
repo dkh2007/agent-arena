@@ -4,7 +4,8 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
-> 更新：2026-11-14（round-78：B-06 关闭并拆出 B-06b；映射表接成兜底归因，反证条件实测触发 → 「自研核心」降级）。
+> 更新：2026-11-14（round-79：B-04 做一半——judge 双评机制 + 真跑标定数据已就位，
+> 但未接进主流程、无仲裁队列、无阈值，拆出 B-04b / B-04c）。
 
 ---
 
@@ -124,13 +125,48 @@
 - **验证**：故意让参考 Agent 上报一份"删掉失败调用"的 trace → 平台侧比对必须报不一致
 - **谁推**：我（M1 剩余部分）。
 
-### [ ] B-04 LLM Judge 双评 + 一致性
+### [~] B-04 LLM Judge 双评 + 一致性（round-79 做了一半）
 
-- **是什么**：计划书 §4.1 评测层第 3 行；`src/` 里**一行都没有**（只有决策文档里提到）。
-- **为什么现在不做**：M1 才有真提交；且阈值要实测，先建机制后标定。
-- **做完判据**：同一提交双评两次，输出 `judge_scores` + `judge_agreement`；不一致率超阈值时进人工仲裁队列。
-- **验证**：同一 fixture 跑 10 次 → 一致率有数、写入报告字段
-- **谁推**：我（M1/M2）。
+- **是什么**：计划书 §4.1 评测层第 3 行。round-79 前 `src/` 里一行都没有。
+- **已完成的那一半**（有代码、有测试、有真跑数据）：
+  `src/arena/llm_judge.py`（`JudgeVerdict` / `double_judge` / `StubJudge` / `LLMJudge` /
+  `build_judge_context`）+ `src/arena/llm_client.py`（传输层，零新依赖）；
+  52 + 30 条约束测试、31 组变异全 `DETECTED`；
+  真调用 `deepseek-flash` 17 次，数据在 `docs/judge-agreement-distribution.json`。
+- **没做的那一半**（这才是 B-04 还挂着的理由）：
+  ① **没接进主流程**——`build_report()` 与 `submission_api.py` 都不调用 judge，
+    报告里仍没有 `judge_scores` 字段（`store.py` 的列与 `save_submission` 参数早就留好了，是通的）；
+  ② **没有仲裁队列**——只有 `needs_arbitration(threshold)` 这个布尔判断，
+    没有一个能把「待仲裁」排起来的容器；
+  ③ **没有阈值**——因为 5 个样本全来自同一个任务，唯一的分歧对也来自同一份提交，
+    这个分布不足以定线（见 `docs/judge-agreement-distribution.json` 的 observations 第 5 条）。
+- **为什么没顺手接进报告**：接进去会改 `build_report` 的输出与五夹具期望，而 judge
+  按口径**不参与判定**，接进去只是多两个字段。它该和「仲裁队列」一起做，才有闭环。
+- **做完判据**：报告里出现 `judge_scores`/`judge_agreement`；`needs_arbitration` 为真时
+  该提交进得了队列；阈值有依据（≥2 个任务、每个 ≥5 个提交的分布）。
+- **验证**：`grep -rn "judge" src/arena/diagnosis_report.py` 有命中；一份故意含糊的提交
+  能被排进队列 → 见下条 B-04b。
+- **谁推**：我（M1 剩余，与 B-05 有依赖：阈值标定要多个任务）。
+
+### [ ] B-04b judge 接入管线 + 人工仲裁队列
+
+- **是什么**：B-04 没做的那一半，单独立项以免「机制有了就算完成」的自我安慰。
+- **为什么现在不做**：优先级低于 B-05（多任务库）——没有多任务，接了也标不出阈值。
+- **做完判据**：`submission_api.py` 收到提交后能可选地跑双评并把两个字段落库；
+  `judge_agreement < threshold` 的提交进一张 `arbitration_queue` 表（或等价物），
+  且队列里的条目不参与 `fsrs_rating` 更新（判据不明时不能污染掌握度）。
+- **验证**：造一份 judge 两次给不同档的提交 → 落库后队列里能查到它；
+  `pytest tests/test_judge_pipeline.py`
+- **谁推**：我（M1/M2 交界）。
+
+### [ ] B-04c 一致率阈值标定（依赖 B-05）
+
+- **是什么**：`needs_arbitration(threshold)` 拒绝给默认值，就是为了不走「拍一个 0.8」的路。
+- **为什么现在不做**：现有多任务数 = 1，样本量不足以区分「模型漂移」与「判据歧义」。
+- **做完判据**：≥2 个任务 × 每任务 ≥5 个提交 × 每份评 2 次 ⇒ 有分布的直方图 +
+  一句「阈值定在 X，理由是 Y 处的漂移率出现台阶」。
+- **验证**：`python scripts/judge_agreement_experiment.py --all --runs 2 --purpose "阈值标定"`
+- **谁推**：我（M2）。
 
 ### [ ] B-05 任务库 1 → 10 + 变体模板
 

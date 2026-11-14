@@ -34,7 +34,7 @@
 | 层 | 计划书要求（§4.1） | 仓库实况 | 档 | 证据（可复核） |
 |---|---|---|---|---|
 | **1 任务层** | 3 技能 × 2–3 变体，任务库 ≤10；YAML + 原子 rubric + 技能节点 + 错误模式 + 故障注入 + Git 版本锁 | 1 个任务（5 条断言：gate 2 + credit 3）；3 个技能节点（`tool_param_validation` / `multi_step_planning` / `failure_retry`）；14 个错误模式；`variant_template_id: null`；**故障注入自 round-77 起真会失败**（`mock_tools.py` 执行 YAML 声明） | **半有肉** | `tasks/dbg-001-order-report.yaml`；`docs/skill-taxonomy-v0.yaml`；`docs/error-patterns-v0.yaml`；`tests/test_mock_tools.py` |
-| **2 评测层** | 轨迹捕获 + 自动断言 + LLM Judge + 轨迹分析出诊断报告 | 五条断言执行器全现算（R1–R5）；DTO v2 + schema 校验；两段式 gate/credit；反事实得分；过程门槛；作废态；P3 对账器（未接 rubric）；**judge 层未实现**；**trace 捕获未实现**（只认现成 fixture） | **有肉** | `src/arena/` 产品代码 2574 行（`assertion_evaluator` 1539 / `diagnosis_report` 561 / `trace_pipeline` 327 / `reconciliation` 147）；700 passed；`--fixture all` |
+| **2 评测层** | 轨迹捕获 + 自动断言 + LLM Judge + 轨迹分析出诊断报告 | 五条断言执行器全现算（R1–R5）；DTO v2 + schema 校验；两段式 gate/credit；反事实得分；过程门槛；作废态；P3 对账器（未接 rubric）；**judge 双评机制已就位但未接管线**（round-79：机制 + 真跑分布，缺仲裁队列与阈值，见 BACKLOG B-04b/B-04c）；**trace 捕获未实现**（只认现成 fixture） | **有肉** | `src/arena/` 产品代码 5769 行（`assertion_evaluator` 1539 / `diagnosis_report` 662 / `submission_api` 578 / `review_packet` 563 / `llm_judge` 481 / `store` 417 / `trace_pipeline` 378 / `reference_agent` 364 / `mock_tools` 314 / `llm_client` 300 / `reconciliation` 173）；858 passed；`--fixture all` |
 | **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`：**优先断言自带 `skill_id`，缺了才查词表 `mapped_skill_ids` 兜底**（round-78 / B-06，`attributed_by` 标明来源）；掌握度 P 只有公式，零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **半有肉（核心那条仍纸面）** | `src/arena/diagnosis_report.py`（`load_pattern_skills` / `_attribute`）；`grep -rn mapped_skill_ids src/` → 命中；`src/arena/store.py` |
 | **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | 只有实体定义 + **DDL**（`review_items` 表的 kind 四值、引用 task/submission）；**没有任何代码往写或读**；`grep -rl fsrs src/` → 只有 `store.py` 的列名 | **纸面（有表无行为）** | `store.py:SCHEMA_SQL`；`scripts/demo_decision.py 3` → PARTIAL |
 | **5 排程层** | 四因子建议排期 + 动态避让 + 用户可一键调整 | 只有创新点陈述（计划书 §五 第 3 条） | **纸面** | — |
@@ -71,7 +71,7 @@
 |---|---|---|---|
 | **M-1** spike | 同一任务接 A2E 与 agentevals 比集成成本 | ✅ 已完成（`spike/README.md` 三级证据；A2E 26 指标全聚合分/LLM judge，无任务级布尔断言 ⇒ 评测层自研） | — |
 | **M0** 单任务打穿 | 1 个调试任务跑通、能区分好坏 Agent、定数据模型字段 | ✅ 达成（五夹具 0/0.25/0/0.5/1.0 能区分；round-77 起 trace 来自**真实执行**而非手写） | 真 **LLM** Agent（现在只有确定性参考 Agent） |
-| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化 + HTTP 入口 + 可执行任务环境已就位**（round-75 落库、round-76 三端点、round-77 mock 工具服务 + 参考 Agent 真跑） | 平台侧抓包与 LLM Agent（B-03b）、judge 双评（B-04）、鉴权 |
+| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化 + HTTP 入口 + 可执行任务环境 + judge 一致性实测已就位**（round-75 落库、round-76 三端点、round-77 mock 工具服务 + 参考 Agent 真跑、round-79 judge 双评 17 次真调用出分布） | 平台侧抓包与 LLM Agent（B-03b）、judge 接入管线与仲裁队列（B-04b）、鉴权 |
 | **M2** 任务库+分类学 | 10 个任务；错误分类学 v1（5–8 模式 + 映射表）；变体模板 | 🟡 分类学已超（14 模式）；任务 1/10；变体模板 0 | 9 个任务、变体模板、映射表接进代码 |
 | **M3** 状态层 | 掌握度 + 映射表 + 规则推荐 + AUC 回测 | ❌ 零代码 | 全部 |
 | **M4** 复习层 | FSRS 调度 + 三种形态 + 每日上限 | ❌ 零代码 | 全部 |

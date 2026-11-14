@@ -10,7 +10,7 @@
 | 文件 | 内容 |
 |---|---|
 | `docs/ROADMAP.md` | **先读这份**：骨架与进度总览。五层 × 四档状态（有肉/半有肉/纸面/空）、三层证据不能互相冒充、里程碑对齐、4 条致命风险。只导航，不定义口径 |
-| `docs/BACKLOG.md` | **未完成清单（备忘录）**：24 条（其中 18 条未开、5 条已关并留痕），每条带「为什么现在不做 / 做完判据 / 十分钟验证 / 谁推」；末尾有收工清单与已关闭留痕 |
+| `docs/BACKLOG.md` | **未完成清单（备忘录）**：26 条（19 条未开、3 条做一半、4 条已关并留痕），每条带「为什么现在不做 / 做完判据 / 十分钟验证 / 谁推」；末尾有收工清单与已关闭留痕 |
 | `../项目计划书草稿-v0.4.md` | 完整计划书：定位/背景/差异化/技术方案/创新点/里程碑/风险/依据 |
 | `../协作规范-v1.md` | 开发协作规范：小步迭代流程、分支与提交规范、验证沉淀 |
 | `docs/data-model.md` | 数据模型 v0 占位（M-1 第 2 步定稿七个实体字段） |
@@ -28,7 +28,13 @@
 | `src/arena/mock_tools.py` | **B-03（round-77）：由任务 YAML 驱动的 mock 工具服务**。实现且只实现 YAML 已声明的两件事：`fault_injection`（该 `(tool, match)` 第 N 次调用按声明失败、`then` 放行）与 `tools[].mock.pagination`（`half_open` 区间 / 页大小上限 / 越界返空 / `total` 由夹具长度推导）。`reset_policy: per_submission` 的执行者是 `reset()`——不重置会让上一个学习者用掉故障额度。**刻意不发明**：额外参数忽略（是否算幻觉交 R4 从 trace 判，服务端不替评测器判分）、缺必填 400 `missing_param`（本模块定义，注释已标）；`range != half_open`、未知 `total_source`、未知 `then` 一律**构造期报错** |
 | `src/arena/reference_agent.py` | **B-03（round-77）：确定性参考 Agent**（不是 LLM）。真 HTTP 调工具、遇 5xx 真同参重试、真写 `/workspace/report.json`；分页大小与工具名从任务 YAML 派生，不写死。四种 `flaw`：`correct` / `wrong_filter`（不剔除无效行 ⇒ 只打 R2）/ `extra_param`（多传 `schema` 外参数 ⇒ 只打 R4）/ `no_retry`（不重试 ⇒ 打 R1+R5+R3）。跑挂也照样交一份 `crashed` 提交（保留已有调用记录），不干脆不提交 |
 | `tests/test_mock_tools.py` | **13 条**（round-77）：故障点只打匹配参数、`reset()` 恢复额度、分页半开区间与 `total` 推导、越界返空、超上限码、未声明工具、产物账本、深拷贝不被调用方污染、三种未实现形态报错 |
-| `tests/test_reference_agent.py` | **12 条**（round-77）：trace 结构自洽 + `schema_valid=True` + `call_count>0`；真跑拿满分；**答案与 `test_inputs.expected` 对撞**；重试同参；四形态矩阵（失败集与 ratio 逐一断言）；崩溃提交不带产物；配置错误在构造期暴露 |
+| `tests/test_reference_agent.py` | **12 条**（round-77）：trace 结构自洽 + `schema_valid=True` + `call_count>0`|；真跑拿满分；**答案与 `test_inputs.expected` 对撞**；重试同参；四形态矩阵（失败集与 ratio 逐一断言）；崩溃提交不带产物；配置错误在构造期暴露 |
+| `src/arena/llm_judge.py` | **B-04（round-79）：judge 双评的语义层**。`JudgeVerdict`（构造即校验：档位 `1–4` 整数，越界**不 clamp** / 不给 `bool` 过；`patterns` 不许重复）/ `double_judge`（n≥2，故障与不一致分开）/ `DoubleJudgeResult`（一致率 = 两两比较中 `rating` 相同的比例；`needs_arbitration` **无默认阈值**）/ `StubJudge`（离线测机制）/ `parse_verdict`（只认 `suspected_patterns`，不做猜测式修复）/ `build_judge_context`（**白名单**：`expected` 与 `assertion_results` 绝不外流）/ `LLMJudge`（`max_tokens` 默认 **4096**：1024 会被思考 token 吃光） |
+| `tests/test_llm_judge.py` + `tests/test_llm_judge_llm.py` | **52 条**（round-79）：输出不碰分数与 `detected_patterns` / 越界、词表外、n<2 三条都报错 / 材料序列化后查 `expected`·`1837.99`·rubric id 痕迹 / 清单不带 `detection_rule` / 两次评价必须各打一次接口（不缓存） |
+| `src/arena/llm_client.py` | **B-04/B-03b（round-79）：LLM 传输层**，零新依赖。`LLMConfig`（密钥 `repr=False` **且**手写 `__repr__` 打码，两层）/ `LLMClient`（transport 与 sleep 可注入）/ `Completion`。三条实测教训写进代码：**`finish_reason=length` 与「200 但空正文」分开报**（截断要加预算，接口坏才查网络）、重试只对 429/5xx/网络层、`.env` 逐键回落且拦「键名被抄两遍」 |
+| `tests/test_llm_client.py` | **30 条**（round-79，全离线）：密钥不进 repr/异常 / 截断与空正文的报错文案必须不同 / 4xx 不重试、5xx 退避递增且封顶 / 请求体与 `response_format` / `field(repr=False)` 这层"死代码"的机械锁 |
+| `docs/judge-agreement-distribution.json` | **B-04 实测原始记录**（round-79）：4 批 17 次真调用 `deepseek-flash`、10 对比较 9 对一致；含 `max_tokens=1024` 的**原始报错**与三批目的说明 |
+| `scripts/judge_agreement_experiment.py` | **B-04 实验脚本**（round-79）：`--dry-run` 只打印材料不花钱；`--all` / `--runs` / `--max-tokens` / `--purpose`；单份失败不中断全批；结果**累积不覆盖** |
 | `fixtures/tool-call-cases.json` | **14 个**边界 trace 用例集（乱序/零调用/只拉首页/跳过故障点/穿插/假重试等）。**Q10-A** 把 4 个原走 default 的 case 改为明写规则命中；**TD-004** 把 `expect.source` 升级为完整 `classification_source` 字符串并新增 `expect.observed_offsets`；**Q12(a) 补 `bad_status_enum` / `params_not_object` 两个 case**（期望 `unscored/trace_invalid`）。后续补 case 仍先改这里 |
 | `fixtures/raw-*.json` | 五份 S2 原始提交夹具。**S3-3-3 按 Q13(a) 补顶层 `artifacts`**（产物本体，与 trace 是两份独立证据）；`raw-fake-retry` 刻意保留「trace 无 `write_report` 但产物存在」，留给 P3 的 R6 做交叉比对。手写 `assertion_results` **一字未改**（S3-3-6 起「不再被读」≠「已被删除」，留作 S2 基线）；`size_bytes`（TD-009）、`raw-empty` 的旧分数描述（TD-021 / F10）均已订正或销项 |
 | `tests/test_assertion_evaluator.py` | S3-1 的 **55 条**约束用例（含 `call_index` 乱序回归锁、Q10-A 四条明写规则锁、TD-003 八条坏 spec 参数化 + H1 原样反例 + 加载期校验、TD-004 精确来源点名锁、**Q12(a) 五条回归锁（畸形调用判 unscored、枚举派生、枚举缺失拒绝猜测）**、YAML 派生锁、输出可直喂 `build_report()`） |
@@ -390,7 +396,27 @@
 > **C-03 本轮没触发**（一次收敛），但机制没改，仍挂着——别当成已修。
 > 待人拍板项：**无**。下一步 B-03（真 trace 采集）或 B-04（judge 双评）。
 
-> **最新状态（round-78，§78，B-06 映射表接进代码 —— 接上了，同时把「自研核心」自己拆了）**：人回「重来，先做 B-06」。
+> **最新状态（round-79，§79，B-04 judge 双评机制 + 17 次真调用标定 —— 做了一半，不标完成）**：
+> 密钥到位后人拍板「先用 flash，资金有限」⇒ 开工。**先立三条「不」**（已落 `docs/data-model.md` §5.1 注）：
+> judge 不进 `ratio`、不进 `detected_patterns`（字段名就叫 `suspected_patterns`）、不驱动 `fsrs_rating`。
+> 它只回答一个问题：换一个观察者重看同一份提交，能不能得出同样的结论。
+> 新增 `src/arena/llm_judge.py`（481 行：`JudgeVerdict` 构造即校验 / `double_judge` / `StubJudge` /
+> `build_judge_context` 白名单 / `LLMJudge`）与 `src/arena/llm_client.py`（300 行传输层，零新依赖）。
+> **82 条测试全离线、31 组变异全 `DETECTED`**（其中 4 组首跑漏网：`agreement` 属性从没被断言过、
+> `match="至少"` 匹配到了错的报错来源、`field(repr=False)` 被手写 `__repr__` 覆盖成死代码）。
+> **真跑 17 次调用 / 4 批**，数据在 `docs/judge-agreement-distribution.json`。最值钱的三条：
+> ① `max_tokens=1024` 被思考吃光（输出里 **87% 是 reasoning token**）⇒ judge 默认值提到 4096；
+> 这层报错若只写「choices 为空」，排查会一路走到网络上去。
+> ② `raw-no-trace`（答案对、过程空）是唯一分歧样本，**耗时 12–20 秒 vs 其他 1.7–5.4 秒**——
+> 耗时比一致率更早报警；只评 2 次会漏掉低概率漂移。
+> ③ **我一度把偶发漂移判成系统性歧义**（"决策 7 在 judge 侧的空白位"，听上去很漂亮），
+> 复测三次全给 3 档把它推翻。花那 3 次调用是这一轮最划算的开销。
+> **B-04 标 `[~]` 不标 `[x]`**：未接进 `build_report`/`submission_api`、无仲裁队列、无阈值
+> （`store.py` 的两列与 `save_submission` 参数早通，只是没人调用）⇒ 拆出 **B-04b** / **B-04c**（依赖 B-05）。
+> 待重生成评审包（自指测试红，包内仍是 776，实测 858）。
+> 待人拍板项：**无**。下一步 B-05（任务库 1→10，解锁 B-04c 标定）或 B-07（掌握度 P）。
+
+> **上一状态（round-78，§78，B-06 映射表接进代码 —— 接上了，同时把「自研核心」自己拆了）**：人回「重来，先做 B-06」。
 > 开工先解一处冲突：Q10=A 拍板过「不改 `build_report()` 按 `spec.skill_id` 的归因」，TD-001 未销项。
 > 唯一能同时满足的实现是**兜底**——断言写了 `skill_id` 就只认它，词表一次都不查；没写才查，查不到直接报错。
 > 新增 `load_pattern_skills()` / `_attribute()` / `_split_weight()`，`build_report()` 加关键字参数
