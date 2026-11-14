@@ -6864,3 +6864,148 @@ ReportError: R1_file_exists: 标了 blocked，但前置 [] 全部通过——blo
 - **待人拍板：无。** 判据订正（`blocked`→`unscored`）不是产品口径取舍，
   是既有决策 7 与 I4 规则推导出的唯一自洽结论，且不改变任何分数。
 - 下一步：B-03（真 trace 采集）或 B-04（judge 双评）。二者都依赖真提交，可并行推进。
+
+---
+
+## 77. round-77：任务环境可执行化 + 参考 Agent 真跑（B-03），对账器一处误告订正
+
+**起因**：维护者回「继续」，按 round-76 结尾的承诺做 B-03。开工前先核了一遍
+「YAML 里写了什么、代码里谁执行」：`fault_injection`（offset=10 首次 500）与
+`tools[].mock.pagination`（页大小上限 / 越界返空 / `total` 由夹具长度推导）
+**在 `src/` 里零消费者**（`grep -rn fault_injection src/` 只命中 `store.py` 的一个 0/1 列）。
+即：YAML 写「第一次调用会失败」，从来没有任何东西真的失败过；R3 能满分，
+只是因为有人往夹具 JSON 里抄了一行 `status: error`。
+
+### 77.1 做了什么
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| `src/arena/mock_tools.py`（新，约 300 行） | 产品代码 | 由任务 YAML 驱动的 mock 工具服务：分页语义 + 故障注入 + `reset()`；三种未实现形态（`range != half_open` / 未知 `total_source` / 未知 `then`）**构造期报错**，不假装支持 |
+| `src/arena/reference_agent.py`（新，约 330 行） | 产品代码 | 确定性参考 Agent：真 HTTP 调工具、遇 5xx 真重试、真写产物；四种 `flaw` 形态用于验证判定层区分得开 |
+| `src/arena/reconciliation.py` | 判定器修正 | 新增 `derived_fields`（见 77.2） |
+| `tests/test_mock_tools.py`（新） | 测试 | 13 条 |
+| `tests/test_reference_agent.py`（新） | 测试 | 12 条（含四形态矩阵） |
+| `tests/test_reconciliation.py` | 测试 | +4 条 |
+
+**为什么 mock 只实现"已声明"的语义**：YAML 只声明了分页与故障两件事。
+额外参数要不要拒、缺必填怎么答，YAML 里没有任何声明，于是 mock 只做后者（400 `missing_param`）
+并在注释里标明「本模块定义，非 YAML 声明」，前者**交给 R4 从 trace 判**。
+理由：mock 一旦开始"帮忙判分"，就成了第二个真相源。四形态里的 `extra_param` 正好验证这个分工——
+服务端忽略多余参数、流程照常成功，而 R4 仍然判失败。
+
+### 77.2 一处误告：对账器把聚合推导值判成「疑似编造」
+
+用完美夹具跑现成的 P3 对账器，结果是 `mismatch`：
+
+```
+status = mismatch | pool size = 2
+summary = 对账失败：找不到出处的数值 valid_count=17.0、total_amount=1837.99（疑似编造，交人复核）
+```
+
+`raw-perfect` 是**诚实提交**。根因不是实现 bug，是**结论超出了证据能支撑的范围**：
+该任务的两个答案值（有效条数、总金额）都是**聚合推导值**，任何工具返回值里
+都不可能逐字出现 `1837.99`；而最小实现对出处只做字面匹配（文档里明写了不做重放计算）。
+于是"字面找不到"被直接翻译成"编造"。
+
+这在本轮之前没爆，是因为对账器**刻意没接 rubric**（TD-039 / §60）。但 TD-039 的计划
+正是"接进评分"——按原样接，**每一个诚实提交都会被指控编造**。
+
+处置：加 `derived_fields` 参数，由调用方声明哪些字段是推导值。缺出处的字段
+**全是**推导值 ⇒ `unverifiable` + `reason=derived_not_replayable`；
+只要有一个**非**推导字段缺出处 ⇒ 仍是 `mismatch`。不传该参数时行为与旧版完全一致
+（7 条旧锁全绿）。
+
+不选"直接降低 mismatch 门槛"的理由：那会让真正的编造也一起溜过去。
+决策 10 要的是"保对账"，不是"少报警"。
+
+### 77.3 真跑的结果，以及与手写夹具的对撞
+
+| 项 | 实测 |
+|---|---|
+| `final_status` | `completed` |
+| `call_count` | **4**（夹具写了 5，多的一次是空尾页；两种都合法） |
+| `trace_audit.schema_valid` | **True**（`invalid_reasons=[]`） |
+| `ratio` | **1.0**，五条全 pass |
+| 算出的答案 | `{"valid_count": 17, "total_amount": 1837.99}` |
+| 与 `test_inputs.expected` | **完全一致** |
+
+最后一行是这一轮唯一一次「有机会对撞」的地方：手写的期望值 vs 一次真实执行的结论。
+两者相同 ⇒ 夹具的数是抄对的。
+
+### 77.4 四形态矩阵：证明判定层分得开
+
+只证明"能拿满分"没有意义，要证明"错了会被抓到、且抓在对的地方"。
+
+| `flaw` | final_status | 调用数 | ratio | 失败断言 |
+|---|---|---|---|---|
+| `correct` | completed | 4 | **1.00** | 无 |
+| `wrong_filter`（不剔除无效行） | completed | 4 | **0.50** | 只 R2 |
+| `extra_param`（多传 `debug=true`） | completed | 4 | **0.75** | 只 R4 |
+| `no_retry`（遇 500 不重试） | crashed | 2 | **0.00** | R1 + R5 + R3（R2 `blocked`） |
+
+分数与失败位置**逐一对得上**：`total_weight = R2(2) + R3(1) + R4(1)`，
+`wrong_filter` 丢 R2 的两分 ⇒ 2/4；`extra_param` 丢 R4 的一分 ⇒ 3/4。
+`no_retry` 先挂门禁 R1（无产物）⇒ `disqualified`，ratio 记 0，但 credit 三照样判、诊断不丢。
+
+### 77.5 我自己写错的一处，以及查证后的结论
+
+第一版测试写的是「每次调用字段集 **等于** `item_fields`」，当场红：
+`success` 的调用不带 `http_status`/`error`。改成「**⊆** 允许集 + 按状态要求必备字段」。
+
+顺着这处错误去查"平台到底拦不拦"，结论是**不拦**：运行期结构校验
+（`call_sequence_problems`）只查 `call_index` / `status` / `params` 类型；
+`status=error ⇒ http_status` 这一条结构层不校验，YAML 注释里也明写"由 R3 执行器判定、结构层不校验"，
+且已登记 **TD-026（B-22）**。所以这组断言锁的是「参考 Agent 自己合规」，
+**不是**「平台拦得住不合规的」——测试文档里已写清这个区别，避免下次有人读成平台已强校验。
+
+### 77.6 变异（8 组，全部 DETECTED）
+
+| 变异 | 命中测试 |
+|---|---|
+| M1 故障点永不触发 | `fault_point` |
+| M2 `reset()` 不清额度 | `budget` |
+| M3 去掉页大小上限 | `over_page_size` |
+| M4 越界返空的 `total` 改 0 | `offset_out_of_range` |
+| M5 返回不深拷贝 | `not_mutated` |
+| M6 永不重试 | `full_marks` |
+| M7 不剔除无效行 | `matches_declared_expected` |
+| M8 不再注入多余参数 | `flaw_matrix` |
+| M9 推导值仍判编造 | `derived` |
+
+判定沿用 round-75 的教训（区分 `DETECTED` / `INVALID` / `MISSED`），源码全部还原。
+
+### 77.7 实测
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_mock_tools.py` | **13 passed** |
+| `pytest tests/test_reference_agent.py` | **12 passed** |
+| `pytest tests/test_reconciliation.py` | **11 passed**（原 7 + 新 4） |
+| `pytest tests/ -q` | **770 passed / 770**（原 741 + 29） |
+| `review_packet.py --check` | **OK（`02bf120fcae8b287`）** |
+| `review_packet.py --check --full` | **OK_FULL**（包内 0 failed/770，重跑 0 failed/770） |
+| 变异 | 8 组全 `DETECTED` |
+
+### 77.8 边界与反证
+
+- **参考 Agent 不是 LLM**：步骤写死。它证明"链路通、判定分得开"，
+  **不证明**"模型会自己想到要重试"。后者是 B-03b。
+- **trace 仍是自报**：Agent 可以改写 `call_index` 把重试藏起来，平台无法证伪。
+  所以本轮**没有**、也不能声称"trace 不可伪造"。平台侧抓包是 B-03b 的第一条判据
+  （故意上报"删掉失败调用"的 trace ⇒ 平台比对必须报不一致）。
+- **mock 只覆盖这一个任务的工具形态**：`write_report` 的落盘是"记在内存账本"，
+  没有真文件系统——真文件/真沙箱属 B-03b 之后的执行环境。
+- **反证条件**：① 若 B-03b 接入平台侧抓包后发现 `call_index` 的"平台侧编号"口径
+  与 Agent 编号无法一一对应，trace schema 需要加平台侧序号字段（破坏性变更）；
+  ② 若第二个任务出现"非分页形态的工具"（如 `search(query)`），
+  `mock_tools` 的 `fixture_ref + pagination` 二元结构不够用，需要插件式 mock；
+  ③ 若真 LLM Agent 的 trace 里出现 `item_fields` 之外的字段（如 `duration_ms`），
+  「⊆ 允许集」这条口径要重新决定是放宽还是拒绝。
+
+### 77.9 状态
+
+- B-03 **关闭**，LLM 与平台侧采集拆出为 B-03b。BACKLOG / ROADMAP 已同步。
+- 对账器补 `derived_fields`；TD-039（接 rubric）**仍未做**，且现在有了接入前的前提条件。
+- **待人拍板：无。** 本轮改动都是"让已声明的语义真的发生"与"不让结论超出证据"，
+  没有产品口径取舍。
+- 下一步：B-04（judge 双评，需模型端点）或 B-06（映射表接进 `skill_gaps`，ROADMAP R-2）。

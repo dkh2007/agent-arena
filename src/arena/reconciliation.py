@@ -14,6 +14,14 @@ round-70 定案（评审包决策 10）：防作弊**保对账**，随机化只�
   unverifiable 记录里根本没有可用数值（**数据不足，不是答错**：不计掌握度、不记短板）
   mismatch     记录里有数值，但某个待查值找不到出处（疑似编造，交人复核）
 
+**聚合推导值（`derived_fields`，round-77 补）**：条数、合计这类值由多行数据算出来，
+工具返回值里**逐字不可能出现**（没有哪个响应会回一个 `1837.99`）。
+把它们当 `mismatch` 就是把诚实提交判成编造——round-77 实测：唯一任务的完美提交
+就落在这个坑里（`valid_count=17` / `total_amount=1837.99` 都找不到出处）。
+所以调用方用 `derived_fields` 声明哪些字段是推导值，这些字段缺出处时归 `unverifiable`
+（`reason=derived_not_replayable`），**只有非推导字段缺出处才叫 mismatch**。
+不传 `derived_fields` 时行为与旧版一致（默认不替调用方猜）。
+
 调用关系：状态层在更新掌握度之前调用一次；它不是断言，不产生 error_patterns。
 """
 
@@ -21,7 +29,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Iterable
 
 # 与 R2 的浮点容差一致（tasks/dbg-001-order-report.yaml 的 tolerance.total_amount = 0.01）。
 DEFAULT_TOLERANCE = 0.01
@@ -81,7 +89,8 @@ def _matches(value: float, pool: list[float], tolerance: float) -> bool:
 
 
 def reconcile(report_values: dict[str, float], trace: dict | None,
-              tolerance: float = DEFAULT_TOLERANCE) -> dict:
+              tolerance: float = DEFAULT_TOLERANCE,
+              derived_fields: Iterable[str] = ()) -> dict:
     """把报告里的数值逐个拿去过程记录里找出处。
 
     `report_values` 形如 `{"valid_count": 17, "total_amount": 1837.99}`——
@@ -89,6 +98,11 @@ def reconcile(report_values: dict[str, float], trace: dict | None,
     """
     if not isinstance(report_values, dict) or not report_values:
         raise ValueError("report_values 必须是非空映射")
+
+    derived = set(derived_fields or ())
+    stray = derived - set(report_values)
+    if stray:
+        raise ValueError(f"derived_fields 里有 report_values 未覆盖的字段：{sorted(stray)}")
 
     pool = trace_numbers(trace)
     checked = []
@@ -102,16 +116,24 @@ def reconcile(report_values: dict[str, float], trace: dict | None,
             "found": _matches(value, pool, tolerance),
         })
 
+    unfound = [i for i in checked if not i["found"]]
     if not pool:
-        status = "unverifiable"
-    elif all(item["found"] for item in checked):
-        status = "verified"
+        status, reason = "unverifiable", "no_numbers_in_trace"
+    elif not unfound:
+        status, reason = "verified", "all_traceable"
+    elif all(i["field"] in derived for i in unfound):
+        # 缺出处的**全是聚合推导值**（条数、合计）：工具返回值里逐字不可能出现，
+        # 最小实现不做重放计算 ⇒ 属"数据不足"，**不是**编造。
+        # 不这样分，诚实提交会被判成「疑似编造」（round-77 实测：完美夹具即此情形）。
+        status, reason = "unverifiable", "derived_not_replayable"
     else:
-        status = "mismatch"
+        status, reason = "mismatch", "value_not_traceable"
 
     return {
         "status": status,
+        "reason": reason,
         "tolerance": tolerance,
+        "derived_fields": sorted(derived),
         "checked": checked,
         "trace_number_count": len(pool),
         # 只有 verified 才有资格谈"答案来自过程"；unverifiable 与 mismatch 都要由人复核，
@@ -126,6 +148,10 @@ def summarize(result: dict) -> str:
     if result["status"] == "verified":
         return f"对账通过：{len(result['checked'])} 个数值均可在过程记录中找到出处"
     if result["status"] == "unverifiable":
+        if result.get("reason") == "derived_not_replayable":
+            names = "、".join(i["field"] for i in result["checked"] if not i["found"])
+            return (f"无法对账：{names} 属聚合推导值，过程记录里不会逐字出现 "
+                    "（最小实现不做重放计算；数据不足，不是答错）")
         return "无法对账：过程记录里没有可用数值（数据不足，不是答错）"
     return "对账失败：找不到出处的数值 " + "、".join(missing) + "（疑似编造，交人复核）"
 

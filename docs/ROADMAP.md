@@ -31,7 +31,7 @@
 
 | 层 | 计划书要求（§4.1） | 仓库实况 | 档 | 证据（可复核） |
 |---|---|---|---|---|
-| **1 任务层** | 3 技能 × 2–3 变体，任务库 ≤10；YAML + 原子 rubric + 技能节点 + 错误模式 + 故障注入 + Git 版本锁 | 1 个任务（5 条断言：gate 2 + credit 3）；3 个技能节点（`tool_param_validation` / `multi_step_planning` / `failure_retry`）；14 个错误模式；`variant_template_id: null`；故障注入位声明但未用 | **半有肉** | `tasks/dbg-001-order-report.yaml`；`docs/skill-taxonomy-v0.yaml`；`docs/error-patterns-v0.yaml` |
+| **1 任务层** | 3 技能 × 2–3 变体，任务库 ≤10；YAML + 原子 rubric + 技能节点 + 错误模式 + 故障注入 + Git 版本锁 | 1 个任务（5 条断言：gate 2 + credit 3）；3 个技能节点（`tool_param_validation` / `multi_step_planning` / `failure_retry`）；14 个错误模式；`variant_template_id: null`；**故障注入自 round-77 起真会失败**（`mock_tools.py` 执行 YAML 声明） | **半有肉** | `tasks/dbg-001-order-report.yaml`；`docs/skill-taxonomy-v0.yaml`；`docs/error-patterns-v0.yaml`；`tests/test_mock_tools.py` |
 | **2 评测层** | 轨迹捕获 + 自动断言 + LLM Judge + 轨迹分析出诊断报告 | 五条断言执行器全现算（R1–R5）；DTO v2 + schema 校验；两段式 gate/credit；反事实得分；过程门槛；作废态；P3 对账器（未接 rubric）；**judge 层未实现**；**trace 捕获未实现**（只认现成 fixture） | **有肉** | `src/arena/` 产品代码 2574 行（`assertion_evaluator` 1539 / `diagnosis_report` 561 / `trace_pipeline` 327 / `reconciliation` 147）；700 passed；`--fixture all` |
 | **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`（按**断言自带 `skill_id`**，不查词表映射）；词表 14 条里 9 条填了 `mapped_skill_ids`，但 **`src/` 0 个消费者**（只有 `tests/test_task_yaml.py:265,285` 做引用完整性校验）；掌握度 P 只有公式，零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **半有肉（核心那条仍纸面）** | `src/arena/diagnosis_report.py:449-466`；`grep -rn mapped_skill_ids src/` → 空；`src/arena/store.py` |
 | **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | 只有实体定义 + **DDL**（`review_items` 表的 kind 四值、引用 task/submission）；**没有任何代码往写或读**；`grep -rl fsrs src/` → 只有 `store.py` 的列名 | **纸面（有表无行为）** | `store.py:SCHEMA_SQL`；`scripts/demo_decision.py 3` → PARTIAL |
@@ -68,8 +68,8 @@
 | 阶段 | 计划书要求 | 现在 | 差什么 |
 |---|---|---|---|
 | **M-1** spike | 同一任务接 A2E 与 agentevals 比集成成本 | ✅ 已完成（`spike/README.md` 三级证据；A2E 26 指标全聚合分/LLM judge，无任务级布尔断言 ⇒ 评测层自研） | — |
-| **M0** 单任务打穿 | 1 个调试任务跑通、能区分好坏 Agent、定数据模型字段 | ✅ 基本达成（`dbg-001` 五夹具 0/0/0.25/0/0.5/1.0 能区分；数据模型 v0.1 七实体） | 没跑过**真** Agent（只用合成 fixture）；无 reference-agent 对照 |
-| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化 + HTTP 入口已就位**（round-75 落库、round-76 三端点 + 逐字段对拍） | 真 trace 采集（B-03）、judge 双评（B-04）、鉴权 |
+| **M0** 单任务打穿 | 1 个调试任务跑通、能区分好坏 Agent、定数据模型字段 | ✅ 达成（五夹具 0/0.25/0/0.5/1.0 能区分；round-77 起 trace 来自**真实执行**而非手写） | 真 **LLM** Agent（现在只有确定性参考 Agent） |
+| **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化 + HTTP 入口 + 可执行任务环境已就位**（round-75 落库、round-76 三端点、round-77 mock 工具服务 + 参考 Agent 真跑） | 平台侧抓包与 LLM Agent（B-03b）、judge 双评（B-04）、鉴权 |
 | **M2** 任务库+分类学 | 10 个任务；错误分类学 v1（5–8 模式 + 映射表）；变体模板 | 🟡 分类学已超（14 模式）；任务 1/10；变体模板 0 | 9 个任务、变体模板、映射表接进代码 |
 | **M3** 状态层 | 掌握度 + 映射表 + 规则推荐 + AUC 回测 | ❌ 零代码 | 全部 |
 | **M4** 复习层 | FSRS 调度 + 三种形态 + 每日上限 | ❌ 零代码 | 全部 |
@@ -87,7 +87,7 @@ M3/M4 的顺序不能反：没有持久化就没有"上一次表现"，掌握度
 | **R-1** | 计划书三层零代码，评委追问"M3/M4 怎么保证"只能靠纸面 | 纸面论证已备（计划书 §4.2 第 8 条 + 文献边界三句话） | 反证：若初赛要求"可运行系统"而非计划书 ⇒ 整个排期要重排（约束表已确认只需计划书） |
 | **R-2** | **"映射表是自研核心"但代码里没有消费者**，报告走的是另一条路（断言自带 `skill_id`） | 已发生（`src/` 0 命中） | 两条路不等价：映射表能表达"一个模式映射多个缺口"，断言 `skill_id` 只能一对一。详见 `docs/BACKLOG.md` B-24 |
 | **R-3** | 9 处 `【占位】` 在纸面上被读成"没想清楚" | 已存在（计划书 v0.4） | 每处应补"什么时候定、用什么判据定"，而不是填一个假数 |
-| **R-4** | 真 trace 从未跑过：所有结论建立在合成 fixture 上 | 已发生 | 缓解：`spike/README.md` 的语义证据 + fixture 覆盖 14 个边界 case；反证：接真 Agent 后若出现 fixture 未覆盖的形态，判定层需重审 |
+| **R-4** | 真 trace 从未跑过：所有结论建立在合成 fixture 上 | **降级但未消除**（round-77：确定性参考 Agent 真跑通过，产物 trace 能喂进链路且 `schema_valid=True`；但 trace 仍是 Agent 自报、决策体仍是写死流程） | 缓解：mock 工具服务由任务 YAML 驱动 + 四形态证明断言分得开；**剩余风险**：自报的 `call_index` 可被改写以藏起重试 ⇒ B-03b 平台侧抓包；反证：真 LLM Agent 若出现 fixture 未覆盖的形态，判定层需重审 |
 
 ## 5. 三条工作线（顺序不是并列）
 

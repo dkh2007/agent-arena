@@ -25,6 +25,10 @@
 | `tests/test_store.py` | **16 条落库约束锁**（round-75）：建表幂等 / 外键真生效 / 关连接重开仍读回 / 只落 `ratio` 不落反事实分 / 派生列只认 fail（**含一条构造锁**：夹具测不出"过滤与不过滤"的差别，必须构造 pass+blocked 带模式才咬得住）/ 派生列不回写报告 / 重复 id 不覆盖 / 空 `user_id` 与未注册任务拒绝 / 坏报告不留半条 / 时间轴锚评测时刻 / 列表倒序 + limit / 范围约束在表上。8 组字节级变异全 `DETECTED` |
 | `src/arena/submission_api.py` | **M1 第二步（round-76）：黑盒提交服务（HTTP）**。标准库 `http.server`，**零新依赖**（`requirements.txt` 全 pin 且 `test_dependencies.py` 比对本机版本，引框架要连带核 license）。3 端点：`POST /submissions`（提交 → DTO v2）、`GET /submissions/{id}`（读回）、`GET /healthz`。**黑盒的含义**：`trace_audit` 与 `assertion_results` 的 id 壳由平台派生，外部填不了（外部能填审计字段 = 让被测方自报结论）。`task_version` 必填（B-21，缺则 400 专用码且不落库）；给错版本 ≠ 缺字段——走 `voided` 报告。端点只做 TCP 探测不发业务请求（发请求会让被测 Agent 真跑一次，污染 R3）；不可达 → 200 + 全 `unscored`（**不是 `blocked`**，见 schema 文档 §6 订正）。每请求新建 sqlite 连接（`ThreadingHTTPServer` 跨线程，连接不共享）。**无鉴权、只绑 `127.0.0.1`** |
 | `tests/test_submission_api.py` | **24 条**（round-76）。真 socket（`port=0` 系统分配），测的是真服务而不是假对象。最硬的一条是**五夹具逐字段对拍**：HTTP 入口与内部链路必须完全相等，把「薄协议层」从注释变成可验证事实。另有 B-21 不落库断言、端点不可达的全 unscored + 归因开关、**「文案不甩锅」锁**（不许出现「请补交步骤」）、重复 id 不覆盖、默认只绑本机。9 组变异全 `DETECTED` |
+| `src/arena/mock_tools.py` | **B-03（round-77）：由任务 YAML 驱动的 mock 工具服务**。实现且只实现 YAML 已声明的两件事：`fault_injection`（该 `(tool, match)` 第 N 次调用按声明失败、`then` 放行）与 `tools[].mock.pagination`（`half_open` 区间 / 页大小上限 / 越界返空 / `total` 由夹具长度推导）。`reset_policy: per_submission` 的执行者是 `reset()`——不重置会让上一个学习者用掉故障额度。**刻意不发明**：额外参数忽略（是否算幻觉交 R4 从 trace 判，服务端不替评测器判分）、缺必填 400 `missing_param`（本模块定义，注释已标）；`range != half_open`、未知 `total_source`、未知 `then` 一律**构造期报错** |
+| `src/arena/reference_agent.py` | **B-03（round-77）：确定性参考 Agent**（不是 LLM）。真 HTTP 调工具、遇 5xx 真同参重试、真写 `/workspace/report.json`；分页大小与工具名从任务 YAML 派生，不写死。四种 `flaw`：`correct` / `wrong_filter`（不剔除无效行 ⇒ 只打 R2）/ `extra_param`（多传 `schema` 外参数 ⇒ 只打 R4）/ `no_retry`（不重试 ⇒ 打 R1+R5+R3）。跑挂也照样交一份 `crashed` 提交（保留已有调用记录），不干脆不提交 |
+| `tests/test_mock_tools.py` | **13 条**（round-77）：故障点只打匹配参数、`reset()` 恢复额度、分页半开区间与 `total` 推导、越界返空、超上限码、未声明工具、产物账本、深拷贝不被调用方污染、三种未实现形态报错 |
+| `tests/test_reference_agent.py` | **12 条**（round-77）：trace 结构自洽 + `schema_valid=True` + `call_count>0`；真跑拿满分；**答案与 `test_inputs.expected` 对撞**；重试同参；四形态矩阵（失败集与 ratio 逐一断言）；崩溃提交不带产物；配置错误在构造期暴露 |
 | `fixtures/tool-call-cases.json` | **14 个**边界 trace 用例集（乱序/零调用/只拉首页/跳过故障点/穿插/假重试等）。**Q10-A** 把 4 个原走 default 的 case 改为明写规则命中；**TD-004** 把 `expect.source` 升级为完整 `classification_source` 字符串并新增 `expect.observed_offsets`；**Q12(a) 补 `bad_status_enum` / `params_not_object` 两个 case**（期望 `unscored/trace_invalid`）。后续补 case 仍先改这里 |
 | `fixtures/raw-*.json` | 五份 S2 原始提交夹具。**S3-3-3 按 Q13(a) 补顶层 `artifacts`**（产物本体，与 trace 是两份独立证据）；`raw-fake-retry` 刻意保留「trace 无 `write_report` 但产物存在」，留给 P3 的 R6 做交叉比对。手写 `assertion_results` **一字未改**（S3-3-6 起「不再被读」≠「已被删除」，留作 S2 基线）；`size_bytes`（TD-009）、`raw-empty` 的旧分数描述（TD-021 / F10）均已订正或销项 |
 | `tests/test_assertion_evaluator.py` | S3-1 的 **55 条**约束用例（含 `call_index` 乱序回归锁、Q10-A 四条明写规则锁、TD-003 八条坏 spec 参数化 + H1 原样反例 + 加载期校验、TD-004 精确来源点名锁、**Q12(a) 五条回归锁（畸形调用判 unscored、枚举派生、枚举缺失拒绝猜测）**、YAML 派生锁、输出可直喂 `build_report()`） |
@@ -385,6 +389,30 @@
 > `--check --full` → **OK_FULL**（包内 0 failed/741，重跑 0 failed/741）；9 组变异全 `DETECTED`、`RESTORED: True`。
 > **C-03 本轮没触发**（一次收敛），但机制没改，仍挂着——别当成已修。
 > 待人拍板项：**无**。下一步 B-03（真 trace 采集）或 B-04（judge 双评）。
+
+> **最新状态（round-77，§77，B-03 任务环境可执行化 + 参考 Agent 真跑）**：人回「继续」⇒ 做 B-03。
+> 开工先核「YAML 写了什么、代码谁执行」：`fault_injection` 与 `tools[].mock.pagination`
+> 在 `src/` 里**零消费者**——YAML 写「offset=10 首次会 500」，从来没有任何东西真的失败过；
+> R3 能满分只是因为有人往夹具里抄了一行 `status: error`。
+> 新增 `src/arena/mock_tools.py`（由 YAML 驱动的 mock 工具服务：分页语义 + 故障注入 + `reset()`；
+> 三种未实现形态构造期报错，**不假装支持**）与 `src/arena/reference_agent.py`
+> （确定性参考 Agent：真 HTTP、真重试、真写产物；四种 `flaw` 形态用于验证判定层）。
+> **真跑实测**：`final_status=completed`、`call_count=4`、`schema_valid=True`、`ratio=1.0`，
+> 算出 `{valid_count:17, total_amount:1837.99}` 与 `test_inputs.expected` **完全一致**（首次对撞手写期望值）。
+> **四形态矩阵证明判定层分得开**：`wrong_filter` 只打 R2（0.50）、`extra_param` 只打 R4（0.75）、
+> `no_retry` 打 R1+R5+R3（0.00，R2 `blocked`）——分数与失败位置逐一对得上
+> （`total_weight = R2(2)+R3(1)+R4(1)`）。
+> **一处误告订正**：P3 对账器用完美夹具跑出 `mismatch`「疑似编造」，因为两个答案值都是**聚合推导值**，
+> 工具返回值里不可能逐字出现 `1837.99`。加 `derived_fields`：推导值缺出处 ⇒ `unverifiable`
+> （`derived_not_replayable`），只有非推导字段缺出处才是 `mismatch`；不传时行为不变（7 条旧锁全绿）。
+> 这原本不影响分数（对账器刻意未接 rubric），但 TD-039 计划正是接进去——按原样接，每个诚实提交都会被指控编造。
+> **我自己写错一处**：测试断言「字段集 == `item_fields`」，实际 `success` 不带 `http_status`/`error`；
+> 顺此查证平台侧**只**校验 `call_index`/`status`/`params` 类型，条件必填归 R3 执行器（已登记 TD-026 / B-22）。
+> 裁判：**770 passed / 770**（741 + 13 + 12 + 4）；`--check` → 0（**`02bf120fcae8b287`**）；
+> `--check --full` → **OK_FULL**（包内 0 failed/770，重跑 0 failed/770）；8 组变异全 `DETECTED`。
+> **边界**：参考 Agent **不是 LLM**（步骤写死），trace 仍**自报**（Agent 可改 `call_index` 藏重试）——
+> 所以不能声称"trace 不可伪造"；平台侧抓包与 LLM Agent 拆为 **B-03b**。
+> 待人拍板项：**无**。下一步 B-04（judge 双评，需模型端点）或 B-06（映射表接进 `skill_gaps`，R-2）。
 
 **匿名纪律（对 AI 同样适用）**：本文档与仓库内任何文件不含真实姓名/校名；请勿在 AI 对话中粘贴含真名/校名的材料；API key 与 PAT 绝不进入任何对话。
 

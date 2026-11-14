@@ -4,7 +4,7 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
-> 更新：2026-11-13（round-76：B-02 / B-21 关闭，判据一处订正）。
+> 更新：2026-11-14（round-77：B-03 关闭并拆出 B-03b；对账器补 `derived_fields`）。
 
 ---
 
@@ -95,15 +95,34 @@
   五夹具「HTTP 入口 vs 内部链路」**逐字段对拍相等**（这条是本项最硬的锁）。
 - **还剩什么**：无鉴权、只绑 `127.0.0.1`；端点可达时还不能主动采集（返回 501，属 B-03）。
 
-### [ ] B-03 真 trace 采集（OTel GenAI 打桩）
+### [x] B-03 可执行的任务环境 + 参考 Agent（trace 第一次来自真实执行）
 
-- **是什么**：现在所有结论都建立在**合成 fixture** 上，从没跑过真 Agent（ROADMAP R-4）。
-- **为什么现在不做**：要有可调的 Agent 端点；且 OTel GenAI 语义约定截至 2026-11 仍是 Development，属性名变过。
-- **前置已就绪**：B-02 的 HTTP 入口能接住外部提交，端点探测与「可达但不会采集 → 501」这条边界已经实现。
-- **做完判据**：一个 reference-agent 跑 `dbg-001`，采到的 trace 能直接喂进 `recompute_all()` 且不触发 `trace_invalid`；
-  所用属性名 pin 进代码注释与 `requirements.txt`。
-- **验证**：真 Agent 跑一次 → `trace_audit.schema_valid == True` 且 `call_count > 0`
-- **谁推**：我（M1）。
+- **是什么**：原来所有结论都建立在**合成 fixture** 上，`trace.tool_calls` 是手写的；
+  任务 YAML 里的 `fault_injection`（offset=10 首次 500）与 `tools[].mock.pagination`
+  （页大小上限 / 越界返空 / total 由夹具长度推导）**没有任何执行者**。
+- **做完了什么**（round-77）：
+  - `src/arena/mock_tools.py`：由任务 YAML 驱动的 mock 工具服务（只实现已声明语义，
+    其余不发明：额外参数忽略、缺必填 400，且**没有** `on_limit_exceed` 等未声明分支就报错）。
+  - `src/arena/reference_agent.py`：确定性参考 Agent，真 HTTP 调工具、真重试、真写产物。
+  - `trace_audit.schema_valid == True`、`call_count == 4`、`ratio == 1.0` 全部实测通过；
+    它算出的答案与 `test_inputs.expected` **一致**（第一次有机会对撞手写期望值）。
+  - 四种形态证明评测器区分得开：只打 R2（漏剔除）/ 只打 R4（多传参）/ 打 R1+R5+R3（不重试）。
+- **没做完什么**：这只 Agent **不是 LLM**（步骤写死），所以它证明的是"链路通、判定分得开"，
+  **不是**"模型会不会自己想到要重试"。真模型与平台侧抓包见 B-03b。
+- **验证**：`pytest tests/test_mock_tools.py tests/test_reference_agent.py -q` → 25 passed；
+  8 组变异全 DETECTED。
+
+### [ ] B-03b 平台侧采集 + LLM 驱动的 Agent（R-4 的真正缺口）
+
+- **是什么**：现在 trace 仍是 **Agent 自报**。Agent 可以改写 `call_index` 把重试藏起来，
+  平台无法证伪。另有一个决策体（LLM）而不是写死流程的 Agent 尚未接入。
+- **为什么现在不做**：要有一个可调的模型端点与配额；且 OTel GenAI 语义约定截至 2026-11
+  仍是 Development，属性名变过（`gen_ai.*`）。
+- **做完判据**：① 平台自己代理工具调用（Agent 只能拿到平台返回的结果），
+  得到的 trace 与 Agent 自报的 **call_index / 参数 / 状态逐条可比**，不一致即 `mismatch`；
+  ② 一个 LLM Agent 跑 `dbg-001` 且不触发 `trace_invalid`。
+- **验证**：故意让参考 Agent 上报一份"删掉失败调用"的 trace → 平台侧比对必须报不一致
+- **谁推**：我（M1 剩余部分）。
 
 ### [ ] B-04 LLM Judge 双评 + 一致性
 
@@ -287,3 +306,5 @@
 | P1/P2/P3 | 掌握度定义 / 缺过程 / 防作弊 | round-70 落地（决策 8/9/10），评审包 §5 待拍板 0 条 |
 | B-02 | 黑盒提交服务（HTTP） | round-76 落地：3 端点 + 五夹具逐字段对拍 + 9 组变异全 DETECTED；判据 `blocked`→`unscored` 已订正 |
 | B-21 | TD-038 宽松口（版本必填） | round-76 随 B-02 收紧：缺字段 400 专用码且不落库，变异 M1/M2 DETECTED |
+| B-03 | 真 trace（原写"OTel 打桩"） | round-77 落地为"可执行任务环境 + 参考 Agent"：mock 工具服务 + 确定性 Agent，`schema_valid=True`/`call_count=4`/`ratio=1.0`，答案与 `test_inputs.expected` 对撞一致；LLM 与平台侧采集拆出为 **B-03b** |
+| — | 对账器把聚合值判成"编造" | round-77 补 `derived_fields`：推导值缺出处归 `unverifiable`（`derived_not_replayable`），只有非推导字段缺出处才是 `mismatch`；默认行为不变（11 条锁） |

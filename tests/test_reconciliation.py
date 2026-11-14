@@ -94,3 +94,56 @@ def test_rejects_empty_or_non_numeric_input():
         rc.reconcile({}, {"tool_calls": []})
     with pytest.raises(ValueError, match="必须是数值"):
         rc.reconcile({"valid_count": "17"}, {"tool_calls": []})
+
+
+# ── round-77：聚合推导值不能被判成编造 ───────────────────────────────────────
+#
+# 实测背景：唯一任务 dbg-001 的两个答案值（有效条数、总金额）都是聚合推导值，
+# 工具返回值里逐字不可能出现，于是完美提交被判 `mismatch`「疑似编造」。
+# 这不是实现 bug，是**结论超出了证据能支撑的范围**——补法是让调用方声明推导字段。
+
+def test_derived_fields_are_not_accused_of_fabrication():
+    """聚合推导值缺出处 ⇒ unverifiable（数据不足），不是 mismatch（疑似编造）。"""
+    trace = _trace(calls=[
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10},
+         "result_summary": {"orders": 10, "total": 20}},
+    ])
+    assert rc.reconcile(VALUES, trace)["status"] == "mismatch", "不声明时行为与旧版一致"
+
+    result = rc.reconcile(VALUES, trace, derived_fields={"valid_count", "total_amount"})
+    assert result["status"] == "unverifiable"
+    assert result["reason"] == "derived_not_replayable"
+    assert result["counts_as_evidence"] is False
+    assert result["derived_fields"] == ["total_amount", "valid_count"]
+    said = rc.summarize(result)
+    assert "聚合推导值" in said and "不是答错" in said
+    assert "疑似编造" not in said, "不许对推导值下编造结论"
+
+
+def test_one_non_derived_miss_is_still_mismatch():
+    """混着来：只要有一个**非**推导字段缺出处，仍是 mismatch。"""
+    trace = _trace(calls=[
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10},
+         "result_summary": {"orders": 10, "total": 20}},
+    ])
+    result = rc.reconcile(VALUES, trace, derived_fields={"valid_count"})
+    assert result["status"] == "mismatch"
+    assert result["reason"] == "value_not_traceable"
+    assert [i["field"] for i in result["checked"] if not i["found"]] == ["valid_count", "total_amount"]
+
+
+def test_all_derived_found_stays_verified():
+    """推导值恰好也能逐字找到出处时，仍是 verified（不许因为声明了就降级）。"""
+    trace = _trace(calls=[
+        {"call_index": 1, "name": "write_report", "params": {},
+         "result_summary": "wrote 17 valid rows, amount 1837.99"},
+    ])
+    result = rc.reconcile(VALUES, trace, derived_fields={"valid_count", "total_amount"})
+    assert result["status"] == "verified"
+    assert result["counts_as_evidence"] is True
+
+
+def test_unknown_derived_field_rejected():
+    """拼错的字段名必须报错——否则声明形同虚设，静默不生效最难查。"""
+    with pytest.raises(ValueError, match="未覆盖"):
+        rc.reconcile(VALUES, {"tool_calls": []}, derived_fields={"valid_cnt"})
