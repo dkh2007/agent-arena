@@ -35,7 +35,7 @@
 |---|---|---|---|---|
 | **1 任务层** | 3 技能 × 2–3 变体，任务库 ≤10；YAML + 原子 rubric + 技能节点 + 错误模式 + 故障注入 + Git 版本锁 | 1 个任务（5 条断言：gate 2 + credit 3）；3 个技能节点（`tool_param_validation` / `multi_step_planning` / `failure_retry`）；14 个错误模式；`variant_template_id: null`；**故障注入自 round-77 起真会失败**（`mock_tools.py` 执行 YAML 声明） | **半有肉** | `tasks/dbg-001-order-report.yaml`；`docs/skill-taxonomy-v0.yaml`；`docs/error-patterns-v0.yaml`；`tests/test_mock_tools.py` |
 | **2 评测层** | 轨迹捕获 + 自动断言 + LLM Judge + 轨迹分析出诊断报告 | 五条断言执行器全现算（R1–R5）；DTO v2 + schema 校验；两段式 gate/credit；反事实得分；过程门槛；作废态；P3 对账器（未接 rubric）；**judge 双评机制已就位但未接管线**（round-79：机制 + 真跑分布，缺仲裁队列与阈值，见 BACKLOG B-04b/B-04c）；**trace 捕获未实现**（只认现成 fixture） | **有肉** | `src/arena/` 产品代码 5769 行（`assertion_evaluator` 1539 / `diagnosis_report` 662 / `submission_api` 578 / `review_packet` 563 / `llm_judge` 481 / `store` 417 / `trace_pipeline` 378 / `reference_agent` 364 / `mock_tools` 314 / `llm_client` 300 / `reconciliation` 173）；858 passed；`--fixture all` |
-| **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`：**优先断言自带 `skill_id`，缺了才查词表 `mapped_skill_ids` 兜底**（round-78 / B-06，`attributed_by` 标明来源）；掌握度 P 只有公式，零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **半有肉（核心那条仍纸面）** | `src/arena/diagnosis_report.py`（`load_pattern_skills` / `_attribute`）；`grep -rn mapped_skill_ids src/` → 命中；`src/arena/store.py` |
+| **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`：**优先断言自带 `skill_id`，缺了才查词表 `mapped_skill_ids` 兜底**（round-78 / B-06，`attributed_by` 标明来源）；**掌握度 P 可算**（round-80 / B-07：按技能加权 `c_k`、决策 7 剔除 unscored/blocked、时间轴按解析时刻，`scripts/mastery_walk.py` 可复核）——但**只活在内存、不落库、不衰减**（B-07b/B-07c/B-08）；错误模式热度仍零代码；**持久化地基已就位**（round-75：7 表 + 落库 + 重启读回） | **有肉（含一处主动降级）** | `src/arena/mastery.py`；`python scripts/mastery_walk.py`；`src/arena/diagnosis_report.py`（`load_pattern_skills` / `_attribute`）；`src/arena/store.py`（`user_reports`） |
 | **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | 只有实体定义 + **DDL**（`review_items` 表的 kind 四值、引用 task/submission）；**没有任何代码往写或读**；`grep -rl fsrs src/` → 只有 `store.py` 的列名 | **纸面（有表无行为）** | `store.py:SCHEMA_SQL`；`scripts/demo_decision.py 3` → PARTIAL |
 | **5 排程层** | 四因子建议排期 + 动态避让 + 用户可一键调整 | 只有创新点陈述（计划书 §五 第 3 条） | **纸面** | — |
 | **端** | Web 提交 + Android/Kotlin Compose 四页 | **协议层已就位**（round-76：`submission_api.py`，标准库 `http.server`，3 端点：提交/读回/探活）；**UI 侧零**（无 Web 页、无 Android 工程） | **半有肉（只有 API，没有界面）** | `src/arena/submission_api.py`；`grep -rli "kotlin\|compose" .` → 空 |
@@ -73,7 +73,7 @@
 | **M0** 单任务打穿 | 1 个调试任务跑通、能区分好坏 Agent、定数据模型字段 | ✅ 达成（五夹具 0/0.25/0/0.5/1.0 能区分；round-77 起 trace 来自**真实执行**而非手写） | 真 **LLM** Agent（现在只有确定性参考 Agent） |
 | **M1** 提交管线 | 黑盒提交（注册→部署→提交→报告）+ trace schema v1 + judge 一致性实测 | 🟡 **持久化 + HTTP 入口 + 可执行任务环境 + judge 一致性实测已就位**（round-75 落库、round-76 三端点、round-77 mock 工具服务 + 参考 Agent 真跑、round-79 judge 双评 17 次真调用出分布） | 平台侧抓包与 LLM Agent（B-03b）、judge 接入管线与仲裁队列（B-04b）、鉴权 |
 | **M2** 任务库+分类学 | 10 个任务；错误分类学 v1（5–8 模式 + 映射表）；变体模板 | 🟡 分类学已超（14 模式）；任务 1/10；变体模板 0 | 9 个任务、变体模板、映射表接进代码 |
-| **M3** 状态层 | 掌握度 + 映射表 + 规则推荐 + AUC 回测 | ❌ 零代码 | 全部 |
+| **M3** 状态层 | 掌握度 + 映射表 + 规则推荐 + AUC 回测 | 🟡 **掌握度 P 可算**（round-80：`mastery.py` + 35 测试 + 12 变异，可复核）；映射表已接成兜底（round-78，因反证条件触发而降级）；**规则推荐 0 代码、AUC 回测 0 代码** | λ/初值标定（B-07b）、P 落字段（B-07c）、衰减（依赖 B-08）、规则推荐（B-09） |
 | **M4** 复习层 | FSRS 调度 + 三种形态 + 每日上限 | ❌ 零代码 | 全部 |
 | **M5** 排程+端 | 四因子排期 + Android 四页 | ❌ 零代码 | 全部 |
 | **M6** 定稿提交 | 外部证据包 + 匿名 + 提交 | ❌ | 见 BACKLOG A 线 |
@@ -90,6 +90,7 @@ M3/M4 的顺序不能反：没有持久化就没有"上一次表现"，掌握度
 | **R-2** | **"映射表是自研核心"但代码里没有消费者**，报告走的是另一条路（断言自带 `skill_id`） | **已降级（round-78）**：映射表接进 `build_report()` 作**兜底**（`load_pattern_skills()` / `attributed_by`），但实测五夹具 `skill_gaps` 逐例不变 ⇒ 在今天的词表与任务上它不带来新信息 | 反证条件已触发并如实记录：计划书「自研核心」改为「兜底归因 + 词表集中管理」。要让映射表真参与，须先推翻 Q10=A 的边界（B-06b，需人拍板） |
 | **R-3** | 9 处 `【占位】` 在纸面上被读成"没想清楚" | 已存在（计划书 v0.4） | 每处应补"什么时候定、用什么判据定"，而不是填一个假数 |
 | **R-4** | 真 trace 从未跑过：所有结论建立在合成 fixture 上 | **降级但未消除**（round-77：确定性参考 Agent 真跑通过，产物 trace 能喂进链路且 `schema_valid=True`；但 trace 仍是 Agent 自报、决策体仍是写死流程） | 缓解：mock 工具服务由任务 YAML 驱动 + 四形态证明断言分得开；**剩余风险**：自报的 `call_index` 可被改写以藏起重试 ⇒ B-03b 平台侧抓包；反证：真 LLM Agent 若出现 fixture 未覆盖的形态，判定层需重审 |
+| **R-5** | **掌握度 P 的参数是拍的**：λ=0.3、初值「首次观测播种」都没有数据支撑；且 P 不落库、不衰减 | **已发生（round-80）**，且主动写在 `mastery.py` 文档与 `data-model.md` §5.2 | 缓解：公式与口径已落成可复核代码（36 条测试 + 13 组变异），λ 敏感性可一键打出（`mastery_walk.py`）。**不许**在对外材料里说「掌握度会随时间遗忘」「效果经回测验证」——前者要 B-08 的复习间隔，后者要 B-07b 的回测。反证：B-05 多任务库 + 50 次真实提交后若 λ 标定结果与 0.3 差一倍以上，则所有基于 P 的排期结论（B-09）需重算 |
 
 ## 5. 三条工作线（顺序不是并列）
 

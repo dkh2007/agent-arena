@@ -7264,3 +7264,163 @@ batch 3 跑三次全给 3 档，把它推翻了：**是偶发，不是系统性*
 - **待人拍板：无。** 本轮所有取舍都在既有口径内（决策 10 对账优先 / 决策 7 数据缺失不算能力 /
   「阈值须实测后定」）。唯一可能要拍的是 79.5③，但它的前提（多任务普遍漂移）还不存在。
 - 下一步：B-05（任务库 1→10，解锁 B-04c 的标定）或 B-07（掌握度 P）。
+
+---
+
+## 80. round-80：掌握度 P 接上历史（B-07）——公式落地，参数仍是假设
+
+**起因**：维护者回「好的，先做 B-07」。前置（B-01 落库、B-06 缺口归属）已就位，
+这是状态层第一个**跨提交**的消费者：`submissions` 表里躺着数据，此前没有任何代码读它。
+
+### 80.1 先定 `c_k` 怎么取，因为这步最容易被做歪
+
+公式 `P_k = (1-λ)·P_{k-1} + λ·c_k` 是 round-70 拍过的，`data-model.md` §5.2 是唯一权威。
+真正没定的是 **`c_k` 从哪来**。两条路差别很大：
+
+| 取法 | 后果 |
+|---|---|
+| 整份 `score.ratio` | 一份提交压到三个技能，R2 答错会把 `tool_param_validation` 一起拉低——**串味** |
+| 按断言 `skill_id` 分组后的**权重加权通过率** | 每个技能只吃自己那几条断言的账 |
+
+选后者。`raw-fake-retry` 正好能证明差别：整份 `ratio=0.25`，但拆开是
+`multi_step_planning 0/2`、`failure_retry 0/1`、`tool_param_validation 1/1`
+（它的参数确实没编，这条该给分）。拿 0.25 去更新三个技能，等于让一个技能的错误替另一个技能背账。
+
+第二条口径来自决策 7，且必须落成代码而不只是注释：**`unscored` / `blocked` 从分子分母一起剔除**。
+`raw-no-trace`（答案对、过程全空）里 `failure_retry` 与 `tool_param_validation` 只有 `unscored`，
+于是这两个技能在这份提交上**不产生证据、P 原地不动**。若按"记 0 分"处理，
+它们会被判成"完全不会"——而事实是"没上报过程，无法判定"。
+`raw-empty` 反过来证明另一半：`failure_retry` 是**真失败**（`fail`），这时候就该记 0 分，
+不能把"剔除缺数据"顺手扩大成"都不算"。
+
+### 80.2 做了什么
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| `src/arena/mastery.py` | 产品代码 452 行 | `skill_evidence()`（报告 → 单技能证据）/ `update_p()` / `replay()` / `MasterySeries` / `build_series()`（读库）/ `series_for_lambdas()` |
+| `src/arena/store.py` | 产品代码 | 新增 `user_reports()`：该用户**全部**报告，按 `created_at` 正序、带整份 `diagnosis`（`list_submissions` 是"看列表"，这个是"按时间重放"） |
+| `scripts/mastery_walk.py` | 验证脚本 | 造三次提交 → 落库 → 读回 → 打印 P 序列 + 手算对照 + λ 敏感性 |
+| `tests/test_mastery.py` | 测试 | **36 条** |
+| `docs/data-model.md` §5.2 | 契约 | 补「公式已有实现、落字段仍无」+ 三条口径 + 一处不利后果 |
+
+四条硬约束，都写成代码：
+
+1. **越界一律报错，不 clamp**。λ∉(0,1]、P∉[0,1]、c∉[0,1] 全抛 `MasteryError`。
+   clamp 会把"数据/模型错"伪装成一个合法的低分，之后没人查得出来。
+2. **时间轴按解析后的时刻排**，不按字符串、不按插入顺序。
+   `2026-11-07T12:00:00+08:00` 与 `2026-11-07T05:00:00Z` 谁先谁后，字符串比较会判反；
+   排错会让整条递推方向倒过来，而数**仍然单调**、看不出异常。同一时刻按 `submission_id` 兜底定序。
+3. **初值不发明**。默认 `P_1 = c_1`（首次观测播种）；另一条路（中性先验 0.5）会让"首份满分"只拿到 0.65，
+   那是个没有依据的数。两种都保留为参数（`p0`），默认选不发明先验，并标为**假设**。
+4. **只算不落库**。`user_skill_states` 仍只有 `fsrs_card` / `updated_at`；
+   新增字段是破坏性变更（B-07c）。有一条测试检查算前算后该表列集合与行数都没变。
+
+### 80.3 实测（这是 BACKLOG 判据的原文形态）
+
+`python scripts/mastery_walk.py` 造三次提交（满分 → 假重试 → 过程缺失），真落进 SQLite 再读回来折：
+
+```
+#  夹具             c        计入权重  P 前     P 后     说明
+1  raw-perfect    1.00      2      播种      1.0000   满分（三条断言全过）
+2  raw-fake-retry 0.00      2      1.0000    0.7000   假重试（R2/R3 失败，R4 通过）
+3  raw-no-trace   1.00      2      0.7000    0.7900   没交过程记录（R3/R4 判 unscored）
+
+手算：P_2 = (1-0.3)·1.0000 + 0.3·0.0000 = 0.7000
+      P_3 = (1-0.3)·0.7000 + 0.3·1.0000 = 0.7900
+```
+
+`--skill failure_retry` 时第三次提交变成 **「无证据 ⇒ P 原地不动」**（决策 7 在真实数据上的样子）。
+
+### 80.4 本轮最重要的一条：门禁失败仍会抬高 P
+
+写到测试时顺手核了一个"应该没事"的情形，结果不是没事。`raw-no-file` 是"**没交产物**"：
+
+| 指标 | 值 |
+|---|---|
+| `score.ratio` | **0.0** |
+| `score.disqualified` | **True** |
+| `failure_retry` 的 c | **1.0** |
+| `tool_param_validation` 的 c | **1.0** |
+
+原因是既有口径 `data-model.md` §5.1「**门禁只管分数，不管观测**」：门禁失败时 credit 断言照常判定，
+而这次 R3（重试有据）、R4（参数没编）确实都过了。于是——
+
+> **一份整份判不合格、`ratio=0` 的提交，仍然会把两个技能的掌握度往上抬。**
+> 换句话说："不交产物、但重试规范"能刷高 P。
+
+这不是 bug，是既有口径的推论；但它是个真问题，而且正好是"拿学习数据做激励"这类系统最容易被钻的洞。
+处理方式是：**不擅自改口径**（那属产品口径），而是三条一起做——
+① 写成测试 `test_gate_failure_still_lifts_credit_skills`（现状锁）；
+② 写进 `data-model.md` §5.2 让评委能看见；
+③ 登记 B-07b 等人拍板（"要不要给门禁开例外"）。
+
+同源的另一条：门禁断言 `weight=0` 却在 `attribution_policy` 里 `counts_toward_mastery=true`，
+它失败时既进不了分子也进不了分母 ⇒ **掌握度上不留痕**。当前四条门禁断言的 `skill_id` 全是 `null`，
+所以现状无影响；一旦有任务给门禁断言写 `skill_id`，这里就会漏记一次真失败。
+已记进 `ignored`（`zero_weight:state=fail`）而不是静默跳过——**将来能被查出来**，也归 B-07b。
+
+### 80.5 变异：13 组，全 `DETECTED`
+
+| 变异 | 期望撞红 | 结果 |
+|---|---|---|
+| M1 分母数断言条数而不是权重 | `test_partial_pass_within_one_skill_is_fractional` | `DETECTED` |
+| M2 `unscored`/`blocked` 也计入（决策 7） | `test_unscored_and_blocked_are_dropped_from_both_sides` | `DETECTED` |
+| M3 无证据当 0 分（决策 7，另一路） | `test_skipped_evidence_does_not_advance_p` | `DETECTED` |
+| M4 按字符串排时间 | `test_order_is_by_instant_not_by_string_or_input_order` | `DETECTED` |
+| M5 同刻平局按输入顺序 | `test_same_instant_is_ordered_by_submission_id_for_determinism` | `DETECTED` |
+| M6 λ 越界不报错 | `test_out_of_range_inputs_raise_instead_of_clamping` | `DETECTED` |
+| M7 P/c 越界改成 clamp | 同上 | `DETECTED` |
+| M8 初值改成 0.5 先验 | `test_seeded_initialisation_vs_explicit_p0` | `DETECTED` |
+| M9 零权重断言静默跳过 | `test_zero_weight_counted_assertion_is_loud_in_ignored` | `DETECTED` |
+| M10 时间轴改读报告 `evaluated_at` | `test_build_series_uses_db_created_at_as_time_axis` | `DETECTED` |
+| M11 读历史不过滤 `user_id` | `test_build_series_ignores_other_users` | `DETECTED` |
+| M12 缺 `attribution_policy` 时静默按 pass/fail 计 | `test_missing_attribution_policy_is_loud` | `DETECTED`（首跑 `MISSED`，见下） |
+| M13 门禁失败时把 credit 证据一并作废 | `test_gate_failure_still_lifts_credit_skills` | `DETECTED` |
+
+M12 首跑 `MISSED`，查下去是**变异脚本自己写错了**：我把 fallback 插在原有 `raise` 之前，
+`raise` 照样执行，于是"注入默认 policy"这个变异根本没生效。改锚点（替换那句 `raise` 本身）后 `DETECTED`。
+这与 round-75 的 M1、round-79 的 M1 是同一类账：**变异脚本的 bug 会让它看起来像"抓住了"或"漏网了"，
+两种都算 `INVALID`，不能直接采信。**
+
+M13 是特意加的"反向变异"：它改的是**口径**（门禁失败就不计证据），不是 bug。
+如果它没被抓住，说明那条现状锁其实没锁住任何东西。
+
+### 80.6 实测汇总
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_mastery.py` | **36 passed** |
+| `pytest tests/ -q` | **893 passed / 893** |
+| `python scripts/mastery_walk.py` | 三提交 `1.0000 → 0.7000 → 0.7900`，与手算逐位一致 |
+| 变异 | 13 组全 `DETECTED`（含 1 组首跑 `MISSED` 查明是脚本自身 bug） |
+| `review_packet.py --check` | OK（重生成后） |
+| `scripts/demo_decision.py --all` | FAIL 0 |
+| `scripts/push_gate.py` | CLEAN |
+
+### 80.7 边界与反证条件
+
+- **不宣称「掌握度会随时间遗忘」**：衰减依赖复习间隔，而复习间隔来自 ReviewItem（B-08），
+  现在不存在。测试 `test_decay_is_not_implemented_yet` 锁的就是"隔 1 天与隔 300 天的 P 完全一样"，
+  B-08 落地时要**反转它**而不是删掉。
+- **不宣称「λ=0.3 是对的」**：它是假设。脚本能一键打出 λ∈{0.1…0.7} 的整条序列，
+  而且刻意打序列而不是终值——λ 与终值**不是单调关系**（λ 大时最近一次高分拉回得更猛），
+  只看终值会得出"λ 越大越保守"这种错印象。
+- **不宣称「P 已落库」**：`user_skill_states` 没有承接字段，对外只能说"计算已实现、可复核"。
+- **反证条件**：
+  ① 若门禁失败的那条现状锁（80.4）在多任务库上被证明"可被系统性利用"（比如某任务只要重试就能过 R3/R4），
+     则必须在 M2 之前给门禁开例外——这是产品口径，须人拍；
+  ② 若 B-05 的 10 个任务里有任务的全部断言都归到同一技能，那么"按技能加权"与"整份 ratio"会退化成同一个数，
+     本轮的区分能力在该任务上失效，文档不应拿它当例子；
+  ③ 若 B-08 落地后 P 需要"跨技能迁移"（学 A 有助于 B），当前 (用户, 技能) 二元的证据结构不够用，
+     需要技能先决关系（`prerequisites` 字段已留，见 `docs/data-model.md` §4.3）。
+
+### 80.8 状态
+
+- **B-07 关闭**（判据两条都满足：三次提交 P 按公式变化、`unscored`/`blocked` 不改 P）。
+  拆出 **B-07b**（λ/初值标定 + 两处门禁口径缺口，需人拍一部分）与 **B-07c**（P 落字段，破坏性变更）。
+  衰减不单列：它属 B-08 的一部分，已在两处写明"必须反转现状锁"。
+- **待人拍板：0 条阻塞项。** 唯一可能需要拍的是"门禁失败要不要压低 P"（80.4），
+  但它的前提（是否可被系统性利用）现在还没有数据，**不拍也能继续**——
+  现状是"照常计入"，已有测试与文档如实记着。
+- 下一步：B-08（FSRS 调度 + ReviewItem，同时解锁 P 的衰减）或 B-05（任务库 1→10，
+  解锁 B-04c / B-07b 的标定）。两条都不需要新资源，B-05 更慢但更值。

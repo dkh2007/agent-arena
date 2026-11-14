@@ -455,10 +455,36 @@ def demo_8() -> tuple[str, list[str]]:
     if not ok_l:
         return FAIL, lines + ["反证条件：上表任一为真 ⇒ 决策 8 未被执行。"]
 
-    # 任务 YAML 里也不该出现掌握度参数
-    lines.append("  不可判定部分：掌握度公式本身（EWMA + 复习间隔衰减）尚未实现，无载体可跑。")
-    lines.append("  可判定部分只证明了两件事：诊断层不越界；代码里不存在那个不成立的等号。")
-    lines.append("  反证条件：若日后实现里出现 `alpha = f(S)` 且无值域约束 ⇒ 决策 8 的反证条件被触发。")
+    # round-80（B-07）之后这一段从"完全无载体"降级为"有一半载体"：更新式已实现，
+    # 可以真的跑一遍看值域，因此把它从"不可判定"挪进"可判定"。
+    # **衰减仍然无载体**（依赖 ReviewItem 的复习间隔，B-08），这一条不许跟着改口。
+    from arena import mastery as m  # 局部导入：仅这一段用到
+
+    ev = [
+        m.Evidence("demo-1", "multi_step_planning", "2026-11-01T00:00:00Z", 1.0, 1.0),
+        m.Evidence("demo-2", "multi_step_planning", "2026-11-02T00:00:00Z", 0.0, 1.0),
+        m.Evidence("demo-3", "multi_step_planning", "2026-11-03T00:00:00Z", 1.0, 1.0),
+    ]
+    series = m.replay(ev, user_id="demo", skill_id="multi_step_planning")
+    p_seq = [round(s.p_after, 4) for s in series.steps]
+    lam = m.LAMBDA_DEFAULT
+    lam_ok = 0.0 < lam <= 1.0
+    try:  # λ 越界必须报错，不许 clamp —— 这是"值域约束真的存在"的可执行证据
+        m.update_p(0.5, 0.5, 1.5)
+        lam_enforced = False
+    except m.MasteryError:
+        lam_enforced = True
+    lines.append(f"  掌握度更新式可跑：λ={lam}，三提交 P 序列 {p_seq}")
+    lines.append(f"  λ 在 (0,1] 内：{lam_ok}；λ 越界会报错（不 clamp）：{lam_enforced}")
+    lines.append("  不可判定部分收窄为：**复习间隔衰减**（需 ReviewItem 的 due，属 B-08）——"
+                 "所以 P 目前不随自然时间下降。")
+    lines.append("  可判定部分证明了三件事：诊断层不越界；代码里不存在那个不成立的等号；"
+                 "更新式有值域约束且可复核。")
+    lines.append("  反证条件：① 若日后实现里出现 `alpha = f(S)` 且无值域约束 ⇒ 反证触发；"
+                 "② 若 P 序列在常数证据下不收敛到该常数 ⇒ 更新式写错；"
+                 "③ 若文档宣称「掌握度随时间衰减」而 ReviewItem 仍无数据 ⇒ 说过头了。")
+    if not (lam_ok and lam_enforced and p_seq == [1.0, 0.7, 0.79]):
+        return FAIL, lines + ["反证条件已触发：更新式或值域约束与声明不符。"]
     return PARTIAL, lines
 
 

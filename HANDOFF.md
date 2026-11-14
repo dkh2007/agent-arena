@@ -10,7 +10,7 @@
 | 文件 | 内容 |
 |---|---|
 | `docs/ROADMAP.md` | **先读这份**：骨架与进度总览。五层 × 四档状态（有肉/半有肉/纸面/空）、三层证据不能互相冒充、里程碑对齐、4 条致命风险。只导航，不定义口径 |
-| `docs/BACKLOG.md` | **未完成清单（备忘录）**：26 条（19 条未开、3 条做一半、4 条已关并留痕），每条带「为什么现在不做 / 做完判据 / 十分钟验证 / 谁推」；末尾有收工清单与已关闭留痕 |
+| `docs/BACKLOG.md` | **未完成清单（备忘录）**：28 条（20 条未开、3 条做一半、5 条已关并留痕），每条带「为什么现在不做 / 做完判据 / 十分钟验证 / 谁推」；末尾有收工清单与已关闭留痕 |
 | `../项目计划书草稿-v0.4.md` | 完整计划书：定位/背景/差异化/技术方案/创新点/里程碑/风险/依据 |
 | `../协作规范-v1.md` | 开发协作规范：小步迭代流程、分支与提交规范、验证沉淀 |
 | `docs/data-model.md` | 数据模型 v0 占位（M-1 第 2 步定稿七个实体字段） |
@@ -35,6 +35,9 @@
 | `tests/test_llm_client.py` | **30 条**（round-79，全离线）：密钥不进 repr/异常 / 截断与空正文的报错文案必须不同 / 4xx 不重试、5xx 退避递增且封顶 / 请求体与 `response_format` / `field(repr=False)` 这层"死代码"的机械锁 |
 | `docs/judge-agreement-distribution.json` | **B-04 实测原始记录**（round-79）：4 批 17 次真调用 `deepseek-flash`、10 对比较 9 对一致；含 `max_tokens=1024` 的**原始报错**与三批目的说明 |
 | `scripts/judge_agreement_experiment.py` | **B-04 实验脚本**（round-79）：`--dry-run` 只打印材料不花钱；`--all` / `--runs` / `--max-tokens` / `--purpose`；单份失败不中断全批；结果**累积不覆盖** |
+| `src/arena/mastery.py` | **B-07（round-80）：掌握度 P**。`skill_evidence()`（报告 → 单技能证据，按断言 `skill_id` 加权、决策 7 剔除 unscored/blocked）/ `update_p()` / `replay()`（按**解析后时刻**排序，同刻按 id 定序）/ `build_series()`（读库）/ `series_for_lambdas()`。**只算不落库**（`user_skill_states` 无 P 字段）；**不实现衰减**（依赖 B-08 的复习间隔） |
+| `tests/test_mastery.py` | **36 条**（round-80）：加权 `c_k` / 决策 7 两条路（剔除 vs 真失败记 0）/ 越界不 clamp / 时间轴按时刻不按字符串 / 同刻定序 / 初值播种 vs 显式 `p0` / 跨用户隔离 / **`test_decay_is_not_implemented_yet`（现状锁，B-08 反转它）** / **`test_gate_failure_still_lifts_credit_skills`（现状锁，"不交产物"仍抬 P）** |
+| `scripts/mastery_walk.py` | **B-07 十分钟验证**（round-80）：造三次提交真落库再读回 → 打印 P 序列 + 手算对照 + λ 敏感性（打整条序列，因为 λ 与终值**非单调**）；零依赖、不联网 |
 | `fixtures/tool-call-cases.json` | **14 个**边界 trace 用例集（乱序/零调用/只拉首页/跳过故障点/穿插/假重试等）。**Q10-A** 把 4 个原走 default 的 case 改为明写规则命中；**TD-004** 把 `expect.source` 升级为完整 `classification_source` 字符串并新增 `expect.observed_offsets`；**Q12(a) 补 `bad_status_enum` / `params_not_object` 两个 case**（期望 `unscored/trace_invalid`）。后续补 case 仍先改这里 |
 | `fixtures/raw-*.json` | 五份 S2 原始提交夹具。**S3-3-3 按 Q13(a) 补顶层 `artifacts`**（产物本体，与 trace 是两份独立证据）；`raw-fake-retry` 刻意保留「trace 无 `write_report` 但产物存在」，留给 P3 的 R6 做交叉比对。手写 `assertion_results` **一字未改**（S3-3-6 起「不再被读」≠「已被删除」，留作 S2 基线）；`size_bytes`（TD-009）、`raw-empty` 的旧分数描述（TD-021 / F10）均已订正或销项 |
 | `tests/test_assertion_evaluator.py` | S3-1 的 **55 条**约束用例（含 `call_index` 乱序回归锁、Q10-A 四条明写规则锁、TD-003 八条坏 spec 参数化 + H1 原样反例 + 加载期校验、TD-004 精确来源点名锁、**Q12(a) 五条回归锁（畸形调用判 unscored、枚举派生、枚举缺失拒绝猜测）**、YAML 派生锁、输出可直喂 `build_report()`） |
@@ -396,7 +399,23 @@
 > **C-03 本轮没触发**（一次收敛），但机制没改，仍挂着——别当成已修。
 > 待人拍板项：**无**。下一步 B-03（真 trace 采集）或 B-04（judge 双评）。
 
-> **最新状态（round-79，§79，B-04 judge 双评机制 + 17 次真调用标定 —— 做了一半，不标完成）**：
+> **最新状态（round-80，§80，B-07 掌握度 P —— 公式落地，参数仍是假设）**：人回「好的，先做 B-07」。
+> `submissions` 表里躺着的历史第一次有代码读它：新增 `src/arena/mastery.py`（452 行）+ `store.user_reports()`。
+> **先定 `c_k` 的取法**：不是整份 `score.ratio`，而是按断言 `skill_id` 分组的**权重加权通过率**——
+> 否则一份提交压到三个技能时，R2 答错会把 `tool_param_validation` 一起拉低（串味）。
+> 决策 7 落成代码：`unscored`/`blocked` **从分子分母一起剔除**，该技能无计入断言时 P **原地不动**。
+> 时间轴按**解析后的时刻**排（字符串比较在混合偏移下会判反，而数仍然单调、看不出来）。
+> 实测（`python scripts/mastery_walk.py`）：三提交 `1.0000 → 0.7000 → 0.7900` 与手算逐位一致；
+> `--skill failure_retry` 时第三次变「无证据 ⇒ 原地不动」。**36 条测试 + 13 组变异全 `DETECTED`**。
+> **本轮最值钱的是一条不利发现**：`raw-no-file`（没交产物、`ratio=0`、`disqualified=True`）
+> 仍把 `failure_retry` / `tool_param_validation` 的 c 抬到 1.0——因为「门禁只管分数，不管观测」。
+> 即**"不交产物但重试规范"能刷高 P**。没擅自改口径：写成现状锁 + 写进 `data-model` §5.2 + 登记 B-07b。
+> **B-07 关闭但只算不落库、不衰减**：`user_skill_states` 仍无 P 字段（B-07c），
+> 衰减依赖复习间隔（B-08），λ=0.3 与「首次观测播种」都是**假设**（B-07b）。
+> `test_decay_is_not_implemented_yet` 是现状锁，B-08 落地时必须**反转**它而不是删掉。
+> 待人拍板项：**0 条阻塞**（"门禁失败要不要压低 P"已登记，不拍也能继续）。下一步 B-08 或 B-05。
+
+> **上一状态（round-79，§79，B-04 judge 双评机制 + 17 次真调用标定 —— 做了一半，不标完成）**：
 > 密钥到位后人拍板「先用 flash，资金有限」⇒ 开工。**先立三条「不」**（已落 `docs/data-model.md` §5.1 注）：
 > judge 不进 `ratio`、不进 `detected_patterns`（字段名就叫 `suspected_patterns`）、不驱动 `fsrs_rating`。
 > 它只回答一个问题：换一个观察者重看同一份提交，能不能得出同样的结论。

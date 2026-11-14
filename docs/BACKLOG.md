@@ -4,8 +4,8 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
-> 更新：2026-11-14（round-79：B-04 做一半——judge 双评机制 + 真跑标定数据已就位，
-> 但未接进主流程、无仲裁队列、无阈值，拆出 B-04b / B-04c）。
+> 更新：2026-11-14（round-80：B-07 关闭——掌握度 P 可算、可复核，但**只活在内存**、
+> 衰减未实现、λ 仍是假设，拆出 B-07b / B-07c）。
 
 ---
 
@@ -200,14 +200,49 @@
 - **验证**：`pytest tests/test_diagnosis_report.py -k b06` 里出现一条"五夹具里有缺口由 mapping 产出"的用例。
 - **谁推**：人拍板（要动 TD-001 与 Q10=A 的边界）→ 拍完我 1 小时内可落地。
 
-### [ ] B-07 掌握度 P 的计算
+### [x] B-07 掌握度 P 的计算
 
 - **是什么**：`data-model.md` §5.2 给了公式 `P_k = (1-λ)·P_{k-1} + λ·c_k`，衰减只沿复习间隔。
   `grep -ril mastery src/` → 只有 `counts_toward_mastery` 这个**布尔开关**，没有数值。
-- **为什么现在不做**：依赖 B-01（要历史）+ B-06（要缺口归属）。
+- **为什么当时不做**：依赖 B-01（要历史）+ B-06（要缺口归属）。
 - **做完判据**：同一用户同一技能连续 3 次提交，P 单调按公式变化；`unscored`/`blocked` 不改 P（决策 7）。
-- **验证**：三次提交序列 → 打印 P 序列，与手算一致
-- **谁推**：我（M3）。
+- **验证**：`python scripts/mastery_walk.py`（默认 `multi_step_planning`）→ 三次提交打印
+  `1.0000 → 0.7000 → 0.7900`，与手算逐位相同；加 `--skill failure_retry` 可以看到第三次提交
+  「无证据 ⇒ P 原地不动」。
+- **谁推**：我（M3）。**2026-11-14 关闭**（round-80）：`src/arena/mastery.py` + 36 条测试 + 13 组变异。
+
+> **关闭时的边界（写清楚，免得被当成"学习者画像已就绪"）**：
+> ① P **只活在内存里**，`user_skill_states` 仍没有承接字段 → B-07c；
+> ② **衰减未实现**（依赖 ReviewItem 的复习间隔，属 B-08）⇒ 当前 P 不随自然时间下降，
+>    测试 `test_decay_is_not_implemented_yet` 是现状锁，B-08 落地时反转它；
+> ③ **λ=0.3 与「首次观测播种」都是假设**，没有答题数据可标定 → B-07b；
+> ④ 门禁断言 `weight=0` 却在 `attribution_policy` 里 `counts_toward_mastery=true`，
+>    它失败时掌握度上不留痕（现状因门禁断言 `skill_id` 全为 null 而无影响）→ B-07b 一并处理。
+
+### [ ] B-07b 掌握度参数标定与两处口径缺口
+
+- **是什么**：① λ 与初值的**标定**（现在 0.3 / 首次观测播种都是拍的）；
+  ② 门禁断言零权重但计入掌握度，导致"整份不合格"在 P 上不留痕；
+  ③ 门禁失败时 credit 证据照常计入 ⇒ **一份 `ratio=0` 的"没交产物"提交会抬高
+  `failure_retry` / `tool_param_validation` 的 P**（实测 c=1.0，见
+  `test_gate_failure_still_lifts_credit_skills`）。
+- **为什么现在不做**：λ 要靠**同技能变体的达标预测**回测，至少需要 3 个任务 × 若干次真实提交；
+  ②③ 要先确认"是否真想让门禁失败压低 P"，那是产品口径（"不交产物但重试规范"该不该给分）。
+- **做完判据**：给定一批历史提交，能输出 λ∈{0.1,0.2,0.3,0.5,0.7} 下的预测误差对照表，
+  并选出一个有数据支撑的默认值；②③ 给出二选一结论并落到代码（现 1 行分支）+ 反转对应现状锁。
+- **验证**：`python scripts/mastery_walk.py` 的 λ 敏感性段已有机制；标定要等 B-05 的多任务库。
+- **谁推**：我（B-05 之后）＋ ②③ 需人拍。
+
+### [ ] B-07c P 落字段（破坏性变更）
+
+- **是什么**：`user_skill_states` 加 `mastery_p REAL` + `mastery_updated_at`，或另立一张
+  `mastery_history`（每次提交一行）。两者都改 `SCHEMA_VERSION`。
+- **为什么现在不做**：破坏性变更须同步改 `docs/data-model.md` 并单开一步；
+  且"只留最新值"与"留完整轨迹"是两种不同的查询能力，得先有消费者（B-09 排程）才能定。
+- **做完判据**：`save_submission` 后 P 落库，重启读回与内存计算逐位相同；
+  `PRAGMA user_version` 升到 2 且有迁移函数。
+- **验证**：写 → 关连接 → 重开 → 读回的 P 等于 `build_series()` 的终值。
+- **谁推**：我（M3 后半 / B-08 之前）。
 
 ### [ ] B-08 FSRS 调度 + ReviewItem 生成
 
@@ -216,7 +251,8 @@
 - **做完判据**：一次失败提交产出 1 个 `pending` 的 ReviewItem，`due` 由 py-fsrs 给出；
   每日队列上限生效（`daily_review_cap`）。
 - **验证**：跑一次失败 → 查 ReviewItem 表 → `due` 距今 > 0 且 ≤ 上限条数
-- **谁推**：我（M4）。
+- **谁推**：我（M4）。**注意**：B-08 一并解锁 P 的**衰减**（唯一时间轴 = 复习间隔），
+  届时 `test_decay_is_not_implemented_yet` 必须反转，而不是删除。
 
 ### [ ] B-09 四因子建议排程
 
@@ -330,8 +366,9 @@
 4. python scripts/push_gate.py --self-test --dirty c830b1b → SELF_TEST_PASS=True
 5. python scripts/demo_decision.py --all            → FAIL 必须为 0
 6. 若改了测试 → 必须重生成评审包（`_pytest_count()` 会变 ⇒ 必 STALE）
-   **且要生成两次**：第一次会把"包内旧数字 ≠ 现在数字"记成 `1 failed`（RC=2），
-   第二次才收敛到 RC=0（自指互锁，见 C-03）
+   **且要生成三次**：第一次把"包内旧数字 ≠ 现在数字"记成 `1 failed`（RC=2）；
+   第二次内容对了但进度提示行还留着"进行中"；第三次指纹才不变
+   （自指互锁，见 C-03；round-78 实测两次不足，round-80 再次确认三次）
 7. 本文件与 ROADMAP 的状态行跟着改
 ```
 
@@ -357,4 +394,5 @@
 | B-02 | 黑盒提交服务（HTTP） | round-76 落地：3 端点 + 五夹具逐字段对拍 + 9 组变异全 DETECTED；判据 `blocked`→`unscored` 已订正 |
 | B-21 | TD-038 宽松口（版本必填） | round-76 随 B-02 收紧：缺字段 400 专用码且不落库，变异 M1/M2 DETECTED |
 | B-03 | 真 trace（原写"OTel 打桩"） | round-77 落地为"可执行任务环境 + 参考 Agent"：mock 工具服务 + 确定性 Agent，`schema_valid=True`/`call_count=4`/`ratio=1.0`，答案与 `test_inputs.expected` 对撞一致；LLM 与平台侧采集拆出为 **B-03b** |
+| B-07 | 掌握度 P 的计算 | round-80 落地 `src/arena/mastery.py`：按技能加权 `c_k`、决策 7 剔除 unscored/blocked、时间轴按解析时刻；三提交序列 `1.0000→0.7000→0.7900` 与手算逐位一致；36 条测试 + 13 组变异全 DETECTED。**只算不落库、不衰减**，拆出 B-07b / B-07c |
 | — | 对账器把聚合值判成"编造" | round-77 补 `derived_fields`：推导值缺出处归 `unverifiable`（`derived_not_replayable`），只有非推导字段缺出处才是 `mismatch`；默认行为不变（11 条锁） |

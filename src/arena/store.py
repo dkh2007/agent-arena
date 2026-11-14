@@ -415,3 +415,22 @@ def count_submissions(conn: sqlite3.Connection, user_id: str | None = None) -> i
     if user_id is None:
         return int(conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0])
     return int(conn.execute("SELECT COUNT(*) FROM submissions WHERE user_id = ?", (user_id,)).fetchone()[0])
+
+
+def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
+    """该用户**全部**提交的完整报告，按 `created_at` 升序（round-80，B-07 的第一个读者）。
+
+    与 `list_submissions` 的分工：那个是"看列表"（倒序、限条数、不带正文）；
+    这个是"按时间重放"（正序、不限条数、带整份 `diagnosis`）。
+
+    三点刻意为之：
+    - **正序**：状态层要的是"从头往后折"，倒序交给调用方自己翻会诱导出"按列表位置当时间"。
+    - **不限条数**：掌握度是累计量，截断等于悄悄少算历史；要限流该在调用方显式做。
+    - **`created_at` 排序而不是 `evaluated_at`**：落库时前者已锚到后者，而补录时显式传入的值
+      才是"这条记录代表哪一刻"的权威。同一时刻按 `submission_id` 兜底，保证重跑顺序稳定。
+    """
+    rows = conn.execute(
+        "SELECT * FROM submissions WHERE user_id = ? ORDER BY created_at ASC, submission_id ASC",
+        (user_id,),
+    ).fetchall()
+    return [_row_to_dict(r, "submissions") for r in rows]
