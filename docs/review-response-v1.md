@@ -7505,3 +7505,31 @@ C 同时满足"数据缺失≠能力不足"与"别让白卷拿满"，是两条�
 分布在不同人各一次 ⇒ 更像打包/路径类事故，B 的代价被高估。
 ② 若将来数据证明白卷的 `c` 并不总是 1.0（例如 R3/R4 也需要产物才能判）⇒ 81.2 的量级要重算，本轮结论随之减弱。
 ③ 若展示层做不出"配对标注"（分数列与技能列各自带限定词）⇒ A 的观感缺陷无法用展示修补，应改用 C。
+
+### 81.8 自查：白卷的 `c=1.0` 是**两层机制叠加**，不是夹具作弊
+
+外部评审的反证条件②问：「若 R3/R4 也需要产物才能判，白卷的 c 就不该是 1.0」。
+把夹具拆开看（`raw-no-file` 逐条断言）：
+
+| 断言 | 状态 | 权重 | 技能 | 判定依据 |
+|---|---|---|---|---|
+| `R1_file_exists` | **fail** | 0 | — | 产物确实不存在 ⇒ 门禁失败、`disqualified` |
+| `R5_clean_exit` | pass | 0 | — | 正常退出 |
+| `R2_report_correct` | blocked | 2 | `multi_step_planning` | 依赖 R1 ⇒ 不进证据（不记 0 分） |
+| `R3_retry_evidence` | pass | 1 | `failure_retry` | trace **已上报且 schema 合法**、里面有重试记录 |
+| `R4_no_param_hallucination` | pass | 1 | `tool_param_validation` | **零工具调用 ⇒ 空集通过** |
+
+`trace_audit.reported=True`、`schema_valid=True`、`process_fact.missing=False`——
+即外部评审说的「结果失败 + 过程完好」在夹具里是**真的**。所以：
+
+- **R3 的 pass 是真实观测**：过程确实完整并有重试证据，这不是作弊。
+- **R4 的 pass 是空集通过**：一次工具调用都没有时，"没有编造参数"恒真。
+  这一条已在 F5 系列登记（`docs/peer-brief-s3-3-7-f4-f5.md`：「空集 pass 拿满 R4 权重且计入掌握度」）。
+
+两层叠加恰好让白卷的 `c = 1.0`。含义有两条，都不能省：
+
+1. 修「空集 pass」只能把 `tool_param_validation` 的白卷 `c` 从 1.0 砍到 0，
+   **`failure_retry` 那条仍是真观测**，白卷照样能被顶满 ⇒ **修它不能替代 A/B/C 决策**。
+2. 反证条件②的答案因此是「部分成立」：若空集判 fail，81.2 从"两个技能被抬满"降为
+   "一个技能被抬满"，**结论方向不变、幅度减半**，`test_one_white_paper_looks_like_a_perfect_run`
+   需按 `tool_param_validation` 重写而不是删掉。
