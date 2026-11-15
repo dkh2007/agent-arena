@@ -48,9 +48,11 @@
    P 会直接变 0——那正是决策 7「数据缺失 ≠ 能力不足」禁止的换算。
    所以先校验字段再用，缺就退化成"原值 + `applied=False` + reason"。
 5. **衰减不写库、不推进递推。**
-   P 仍然只活在内存里（`user_skill_states` 没有 P 字段，见 B-07c）。
    `P_eff` 是"给定 `as_of` 的读法"，不是新状态——所以同一个 `series` 可以按不同
    `as_of` 读出不同的 `P_eff`，而 `series.p` 一动不动。
+   **B-07c 之后更要守住这条**：`mastery_snapshots` 里存的是 `P_raw` 的缓存，
+   **不许**把 `P_eff` 写进去（那会把 as_of 钉成状态、造第二真相源）。
+   `user_skill_states` 至今没有 P 字段；权威口径见 `data-model.md` §5.3。
 6. **退化路径的返回值仍是完整对象，不是 `None`。**
    返回 `None` 会让调用方写 `if x is None: ...` 的分支，而"没衰减"和"算不出"是两件事
    （前者是 `applied=False` + 原因，后者是抛错）。三个原因取值：

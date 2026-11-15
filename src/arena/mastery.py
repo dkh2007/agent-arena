@@ -54,11 +54,16 @@
    不必回头改已积累的历史，也**不必**把报告里的 credit 断言改标 `blocked`
    （那会用评分逻辑吞掉诊断数据，是多份文档明确禁止的实现方式）。
 
-## 不落库
+## P 落在哪（round-88 / B-07c 更新）
 
-`user_skill_states` 表当前只有 `fsrs_card` / `updated_at`，没有承接 P 的字段；
-新增字段是破坏性变更，按 data-model 约定单开一步。所以 P **只活在内存里**，
-本模块不写任何表——`build_series()` 只读 `submissions`。
+**本模块仍然一行库都不写**：`build_series()` / `replay()` / `decayed_at()` 全是纯读，
+唯一数据来源是 `submissions`。这一点有测试锁住
+（`test_replay_never_writes_to_the_fsrs_card_table`）。
+
+P 的**缓存**落在独立表 `mastery_snapshots`（v2），由 `mastery_snapshot.py` 负责写与校验；
+`user_skill_states` 至今没有 P 字段，一个字段都没动——B-08b 的
+「没卡 ≠ 忘光了」契约靠那张表的空/有区分，不能被"只有 P 没卡"的半行污染。
+重放是唯一权威，快照不一致时以重放为准；权威口径见 `docs/data-model.md` §5.3。
 """
 
 from __future__ import annotations

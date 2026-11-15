@@ -12,7 +12,7 @@
 
 | 因子 | 数据来源 | 现状 |
 |---|---|---|
-| 掌握度缺口 `1-P` | `mastery.replay()`（`submissions.diagnosis`） | **有**。P 只活在内存，但排程只需要"现在这一刻的 P"，不需要历史快照 |
+| 掌握度缺口 `1-P` | `mastery.replay()`（`submissions.diagnosis`） | **有**。排程只需要"现在这一刻的 P"，走重放；v2 已有 `mastery_snapshots` 缓存（B-07c），但本层刻意不读它，避免把缓存当权威 |
 | 遗忘风险 `1-R` | py-fsrs `get_card_retrievability(card, at)` | **有**。卡片在 `user_skill_states`，R 由 (stability, 距上次复习天数) 给出 |
 | 错误热度 | `submissions.detected_patterns` × `error_patterns.mapped_skill_ids` | **有**。窗口内"这次提交有没有该技能相关错误"计数 |
 | 项目截止 | —— | **没有**。`SCHEMA_SQL` 里没有任何截止字段，也没有项目/日程实体 |

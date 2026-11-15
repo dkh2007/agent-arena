@@ -505,18 +505,26 @@ def test_skill_without_any_counted_history_returns_none(db):
     assert series.ignored == {"not_counted": 1}
 
 
-def test_p_is_not_written_anywhere(db):
-    """P 还没有落字段（data-model「P 的落字段与初值未定」）。
+def test_replay_never_writes_to_the_fsrs_card_table(db):
+    """**round-88 / B-07c 反转的现状锁**：原锁是「P 不落任何字段」。
 
-    这条锁的是"别偷偷加一张表/一列"：算完前后 `user_skill_states` 的列集合与行数都不许变。
+    现在 P 落库了，但落在**独立的 `mastery_snapshots` 表**，不碰 FSRS 卡片宿主。
+    本条改成锁住这个边界：① `build_series()` 本身仍然是纯读（重放不许写库）；
+    ② `user_skill_states` 的列集合与行数都不许变——B-08b「没卡 ≠ 忘光了」的
+    契约靠这张表，往里塞 P 会把空卡和没卡混成一件事。
     """
     store.save_submission(db, _report("raw-perfect", submission_id="s1", at="2026-11-01T00:00:00Z"),
-                          user_id=USER)
+                          user_id=USER, refresh_mastery=False)
     cols_before = [r[1] for r in db.execute("PRAGMA table_info(user_skill_states)")]
+    rows_before = db.execute("SELECT * FROM user_skill_states").fetchall()
+    snap_before = db.execute("SELECT * FROM mastery_snapshots").fetchall()
+
     m.build_series(db, USER, MSP, lam=0.3)
+
     cols_after = [r[1] for r in db.execute("PRAGMA table_info(user_skill_states)")]
     assert cols_before == cols_after
-    assert db.execute("SELECT COUNT(*) FROM user_skill_states").fetchone()[0] == 0
+    assert db.execute("SELECT * FROM user_skill_states").fetchall() == rows_before
+    assert db.execute("SELECT * FROM mastery_snapshots").fetchall() == snap_before
 
 
 def test_series_dict_is_json_serialisable():

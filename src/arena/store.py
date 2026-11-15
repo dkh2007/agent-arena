@@ -8,7 +8,8 @@
 四条设计决定，都不是"顺手这么写"：
 
 1. **不用 ORM**。`requirements.txt` 已 pin 死，`tests/test_dependencies.py` 会离线比对已安装版本；
-   引 sqlalchemy 是为一件事加一整层依赖。7 张表的 DDL 手写比 ORM 映射更短，
+   引 sqlalchemy 是为一件事加一整层依赖。8 张表（v1 七张 + v2 的 `mastery_snapshots`）
+   的 DDL 手写比 ORM 映射更短，
    将来换 PostgreSQL 时重写一遍 DDL，比为抽象层打补丁便宜。
 2. **`user_id` 必须由调用方显式给**，不从 `agent_id` 推。fixture 里只有 `agent_id`（学习者部署的服务名），
    而「谁交的」和「哪个 agent 交的」是两个概念——一个学习者可以有多个 agent。
@@ -39,10 +40,14 @@ SKILL_TAXONOMY = ROOT / "docs" / "skill-taxonomy-v0.yaml"
 VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 
 # 结构版本：任何字段增删改都要 +1，并在 docs/data-model.md 留痕。
-SCHEMA_VERSION = 1
+# v2（B-07c）：新增 `mastery_snapshots`（P 的**缓存**）。旧表一个字段没动——
+# 迁移因此是纯增量（加一张表 + 回填），不需要重建 `user_skill_states`。
+SCHEMA_VERSION = 2
 
 # 必须按依赖顺序建（被引用的先建）：users / skills → tasks → submissions → user_skill_states / review_items。
-SCHEMA_SQL = """
+# **拆成 v1/v2 两段**：迁移测试需要一个"真的 v1 老库"来证明 from=1，
+# 而不是拿当前建好的库改个 PRAGMA 假装——那测不出"旧表缺新表"的情形。
+SCHEMA_SQL_V1 = """
 CREATE TABLE IF NOT EXISTS users (
     user_id            TEXT PRIMARY KEY,
     display_name       TEXT NOT NULL DEFAULT '',
@@ -120,6 +125,31 @@ CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, cre
 CREATE INDEX IF NOT EXISTS idx_review_items_queue     ON review_items(user_id, status, due);
 """
 
+SCHEMA_SQL_V2 = """
+-- v2 / B-07c：掌握度 P 的**快照**。这是缓存，不是第二真相源：
+--   `mastery.build_series()` 从 submissions 重放出来的值永远是权威，
+--   本表只是把那个值抄一份，省掉"按 P 排序很多用户"时的全量重放。
+-- `lam` / `p0` / `evidence_count` / `last_submission_id` 记的是"按哪批报告、哪套参数算的"，
+--   让"快照过期了没有"可以不用重放就先筛一遍；真要判定仍以重放为准。
+CREATE TABLE IF NOT EXISTS mastery_snapshots (
+    user_id            TEXT NOT NULL REFERENCES users(user_id),
+    skill_id           TEXT NOT NULL REFERENCES skills(skill_id),
+    mastery_p          REAL NOT NULL CHECK (mastery_p >= 0 AND mastery_p <= 1),
+    lam                REAL NOT NULL CHECK (lam > 0 AND lam < 1),
+    p0                 REAL,
+    evidence_count     INTEGER NOT NULL CHECK (evidence_count >= 0),
+    last_submission_id TEXT,
+    updated_at         TEXT NOT NULL,
+    PRIMARY KEY (user_id, skill_id)
+);
+
+-- 排序需求（B-25，尚未开）要的就是"某个技能下按 P 从高到低"，索引按这个顺序建。
+-- 本轮只建索引、不做排名页：有索引不等于有榜单。
+CREATE INDEX IF NOT EXISTS idx_mastery_snapshots_rank ON mastery_snapshots(skill_id, mastery_p DESC);
+"""
+
+SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2
+
 # 需要 JSON 编解码的列：写库前 dumps，读库后 loads（NULL 保持 NULL，不转成空数组）。
 JSON_COLUMNS = {
     "skills": ("prerequisites",),
@@ -143,18 +173,172 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """建表（幂等）。重复调用不报错，也不动已有数据——迁移将来另开函数，不塞进这里。"""
+    """建表（幂等）+ 把结构版本升到当前值。
+
+    `executescript` 只负责"表都在"，**版本与迁移一律交给 `migrate()`**——
+    否则一个 v1 老库被 `init_db` 重新打开时，会只补了表、没回填、也没升版本，
+    从此"表里有列、PRAGMA 还是 1"，是最难查的那种半迁移状态。
+    """
     with conn:
         conn.executescript(SCHEMA_SQL)
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    migrate(conn)
 
 
 def schema_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
+def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
+    """把库升到 `target`，返回本次动作（幂等、不降级、不删旧数据）。
+
+    三条硬规矩：
+    1. **只做增量**：v1→v2 只补 `mastery_snapshots` 表与索引，`ALTER` 一个字段都不改。
+       所以任何一步失败，旧库仍是可用的一堆旧表，不会变砖。
+    2. **回填是"重算"，不是"猜"**：v1 库里已经有提交时，按 `mastery.build_series()`
+       逐用户逐技能重放，把结果写进快照表；原 `submissions` 一个字节不动。
+    3. **不许降级**：`PRAGMA user_version > target` 直接抛错。看见看不懂的新版本还继续写，
+       比停下来更危险。
+
+    `target` 只接受正整数；它是内部常量，不来自用户输入。
+    """
+    if isinstance(target, bool) or not isinstance(target, int) or target < 1:
+        raise StoreError("migrate 的 target 必须是正整数")
+    current = schema_version(conn)
+    if current > target:
+        raise StoreError(
+            f"库版本 {current} 高于目标 {target}——拒绝降级，先确认是不是用旧代码开了新库"
+        )
+    if current == target:
+        return {"from": current, "to": target, "added_tables": [], "backfilled": 0}
+
+    with conn:
+        if current == 0:
+            # 全新库：一次建齐（v2 的表有外键指向 users/skills，不能只建它）。
+            conn.executescript(SCHEMA_SQL)
+        else:
+            # 已有 v1 库：只补 v2 新增的部分，旧七张表一个字段都不碰。
+            conn.executescript(SCHEMA_SQL_V2)
+
+    backfilled = 0
+    if current < 2 and target >= 2:
+        from . import mastery_snapshot  # 局部导入：mastery 会反向引用 store
+
+        backfilled = mastery_snapshot.recompute_all(conn)
+
+    with conn:
+        conn.execute(f"PRAGMA user_version = {target}")
+    return {
+        "from": current,
+        "to": target,
+        "added_tables": ["mastery_snapshots"] if current < 2 <= target else [],
+        "backfilled": backfilled,
+    }
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ── P 快照的落库（v2 / B-07c）────────────────────────────────────────────────
+# 分工与 FSRS 卡那段相同：重放与判定都在 `mastery_snapshot.py`，本模块只"照写、照读"。
+# **这张表里存的是 P_raw，不是衰减后的 P_eff**（B-08b 定：衰减是读法，不是新状态）。
+# 把 as_of 钉进快照会制造第二真相源，见 review-response §86.8 ④。
+
+def list_user_ids(conn: sqlite3.Connection) -> list[str]:
+    """全部用户 id（重算入口用，按 id 排序保证顺序稳定）。"""
+    return [r[0] for r in conn.execute("SELECT user_id FROM users ORDER BY user_id")]
+
+
+def list_skill_ids(conn: sqlite3.Connection) -> list[str]:
+    """全部已注册技能 id。快照的外键以这里为准：没注册的技能不写快照。"""
+    return [r[0] for r in conn.execute("SELECT skill_id FROM skills ORDER BY skill_id")]
+
+
+def save_mastery_snapshot(conn: sqlite3.Connection, row: dict) -> None:
+    """写/覆盖一条 (user, skill) 的 P 快照。返回 None。
+
+    **覆盖是正确语义**：这是缓存，不是历史证据；缓存没有"保留旧值"这回事。
+    与 `submissions` 的"不覆盖"相反——那边是证据，这边是当前派生值。
+
+    所有数值字段在这里再挡一层：表约束只在库里生效，报不清是哪一列，
+    而快照是排序依据，一个越界的值会静默把人排错。
+    """
+    user_id, skill_id = row.get("user_id"), row.get("skill_id")
+    if not isinstance(user_id, str) or not user_id:
+        raise StoreError(f"快照缺 user_id（收到 {user_id!r}）")
+    if not isinstance(skill_id, str) or not skill_id:
+        raise StoreError(f"快照缺 skill_id（收到 {skill_id!r}）")
+
+    p = row.get("mastery_p")
+    if isinstance(p, bool) or not isinstance(p, (int, float)) or not (0.0 <= float(p) <= 1.0):
+        raise StoreError(f"mastery_p 必须是 [0,1] 内的数值（收到 {p!r}）")
+    lam = row.get("lam")
+    if isinstance(lam, bool) or not isinstance(lam, (int, float)) or not (0.0 < float(lam) < 1.0):
+        raise StoreError(f"lam 必须是 (0,1) 内的数值（收到 {lam!r}）")
+    count = row.get("evidence_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise StoreError(f"evidence_count 必须是非负整数（收到 {count!r}）")
+
+    ensure_user(conn, user_id)
+    if conn.execute("SELECT 1 FROM skills WHERE skill_id = ?", (skill_id,)).fetchone() is None:
+        raise StoreError(
+            f"技能 {skill_id} 未注册——先 register_skills()；"
+            "允许未注册技能写快照等于让外键变成装饰"
+        )
+
+    with conn:
+        conn.execute(
+            "INSERT INTO mastery_snapshots (user_id, skill_id, mastery_p, lam, p0, "
+            "evidence_count, last_submission_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, skill_id) DO UPDATE SET "
+            "mastery_p = excluded.mastery_p, lam = excluded.lam, p0 = excluded.p0, "
+            "evidence_count = excluded.evidence_count, "
+            "last_submission_id = excluded.last_submission_id, "
+            "updated_at = excluded.updated_at",
+            (
+                user_id, skill_id, float(p), float(lam), row.get("p0"), int(count),
+                row.get("last_submission_id"), row.get("updated_at") or _now(),
+            ),
+        )
+
+
+def load_mastery_snapshot(conn: sqlite3.Connection, user_id: str, skill_id: str) -> dict | None:
+    """读回一条快照；没有就是 `None`（没证据 ≠ P=0，不许造 0 出来）。"""
+    r = conn.execute(
+        "SELECT * FROM mastery_snapshots WHERE user_id = ? AND skill_id = ?",
+        (user_id, skill_id),
+    ).fetchone()
+    return dict(r) if r is not None else None
+
+
+def list_mastery_snapshots(conn: sqlite3.Connection, *, skill_id: str | None = None,
+                           order_by_p: bool = False) -> list[dict]:
+    """列出快照。`order_by_p=True` 就是"按 P 排序多个用户"的读法（B-25 的地基）。
+
+    平手按 `user_id` 兜底：否则 SQLite 同分行的顺序不稳定，两次读可能给出两个榜。
+    本函数**只读快照、不重放**——这正是落字段的意义；新鲜度由
+    `mastery_snapshot.verify_*()` 单独核，两者不混在一起。
+    """
+    sql = "SELECT * FROM mastery_snapshots"
+    params: tuple = ()
+    if skill_id is not None:
+        sql += " WHERE skill_id = ?"
+        params = (skill_id,)
+    if order_by_p:
+        sql += " ORDER BY mastery_p DESC, user_id ASC"
+    else:
+        sql += " ORDER BY skill_id ASC, user_id ASC"
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
+def delete_mastery_snapshot(conn: sqlite3.Connection, user_id: str, skill_id: str) -> int:
+    """删一条快照。返回删除行数。用于"该技能已无证据"时避免留下陈旧值。"""
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM mastery_snapshots WHERE user_id = ? AND skill_id = ?",
+            (user_id, skill_id),
+        )
+    return int(cur.rowcount or 0)
 
 
 def _dump(value: Any) -> str | None:
@@ -348,6 +532,7 @@ def save_submission(
     fsrs_rating: int | None = None,
     agent_endpoint_url: str | None = None,
     created_at: str | None = None,
+    refresh_mastery: bool = True,
 ) -> str:
     """把一份诊断报告写进 `submissions`。返回 `submission_id`。
 
@@ -357,6 +542,11 @@ def save_submission(
     `created_at` 的取值顺序：显式参数 → 报告里的 `submission.evaluated_at` → 当前时刻。
     优先用**评测时刻**而不是落库时刻：复习间隔（M4）以它为时间轴，
     补录历史数据若记成"今天"，间隔会全部算错。
+
+    **v2 / B-07c**：`refresh_mastery=True`（默认）时，报告落库后立刻刷新该用户的
+    P 快照，所以"提交完再重开库读回"能拿到最新 P。设 `False` 可关掉——
+    迁移回填、故意构造"过期快照"的测试需要这个开关。
+    刷新失败会抛（不吞）：缓存写坏了还让提交报成功，是最难查的那种不一致。
     """
     sub = _require(report, "submission")
     submission_id = sub.get("submission_id")
@@ -406,6 +596,11 @@ def save_submission(
                 stamp,
             ),
         )
+    if refresh_mastery:
+        # 局部导入：mastery_snapshot → mastery → store，模块级导入会成环。
+        from . import mastery_snapshot
+
+        mastery_snapshot.refresh_user(conn, user_id, at=stamp)
     return submission_id
 
 

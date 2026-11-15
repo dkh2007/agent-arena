@@ -40,6 +40,7 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_advisor.py` | 四因子排程（缺数据均值顶、平手格、改序审计） | round-85 / B-09 |
 | `mutate_locate.py` | 第二套骨架（定位题）与按路径回放 | round-86 / B-05b |
 | `mutate_decay.py` | P 的衰减（缺卡不衰减、锚点取更晚、时间不倒流、R 只算一处） | round-87 / B-08b |
+| `mutate_snapshot.py` | 掌握度快照（重放唯一权威、P_raw 不存 P_eff、参数同存、没证据不写 0、v1→v2 迁移） | round-88 / B-07c |
 
 ## 两条踩过的坑（写进脚本注释了，这里再记一次）
 
@@ -48,3 +49,7 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
    也没有断言信息，看起来像「变异无效」。round-84 和 round-85 各栽过一次。
 2. **锚点打错地方会得到 `MISSED`，别急着加测试。** round-86 的 M1 打在只进 evidence、不参与
    判定的代码上，端到端用例当然抓不住——该换成打单元测试。
+3. **全量 `pytest` 也要给一个全新的 `PYTEST_DEBUG_TEMPROOT`。** round-88 收尾时直接跑
+   `pytest tests/ -q`，默认临时根下攒了 140 个旧编号目录，pytest 收尾的 `atexit` 清理
+   撞上沙箱 bulk-delete 守卫 ⇒ 抛 `SystemExit(1)`、正常输出被 `tail` 挤掉、看起来像挂了
+   6 分钟。这不是测试变红也不是死循环，换一个空临时根即可（与第 1 条同源，只是发生在收尾）。
