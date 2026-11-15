@@ -521,3 +521,49 @@ def test_lambda_sensitivity_is_visible():
     assert table[0.1].p == pytest.approx(0.9)   # 0.9·1 + 0.1·0 = 0.9（历史几乎不被一次失败撼动）
     assert table[0.7].p == pytest.approx(0.3)   # 0.3·1 + 0.7·0 = 0.3
     assert table[0.1].p > table[0.7].p, "λ 越小越保守，最新一次失败的影响越小"
+
+
+# --- 展示层（round-82）：给自己看的成绩单，只有两条硬规矩 -------------------------
+
+def test_scorecard_shows_p_and_never_rank():
+    """成绩单可以显示掌握度，但**不许先长出名次**。
+
+    这是产品口径的机械表达（2026-11-15 人拍板）：成绩先给自己看，排名是后继的、有条件的。
+    界面一旦先有"第几名"，口径会被界面倒逼着改（排名要求有后果 ⇒ 必须切口径 A→C）。
+    所以这里直接跑脚本，断言输出里出现数字、且不出现名次类字样。
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "mastery_scorecard.py")],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    assert "0.79" in out, "成绩单要给出可复核的掌握度数字（来自 build_series，不是手填）"
+    assert "不参与任何排名" in out
+    for word in ("第 1 名", "第1名", "排名第", "名次"):
+        assert word not in out, f"排名未开，输出里不该出现 {word!r}"
+
+
+# --- 展示层（round-82）：给自己看的成绩单，只有两条硬规矩 -------------------------
+
+def test_scorecard_shows_p_and_never_rank():
+    """成绩单可以显示掌握度，但**不许先长出名次**。
+
+    这是产品口径的机械表达（2026-11-15 人拍板）：成绩先给自己看，排名是后继的、有条件的。
+    界面一旦先有"第几名"，口径会被界面倒逼着改（排名要求有后果 ⇒ 必须切口径 A→C）。
+    所以这里直接跑脚本，断言输出里出现数字、且不出现名次类字样。
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "mastery_scorecard.py")],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    assert "0.79" in out, "成绩单要给出可复核的掌握度数字（来自 build_series，不是手填）"
+    assert "不参与任何排名" in out
+    for word in ("第 1 名", "第1名", "排名第", "名次"):
+        assert word not in out, f"排名未开，输出里不该出现 {word!r}"

@@ -162,6 +162,11 @@
 >   （`ok` / `disqualified` / `voided`），但**不参与计算**。目的是把 A→C→B 的切换降成
 >   计入层的一条过滤/乘子，而不是回头改已积累的历史。**切换时禁止**把报告里的 credit 断言改标
 >   `blocked`（那会用评分逻辑吞掉诊断数据，见 `diagnosis-report-schema.md` §1 第 4 条）。
+> - **P 不落库这件事不影响"给自己看"（2026-11-15 口径）**：产品定位是「成绩先给自己看、用于督促」，
+>   而"看进步曲线"不需要快照——每份报告都在 `submissions` 里，`mastery.build_series()` 随时重放
+>   （`scripts/mastery_scorecard.py` 就是这一形态，零 schema 改动）。需要快照的是
+>   **"按 P 排序多个用户"**（排名/班级榜）这类查询；B-07c 的开工条件因此写死为"出现排序需求"。
+
 > 「掌握度 = FSRS 的 R 值」的原写法**作废**；两种口径并存的过渡状态随之结束。
 > ReviewLog（py-fsrs 的复习日志）**后置**：M0 不建表，复习事件可从 Submission + ReviewItem 重建；M1 接入参数优化时再加。
 
