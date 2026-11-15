@@ -414,19 +414,18 @@ def test_unparsable_time_is_loud():
 
 # --- ④ 衰减：尚未实现（现状锁，改到 B-08b 反转） -----------------------------------
 
-def test_decay_is_not_implemented_yet():
-    """现状锁：间隔一天与间隔三百天，P 完全一样。
+def test_decay_is_opt_in_and_plane_replay_ignores_the_gap():
+    """**反转的现状锁**（B-08b，round-87）：衰减做了，但**只在显式给 `as_of` 时**。
 
-    data-model §5.2 说「衰减只沿用复习间隔这一个时间轴」，而复习间隔来自 ReviewItem。
-    **B-08 做完的是调度（due 由 py-fsrs 给），不是衰减**——衰减拆到了 B-08b，
-    理由写在 `docs/review-response-v1.md` §83.4：① 曲线形状要么引入第二套时间常数
-    （data-model 明文禁止），要么借用 FSRS 的 `R(t,S)`（被明文列为"须先定义并标定 α=f(S)"）；
-    ② 现在没有"实际复习发生的时刻"序列，只有"到期时刻"，用它衰减等于把计划当历史。
+    原先这条叫 `test_decay_is_not_implemented_yet`，断言"隔 1 天与隔 300 天 P 完全一样"。
+    B-08b 落地后它必须反过来：不给 `as_of` ⇒ 仍然一样（老调用行为没变）；
+    给了 `as_of` ⇒ 必须不同（否则衰减等于没接）。
 
-    所以这条测试**仍然应该绿**，B-08b 落地时才反过来。**不许悄悄删掉它**——
-    删了之后就没有东西区分"衰减没做"与"衰减做了但没生效"。
+    **刻意不删原来那条断言**：它是"P 不随墙钟变化"的唯一守卫。删了之后就没人区分
+    「衰减没接」与「衰减接错了地方、把无 as_of 的调用也弄脏了」。
     """
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
     def series_with_gap(days: int) -> m.MasterySeries:
         ev = [
             _ev("s1", base.isoformat(), 1, 1),
@@ -434,7 +433,20 @@ def test_decay_is_not_implemented_yet():
         ]
         return m.replay(ev, user_id=USER, skill_id=MSP, lam=0.3)
 
+    # ① 不给 as_of：递推只看证据顺序，与间隔无关（老行为，一个字没变）
     assert series_with_gap(1).p == series_with_gap(300).p == pytest.approx(1.0)
+
+    # ② 给 as_of：同一个 as_of 下，隔 1 天练过与隔 300 天没碰必须读出不同 P
+    from arena import decay as d
+
+    as_of = (base + timedelta(days=301)).isoformat()
+    fresh = d.decay_series(series_with_gap(300), as_of=as_of, stability=10.0)
+    stale = d.decay_series(series_with_gap(1), as_of=as_of, stability=10.0)
+    assert fresh.p_raw == stale.p_raw == pytest.approx(1.0)
+    assert fresh.p_effective > stale.p_effective
+    # ③ 衰减不写回序列：P 还是 1.0，说明"读法"与"状态"是两件事
+    assert series_with_gap(300).p == pytest.approx(1.0)
+
 
 
 # --- 读库：历史真的来自 SQLite，且只读 ---------------------------------------------

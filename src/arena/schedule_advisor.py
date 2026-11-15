@@ -667,11 +667,10 @@ def _retrievability(conn: sqlite3.Connection, user_id: str, skill_ids: Sequence[
                     ) -> tuple[dict[str, float | None], dict[str, str | None]]:
     """该用户各技能的 R（可提取性）与上次复习时刻。
 
-    `stability is None`（还没复习过的卡）⇒ R 记 None：py-fsrs 对这种卡返回 0.0，
-    而 0.0 在"遗忘风险 = 1 - R"里意味着"忘光了"——那是把"还没开始"说成"已经忘完"。
+    R 本身由 `scheduler.retrievability_at()` 算（全项目只此一处）——这里只负责
+    "取卡 + 把 None 传下去"。`None` 表示"还没开始"，不是"忘光了"。
     """
     cards = sch.cards_from_rows(store.load_fsrs_cards(conn, user_id))
-    sched = scheduler or sch.make_scheduler()
     r: dict[str, float | None] = {}
     last: dict[str, str | None] = {}
     for skill in skill_ids:
@@ -680,7 +679,7 @@ def _retrievability(conn: sqlite3.Connection, user_id: str, skill_ids: Sequence[
             r[skill] = None
             last[skill] = None
             continue
-        r[skill] = float(sched.get_card_retrievability(card, at))
+        r[skill] = sch.retrievability_at(card, at.isoformat(), scheduler=scheduler)
         last[skill] = _iso(card.last_review)
     return r, last
 

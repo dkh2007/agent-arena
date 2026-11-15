@@ -187,6 +187,33 @@ def review_id_for(user_id: str, skill_id: str, due: str) -> str:
     return "rv-" + hashlib.sha256(f"{user_id}|{skill_id}|{due}".encode("utf-8")).hexdigest()[:16]
 
 
+def retrievability_at(card: Card, at: str, *, scheduler: Scheduler | None = None) -> float | None:
+    """卡在 `at` 时刻的可提取性 R。**全项目只此一处算 R**。
+
+    还没复习过的卡（`stability is None`）返回 **None**，不是 0：py-fsrs 对这种卡返回 0.0，
+    而 0.0 在"遗忘风险 = 1-R"里是"已经忘光"、在掌握度衰减里会把 P 直接乘成 0
+    ——那是把"还没开始"说成"已经忘完"（决策 7 的同一个错误方向）。
+    两处调用方（排程层、衰减层）都按 None 走"弃权/不衰减"，所以这条语义必须在这里统一。
+    """
+    if card.stability is None:
+        return None
+    instant = mastery.parse_instant(at)
+    if card.last_review is not None:
+        last = card.last_review
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if instant < last:
+            raise SchedulerError(
+                f"R 的时刻 {instant.isoformat()} 早于卡片上次复习 {last.isoformat()}——"
+                "时间不许倒着用"
+            )
+    sched = scheduler or make_scheduler()
+    got = sched.get_card_retrievability(card, instant)
+    if got is None:  # 字段齐全时不至于；真为 None 说明 py-fsrs 改了语义，别静默当成 0
+        raise SchedulerError("py-fsrs 对完整字段的卡返回 None，语义变了，先别信这个数")
+    return float(got)
+
+
 @dataclass(frozen=True)
 class ReviewDraft:
     """一条待落库的复习项。字段与 `review_items` 表一一对应，不多不少。"""

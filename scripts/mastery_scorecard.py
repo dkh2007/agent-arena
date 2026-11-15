@@ -83,6 +83,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="学习者视角的成绩单（不排名、不展示他人）")
     ap.add_argument("--db", help="读真实库；不给则用内置演示数据")
     ap.add_argument("--user", default=USER)
+    ap.add_argument("--as-of", dest="as_of", default=None,
+                    help="按这个时刻读衰减后的掌握度（不给＝只看原始 P，行为与以前一致）")
     args = ap.parse_args()
 
     if args.db:
@@ -104,7 +106,11 @@ def main() -> int:
     try:
         print(f"=== 成绩单（{args.user}）：只给你自己看，不参与任何排名 ===")
         print()
-        header = f"{'技能':<14}{'当前掌握度':<12}{'观察次数':<10}{'趋势':<18}备注"
+        if args.as_of:
+            header = (f"{'技能':<14}{'掌握度(原始)':<14}{'现在(' + args.as_of[:10] + ')':<18}"
+                      f"{'次数':<6}{'趋势':<18}备注")
+        else:
+            header = f"{'技能':<14}{'当前掌握度':<12}{'观察次数':<10}{'趋势':<18}备注"
         print(header)
         print("-" * 78)
         for skill_id, label in SKILL_LABELS.items():
@@ -114,7 +120,18 @@ def main() -> int:
                 continue
             gate_bad = sum(1 for s in series.steps if s.gate_status != "ok")
             note = f"⚠ 其中有 {gate_bad} 份整份不合格（证据仍计入）" if gate_bad else ""
-            print(f"{label:<14}{series.p:<12.2f}{len(series.steps):<10}{_trend(series):<18}{note}")
+            if args.as_of:
+                try:
+                    _, dec = m.decayed_at(conn, args.user, skill_id, as_of=args.as_of)
+                except Exception as exc:      # 时间倒流等：如实说，不猜一个数
+                    print(f"{label:<14}{series.p:<14.2f}{'读不出':<18}{len(series.steps):<6}"
+                          f"{_trend(series):<18}{note} · {exc}")
+                    continue
+                extra = "" if dec.applied else f"（未衰减：{dec.reason}）"
+                print(f"{label:<14}{series.p:<14.2f}{dec.p_effective:<18.2f}"
+                      f"{len(series.steps):<6}{_trend(series):<18}{note}{extra}")
+            else:
+                print(f"{label:<14}{series.p:<12.2f}{len(series.steps):<10}{_trend(series):<18}{note}")
 
         print()
         print("说明：")
@@ -123,6 +140,15 @@ def main() -> int:
         print("    但分数是 0——所以两列分开写，不要并成一句读。")
         print("  · 本表不存快照：每次都从已落库的报告重放，所以不会出现「表和报告不一致」。")
         print("  · 排名未开。开排名前必须先切口径（否则交白卷能把掌握度顶满），见 B-07b。")
+        if args.as_of:
+            if not args.db:
+                print("  · 注意：内置演示数据**不建卡片**，所以这一列会全部显示「未衰减：no_card」。")
+                print("    想看真实衰减用 `python scripts/decay_walk.py`，或对真库加 --db。")
+            print("  · 「现在」这一列是**读法**：P 乘上遗忘曲线 R(t,S)，库里什么都没改。")
+            print("    没有卡片的技能不会衰减（显示「未衰减：no_card」）——")
+            print("    「从没失败过所以没建卡」不等于「忘光了」。")
+        else:
+            print("  · 想看你多久没练会掉多少：加 --as-of 2026-12-31（不给就只看原始 P）。")
         return 0
     finally:
         conn.close()

@@ -4,7 +4,11 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
-> 更新：2026-11-15（round-84：**B-08 关闭——FSRS 调度与 ReviewItem 生成落地，衰减明确拆到 B-08b**。
+> 更新：2026-11-15（round-87：**B-08b 关闭——P 的衰减借 FSRS 的 `R(t,S)` 落地，默认不生效（需显式 `as_of`）**。
+> 实测推翻了我自己的一个假设：FSRS 曲线重尾，半年没练只掉到约四成，真实风险是**衰减太慢**而不是归零。
+> 顺手把「算 R」从两处收成一处（`scheduler.retrievability_at`）；「用哪条曲线」仍待人确认）。
+>
+> 上一版：2026-11-15（round-84：**B-08 关闭——FSRS 调度与 ReviewItem 生成落地，衰减明确拆到 B-08b**。
 > `scheduler.py` + store 六个落库函数；每条复习项由报告自动产出、`due` 由 py-fsrs 给出、
 > 每日上限只截断视图不删数据。两条新增口径判断：「本次不算数」的提交不动卡；做过的到期项标 `done`。
 > 顺带修掉 round-83 引入的 `register_task` 不走继承（变体 `rubric_count` / `fault_injection` 全错））。
@@ -393,22 +397,36 @@
   `timed` / `replay` 要人工介入；② 不挑题（`task_id` 记的是缺口来源任务，
   "用哪个变体复习"留给 B-09）；③ rating 阈值与 learning steps 都是假设，未标定。
 
-### [ ] B-08b P 的衰减（原计划并入 B-08，本轮**明确拆出**）
+### [x] B-08b P 的衰减 — 2026-11-15 关闭（借 FSRS 的 `R(t,S)`，"用哪条曲线"仍待人确认）
 
-- **是什么**：`P` 随"该复习却没复习"的时间下降。现在 `test_decay_is_not_implemented_yet`
-  仍绿（间隔 1 天与 300 天的 P 完全相同）。
-- **为什么 B-08 没顺手做**（两条都是硬理由，不是排期问题）：
-  ① **曲线形状要用一个常数或一个映射，两者都被既有材料限制。** data-model §5.2 写明
-     「不引入第二套时间常数」，且「不把 S 当衰减系数……若要用 S 须先定义并标定 α=f(S)」。
-     唯一免于新常数的做法是借用 FSRS 的 `R(t,S)`，但那正是被限制的那条。
-  ② **现在只有"到期时刻"，没有"实际复习发生的时刻"序列。** 用到期时刻衰减等于把计划当历史。
-     `ReviewLog` 表按 data-model 是后置的；`close_due_reviews` 只能近似"这条做过了"。
-- **开工条件（三条同时满足）**：① 人拍"衰减曲线用 FSRS 的 `R(t,S)` 还是自定形状"；
-  ② 落 `ReviewLog`（或等价的"复习完成事件"表），让衰减有真实时刻；
-  ③ `mastery` 的读取接口显式接 `as_of`（否则 P 会随墙钟变化，复核时说不出"谁改的"）。
-- **做完判据**：给定同一批提交 + 一个 `as_of`，P 随 `as_of` 单调不增；
-  间隔 1 天与 300 天在**同一个 `as_of`** 下 P 不同；`test_decay_is_not_implemented_yet` 反转（不删）。
-- **谁推**：我，但 ① 需人拍。
+- **落地形态**：`src/arena/decay.py`（`decay_p()` / `decay_series()` / `retrievability()`）
+  + `mastery.decayed_at()`（读库版，`as_of` 必填）+ `scheduler.retrievability_at()`
+  （**全项目只此一处算 R**，排程层也改成调它，此前是两份实现）。
+- **做完判据（已满足）**：① P 随 `as_of` 单调不增（`test_p_is_monotone_non_increasing_in_as_of`）；
+  ② 同一个 `as_of` 下"隔 1 天练过"与"隔 300 天没碰"P 不同（`test_gap_of_one_day_differs_...`）；
+  ③ 现状锁**反转不删**（`test_decay_is_opt_in_and_plain_replay_ignores_the_gap`：
+  不给 `as_of` 仍然一样，给了必须不同——去掉任一半都会红）。
+- **三条开工条件的处置**：
+  - ① "用哪条曲线"——**没等到人拍就做了**，按"原样借用 FSRS 的 `R(t,S)`、不发明 `α=f(S)`"
+    理解（依据：本文件与 data-model 禁止的是"第二套时间常数"和"S 当 λ 用"，两者都没犯）。
+    **这是一处暂定处置，待人确认**；越界的话回滚成本是删一个模块 + 把一条测试改回去。
+  - ② "需要 ReviewLog"——**绕过去了**：锚点取 `max(卡片 last_review, 最后一条计入证据的时刻)`，
+    问的是"多久没有新证据"（事实），不是"计划何时到期"（计划）。所以不需要等 B-08c。
+  - ③ "读取接口显式接 `as_of`"——`mastery.decayed_at(conn, user, skill, *, as_of)`，`as_of` 必填，
+    早于锚点抛 `DecayError`。
+- **一条被实测推翻的自己的假设（重要）**：我原写"长期不练 P 会趋近 0"，跑完发现 FSRS 6.x 的曲线
+  **重尾**：`S=1` 天时 1 天 0.90 / 30 天 0.59 / 550 天 0.38 / 20 年 0.25。
+  真实风险因此是**衰减太慢**（半年没练只掉四成），不是归零。`decay.py` 文件头、测试与
+  data-model 都按实测数改了，对外不许再说"不练就归零"。
+- **一处顺手收口的口径漂移**：`schedule_advisor._retrievability()` 原本自己调 py-fsrs 算 R，
+  与新的 `scheduler.retrievability_at()` 是两份实现（同一个 S 会算出两个 R 的风险）。
+  已改成调用后者，`stability is None ⇒ None` 这条语义只剩一处定义。
+- **验证**：`python scripts/decay_walk.py`（四段：真数据三次 as_of / 曲线表 / 缺卡对照 / 时间倒流）；
+  `python tools/mutations/mutate_decay.py`（10 条变异全 DETECTED）。
+- **主动承认的边界**：① 仍不落库（P 没有字段，B-07c）；② 曲线形状是借的，没标定；
+  ③ 只有"P 会掉"这一件事，没有"掉到多少该重学"的阈值（那是排程层的事，B-09c）；
+  ④ `as_of` 之后又发生提交的情形靠调用方重放，模块不管时序。
+- **谁推**：我（含一处待人确认的暂定处置）。
 
 ### [ ] B-08c 真实复习事件（ReviewLog / 复习完成回写）
 

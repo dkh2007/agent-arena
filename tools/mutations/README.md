@@ -39,6 +39,7 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_scheduler.py` | FSRS 调度与 ReviewItem 生成 | round-84 / B-08 |
 | `mutate_advisor.py` | 四因子排程（缺数据均值顶、平手格、改序审计） | round-85 / B-09 |
 | `mutate_locate.py` | 第二套骨架（定位题）与按路径回放 | round-86 / B-05b |
+| `mutate_decay.py` | P 的衰减（缺卡不衰减、锚点取更晚、时间不倒流、R 只算一处） | round-87 / B-08b |
 
 ## 两条踩过的坑（写进脚本注释了，这里再记一次）
 

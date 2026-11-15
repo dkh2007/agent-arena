@@ -36,10 +36,12 @@
    - **初值**：`p0=None`（默认）时 `P_1 = c_1`。另一条路是给一个中性先验（如 0.5），
      但那会凭空造一个没有依据的数，且让"交了一份满分"首轮只拿到 0.65。data-model 明写
      「P 的落字段与初值未定」，所以这里**两者都可配**，默认选"不发明先验"，并把它标为**假设**。
-   - **衰减**：data-model 写「衰减只沿用复习间隔这一个时间轴」。复习间隔来自 ReviewItem
-     （B-08），现在还不存在。所以本模块**只实现更新式，不实现衰减**——
-     推论：**P 不会随自然时间下降**。这是已知缺口，写进了测试（现状锁，待 B-08 反转），
-     也不得在任何对外材料里说成"掌握度会随时间遗忘"。
+   - **衰减**：本模块**仍不内置衰减**，但不再是缺口——衰减在 `arena/decay.py`（B-08b），
+     由调用方显式传 `as_of` 才生效（`decayed_at()`）。分开的理由是时间轴不同：
+     `replay()` 的时间轴是"提交发生的时刻"，衰减的时间轴是"最后一次练过到 as_of 之间"，
+     把两者揉进一个函数会让"我没给 as_of 时 P 是多少"变得说不清。
+     **默认仍不衰减**：不传 `as_of` 的老调用行为一个字没变，所以 `test_decay_*` 的旧断言
+     改成"不传 as_of ⇒ 两条序列相同"，而不是删掉。
 
 5. **门禁状态只留痕，不参与计算（为 A→C→B 留切换口）。**
    现行口径是 **A**：整份不合格（`disqualified`）时，credit 层照常判定的证据**照样计入** P
@@ -433,6 +435,37 @@ def build_series(
         for _, created_at, report in _user_reports(conn, user_id)
     ]
     return replay(evidence, user_id=user_id, skill_id=skill_id, lam=lam, p0=p0)
+
+
+def decayed_at(
+    conn: sqlite3.Connection,
+    user_id: str,
+    skill_id: str,
+    *,
+    as_of: str,
+    lam: float = LAMBDA_DEFAULT,
+    p0: float | None = None,
+):
+    """读出 P，并给出它在 `as_of` 时刻的**衰减后**读法：`(series, DecayResult)`。
+
+    `as_of` 必填（B-08b 开工条件③）：默认墙钟会让同一份数据两次调用给出不同答案，
+    复核时说不出"谁改的"。
+
+    S 与 `last_review` 取自 `user_skill_states` 里那张卡（`decay` 只按值算，不碰库）。
+    技能还没有卡时 `decay` 会返回 `applied=False, reason="no_card"` 并保留原值——
+    "从没失败过所以没建卡"不等于"忘光了"。
+    """
+    from . import decay  # 局部导入：decay 依赖本模块的类型，模块级导入会成环
+    from . import store
+
+    series = build_series(conn, user_id, skill_id, lam=lam, p0=p0)
+    row = store.load_fsrs_cards(conn, user_id).get(skill_id) or {}
+    return series, decay.decay_series(
+        series,
+        as_of=as_of,
+        stability=row.get("stability"),
+        last_review=row.get("last_review"),
+    )
 
 
 def series_for_lambdas(
