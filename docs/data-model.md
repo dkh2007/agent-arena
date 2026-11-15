@@ -42,11 +42,20 @@
 
 > **B-05 补充：`variant_template_id` 与 `variant_meta.family_id` 不是一回事，别混用。**
 > - `variant_template_id`（入库，`tpl-tool-debug`）＝**骨架模板**：共用同一套断言骨架、分数可比的那些任务。
->   现在 10 个任务全是同一个骨架，所以这个值全库相同。
+>   现在有 **2 套**（round-86 / B-05b）：`tpl-tool-debug`（10 个汇报题：分页拉数据→剔无效行→写报告）与
+>   `tpl-bug-locate`（2 个定位题：读日志 + 读源码→给根因与行号）。同骨架内断言 id / 类型 / 权重逐字段相同，
+>   跨骨架允许不同——但 `scoring` / `execution` / `submission_requirements` 全库统一，
+>   否则"分数怎么算"随题型变，跨题型的 P 就不可比。
 > - `variant_meta.family_id`（**只存 YAML，不入库**）＝**变体组**：按"练哪个技能"分组
 >   （`order-report` / `retry-drill` / `param-surface`）。复习层按它挑题，才不会一直推同一类。
-> - `variant_meta.difficulty`（1–3，只存 YAML）＝难度，与"要翻几页"绑定（测试锁了下界）。
+> - `variant_meta.difficulty`（1–3，只存 YAML）＝难度。汇报题与"要翻几页"绑定、定位题与
+>   "日志里有几条 ERROR（要分辨几条干扰）"绑定，两者都是"要处理多少东西"的代理量（测试锁了下界）。
 > - `variant_meta.kind` 对齐下方 `ReviewItem.kind`（`variant` / `fault_injection` / `timed` / `replay`）。
+> - **骨架专属的 YAML 块**（都只存 YAML）：汇报题用 `tools[].mock.pagination` + `test_inputs.orders_fixture`；
+>   定位题用 `locate`（日志/源码/产物三个路径）+ `test_inputs.files`（路径→文本）+ `mock.lookup`。
+>   注意定位题的产物路径写了**两遍**（`locate.diagnosis_path` 与 `R1.target`/`R2.target`），
+>   `tests/test_task_variants.py` 强制它们相等——两处真相源必须被测试焊住，否则改一处忘一处时
+>   Agent 会写到 A、断言去读 B，表现为「没交产物」。
 >
 > 为什么不把 `variant_meta` 也入库：它只被"挑题"用，而挑题发生在读到 YAML 之后；
 > 先入库等于给它一个自己会漂移的副本。等复习层真需要按难度/家族做 SQL 过滤时再入库。

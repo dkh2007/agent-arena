@@ -7888,3 +7888,109 @@ BACKLOG 原文说 B-08「一并解锁 P 的衰减，届时 `test_decay_is_not_im
 ③ 若 `deviations()` 的条数等于审计条数（"点了但没动"也算偏离）⇒ `moved` 判据写反了。
 ④ 若有人把权重调成不递减而排序看着还正常 ⇒ `_check_weights()` 被绕过了（导入期校验
    是这条路唯一的闸门）。
+
+---
+
+## 85. B-05b：第二套 rubric 骨架——定位题（2026-11-15，round-86）
+
+### 85.1 判据达成
+
+`docs/BACKLOG.md` B-05b 的做完判据原文是「出现至少 1 个**不含分页**的任务，它的断言集合与母本不同，
+且仍能跑参考 Agent 得 1.0、错形态只挂对应断言」。四条对应：
+
+| 判据 | 落点 |
+|---|---|
+| 至少 1 个不含分页的任务 | 2 个（`fix-001-token-expiry`、`fix-002-cart-none-deref`）；`test_two_skeletons_are_really_different` 断言它们的工具里没有 `pagination`、也没有 `fetch_orders` |
+| 断言集合与母本不同 | credit 层断言 id 集合不同（`R2_diagnosis_correct` 替掉 `R2_report_correct`），产物从 `report.json` 换成 `diagnosis.json`；测试直接比 id 集合 |
+| 参考 Agent 得 1.0 | `test_locate_task_runs_to_full_marks`（两题各一次真跑：起 mock → 参考 Agent → recompute → build_report） |
+| 错形态只挂对应断言 | `test_locate_flaw_only_breaks_its_own_assertions`：`correct` 1.0 / `extra_param` 0.75（只挂 R4）/ `wrong_line` 0.50（只挂 R2）/ `no_retry` 0（R3 + 连带 R1/R5） |
+
+### 85.2 最该记住的一条：第二套骨架没有新增任何断言语言
+
+我原以为「加一套骨架」等于「写新的断言执行器」。真做起来发现**不需要**：现有 5 种执行器
+（`file_exists` / `trace_final_status` / `json_field_equals` / `trace_sequence` /
+`trace_param_schema_valid`）已经够表达「读两份证据 → 给根因」这件事。
+
+于是这一轮的边界要说清：**「题型不同」体现在题面、工具集、答案形状与计分构成上，
+不体现在断言语言上**。哪些是刻意保持一致的：
+
+| 层 | 是否跨骨架一致 | 理由 |
+|---|---|---|
+| `scoring` / `execution` / `submission_requirements` | **一致** | 「分数怎么算」「平台怎么跑」不该随题型变，否则跨骨架的 P 不可比（测试按全库比） |
+| `trace_requirements` 的机械字段（`final_status` / `status_enum` / `item_fields`） | **一致** | trace 契约是平台侧口径；只有 `note` 允许逐骨架写不同的话（测试比机械部分，不比 note） |
+| 断言 id / 类型 / 权重 / 依赖 | 骨架内一致、跨骨架允许不同 | 同骨架内不一致 ⇒ 分数不可加；跨骨架完全一致 ⇒ 那就不是第二套骨架 |
+| `R3_retry_evidence` / `R4_no_param_hallucination` 的 **id** | **跨骨架沿用同名** | 它们考的是同一件事（失败后重试、参数有没有编）。改名会让 `recompute_r3`、`q2_gate_probe` 等既有工具在多骨架下失效，收益为零 |
+
+### 85.3 一处超出计划书的地方，摆到明面
+
+计划书 M2 写的是「任务库 ≤10」。现在是 **12**（10 个汇报族 + 2 个定位族）。
+
+两条路：① 对外说「10 个题库 + 2 个异型样例题」（改一个词，不动计划书结构）；
+② 下线 2 个汇报族变体回到 10（但 3 技能 × 2–3 变体会变薄，`param-surface` 只剩 2 个）。
+**我按 ① 落地**，因为 ② 是删掉能跑的东西去迁就一个数字。但这句话要人来定——
+评委问起「计划书说 10 个，怎么 12 个」时，回答得是同一个口径。
+
+### 85.4 四条最值钱的决定
+
+1. **故障位换「文件」而不是换「工具」。** 定位族的故障落在 `read_file` 上（母本故障在日志、
+   变体故障在源码），因为「读文件短暂不可用」比「换个工具失败」更像真事。
+   代价：`R3.expected.calls` 与 `fault_injection.match` 各写一遍同一份路径，测试逐字段比。
+2. **诊断规则必须机械可核，而且两处证据缺一不可。** 日志只给「函数名 + 异常类 + 消息」，
+   **不给行号**；行号只能到源码的函数体里按「消息里那个运算符 / 那个属性名」找。
+   如果日志里直接带 traceback 行号，源码那份证据就成了摆设——题目的考点会塌成「抄一行数」。
+3. **规则没覆盖的消息一律拒答。** `IndexError: list index out of range` 这样的消息既没有运算符
+   也没有属性名 ⇒ 抛 `AgentError`，不猜一个「看起来像」的行号。参考 Agent 崩掉是**可见的失败**，
+   猜一个行号是**看不见的错误**。
+4. **缺陷形态与骨架必须配套，在构造期就拒。** `wrong_line` 只对定位题有意义、`wrong_filter`
+   只对汇报题有意义。放到 `run()` 里再抛会被那条 `except Exception` 收走，变成一份 `crashed`
+   的 trace——看起来像「任务失败」，实际是我把形态接错了。
+
+### 85.5 自己做错的三处
+
+1. **变异 M1 首跑 MISSED，原因不是测试太弱，是我把变异打错了地方。** 我把
+   `_projected_scalar`（投影取值）改回写死 `offset`，跑端到端用例——测试全绿。
+   查下来：**投影只进 `evidence`，不参与判定**（R3 的通过/失败看过滤后的调用序列，
+   分类看调用次数与末次状态）。所以这条变异必须打**单元**测试
+   （`test_projected_scalar_takes_the_only_value`），并在代码注释里写明「它只进 evidence」。
+   顺带纠正一处我先写错的注释：我曾说「先读日志是为了让 R3 看到重试」——不对，
+   R3 是子序列匹配，顺序不影响它。真正的理由是两处证据都必须读（那是 R2 的要求）。
+2. **`'>' not supported` 的正则漏了闭合引号。** Python 的消息是 `'<' not supported`（运算符被
+   引号包住），我按 `'< not supported` 写，第一次冒烟就抛。修好后两个任务的现算行号一次对上
+   （20 / 14），这也顺带证明「行号不是抄来的」——它是数出来的。
+3. **有一处测试用错了文件。** `test_read_file_replays_the_fixture_by_path` 第一版拿**日志**验证
+   回放，而日志的第一读被注入的 503 打掉，测试红了。不是产品 bug，是测试选错了对象；
+   改用源码文件，并顺手把「日志第一读必 503」写进注释，免得下一个人重踩。
+
+### 85.6 本轮裁判
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_locate_skeleton.py` | **33 passed** |
+| `pytest tests/test_task_variants.py tests/test_task_yaml.py` | **128 passed** |
+| `pytest tests/` | 见 `docs/review-packet.md` 的实测计数（评审包每轮重生成；本轮 1073 → 1092） |
+| 变异（`.git/mutate_locate.py`） | **11 组全 `DETECTED`**（M1 首跑 MISSED，见 85.5） |
+| 四形态端到端 | `correct` 1.00 / `extra_param` 0.75 / `wrong_line` 0.50 / `no_retry` 0.00，两题同形 |
+
+限定的「可复核」路径：`python -m pytest tests/test_locate_skeleton.py -q`（33 条，含四形态）；
+`python .git/mutate_locate.py`（11 条变异，全 DETECTED）；单题冒烟见 §85.6 的两条命令。
+
+### 85.7 主动承认的边界（四条）
+
+1. **没有新增断言执行器**：5 种类型全复用。说「第二套骨架」成立，说「新的评测维度」不成立。
+2. **根因取值域 4 个，只覆盖 2 个情形**：`type_mismatch`（比较两侧类型不同）与 `null_deref`
+   （空值取属性）各一题；`IndexError → off_by_one` 有映射但没题目覆盖（`IndexError` 的消息里
+   没有可定位特征，规则会拒答——这条也写进了测试）。
+3. **定位族只有 2 题，`failure_retry` 仍只有汇报族题目**。「每个技能一套异型题」没做到。
+4. **难度口径换了一套**：汇报族用「要翻几页」，定位族用「日志里有几条 ERROR（要分辨几条干扰）」。
+   两者都是代理量，都只是**单调可检**，不是标定过的难度。
+
+### 85.8 反证条件
+
+① 若有人把定位题的文件改成分页题那套工具（加了 `pagination`）⇒ `test_two_skeletons_are_really_different`
+   该红；它红了说明「第二套骨架」只剩名字。
+② 若 `wrong_line` 形态同时打掉 R3 或 R4 ⇒ 缺陷形态与断言不再一一对应，说明某条断言开始
+   吃别的东西（例如 R3 误把「行号错」当「重试失败」）。
+③ 若 `locate.diagnosis_path` 与 `R1.target` 不一致而测试还绿 ⇒ 那条相等断言被删了，
+   表现为「Agent 明明写了产物，报告却说没交」。
+④ 若日志里出现行号而题目照样能判对 ⇒ 说明「行号只能从源码找」这条考点已经失效，
+   应从 fixture 里删掉行号相关规则（现在日志格式里没有行号，是有意的）。

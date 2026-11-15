@@ -1,0 +1,268 @@
+# 定位向任务 #1（B-05b：**第二套 rubric 骨架**的母本）
+#
+# 【为什么需要第二套骨架】此前 10 个任务共用同一套骨架（分页拉数据 → 剔无效行 → 写报告），
+# 在"分数怎么算"这个维度上它们其实是同一个任务。本文件是另一种题型：**读日志 + 读源码 → 给根因**。
+#
+# 【与报告骨架相同的地方（有意为之，不是偷懒）】
+#   rubric_gate 的两条（R1 产物存在 / R5 正常退出）、R4 参数合规、以及整个 scoring / execution /
+#   trace_requirements 口径完全相同。判"有没有交东西""参数有没有编"的规则不该因为换了题型就变，
+#   否则跨题型的分数就不可比了。
+# 不同的地方：产物换了（diagnosis.json）、R2 换成了"根因 + 行号"、R3 的故障落在**读日志**上。
+task_id: fix-001-token-expiry
+task_version: "2026-11-15.1"
+submission_requirements:
+  requires_process: true
+title: 登录令牌过期报错定位（定位向）
+domain: 故障定位与根因分析
+primary_skill_id: multi_step_planning
+secondary_skill_ids:
+  - tool_param_validation
+  - failure_retry
+# 第二套骨架的母本：变体用 `base_task: fix-001-token-expiry` 继承，只写差异。
+variant_template_id: tpl-bug-locate
+variant_meta:
+  family_id: locate-drill
+  difficulty: 1
+  kind: variant
+
+# 故障落在**读日志**上：第一次读返回 503，之后成功。
+# 选日志而不是源码，是因为日志本来就常因采集组件抖动而短暂不可用——这比"读本地源码失败"更像真事。
+fault_injection:
+  enabled: true
+  target_tool: read_file
+  retry_scope: agent
+  reset_policy: per_submission
+  match:
+    path: /workspace/logs/app.log     # 只有读这一份会失败；读源码不受影响
+  failures:
+    - attempt: 1
+      http_status: 503
+      error: service_unavailable
+  then: success
+
+execution:
+  invoke_timeout_seconds: 60
+  platform_retry: 0
+  on_timeout: {final_status: timeout}
+
+# 定位题要读哪两份文件、结论写到哪里——全部在 YAML 里，代码不写死（变体换了路径也照跑）。
+locate:
+  log_path: /workspace/logs/app.log
+  source_path: /workspace/service/token.py
+  diagnosis_path: /workspace/diagnosis.json
+
+scenario: |
+  你是这个服务的值班工程师，请定位刚才那次 500 的根因：
+  1. 调用 read_file 读取服务日志 /workspace/logs/app.log
+  2. 调用 read_file 读取源码 /workspace/service/token.py
+  3. 日志把每次异常压成一行：`时间 级别 request_id=.. <异常类> in <函数名>: <消息>`。
+     **最后一条 ERROR** 对应本次失败；更早的 ERROR 是别的已知问题，不是这次的根因
+  4. 根因取值必须是以下之一（按异常类判定，不要自创标签）：
+     - 异常类是 TypeError                      → type_mismatch
+     - 异常类是 IndexError                     → off_by_one
+     - 异常类是 AttributeError 且消息含 NoneType → null_deref
+     - 其余                                    → other
+  5. 出错行号按下面的规则从**源码**里定位（日志只给函数名，不含行号）：
+     - 消息形如 `'X' not supported ...` ⇒ 在报错的函数体内找第一处含运算符 X 的行
+     - 消息形如 `has no attribute 'Y'`  ⇒ 在报错的函数体内找第一处含 .Y 的行
+  6. 调用 write_report 把结论写入 /workspace/diagnosis.json，内容为 JSON：
+     {"root_cause": "<上面取值之一>", "offending_line": <1 基行号, 整数>}
+
+tools:
+  - name: read_file
+    description: 读取指定路径的文件，返回 {"path", "content", "lines", "bytes"}
+    parameters:
+      - name: path
+        type: string
+        required: true
+    additional_properties: false
+    mock:
+      source: fixture_ref
+      fixture: test_inputs.files    # 「路径 → 文本」字典，按 path 入参查表回放
+      lookup: path
+
+  - name: write_report
+    description: 将报告内容写入指定路径
+    parameters:
+      - name: path
+        type: string
+        required: true
+      - name: content
+        type: string
+        required: true
+    additional_properties: false
+
+# 源码行号必须与 expected.offending_line 对得上；`tests/test_task_variants.py` 会现算一遍。
+#   :1  import datetime
+#   :7  def issue_token(...)
+#   :12 def parse_token(raw)
+#   :18 def is_expired(token, now)
+#   :19     # 注释
+#   :20     return now < token["exp"]      ← 出错行（datetime 与 str 比大小）
+#   :23 def refresh_session(...)
+test_inputs:
+  files:
+    /workspace/logs/app.log: |
+      2026-11-15 09:11:58,120 INFO  request_id=r-7702 endpoint=/login status=200
+      2026-11-15 09:12:01,004 WARN  request_id=r-7780 refresh_session: rotated token for u-31
+      2026-11-15 09:12:03,441 ERROR request_id=r-7781 AttributeError in refresh_session: 'NoneType' object has no attribute 'user_id'
+      2026-11-15 09:12:03,442 ERROR request_id=r-7781 TypeError in is_expired: '<' not supported between instances of 'datetime.datetime' and 'str'
+      2026-11-15 09:12:03,443 INFO  request_id=r-7781 status=500
+    /workspace/service/token.py: |
+      import datetime
+      import json
+
+      TOKEN_TTL_SECONDS = 3600
+
+
+      def issue_token(user_id, now):
+          exp = now + datetime.timedelta(seconds=TOKEN_TTL_SECONDS)
+          return {"user_id": user_id, "exp": exp.isoformat()}
+
+
+      def parse_token(raw):
+          if not raw:
+              return None
+          return json.loads(raw)
+
+
+      def is_expired(token, now):
+          # exp 在 issue_token 里被写成 ISO 字符串，这里却当成 datetime 用
+          return now < token["exp"]
+
+
+      def refresh_session(user_id, now):
+          return issue_token(user_id, now)
+  expected:
+    root_cause: type_mismatch
+    offending_line: 20
+
+trace_requirements:
+  minimum:
+    final_status: {required: true, enum: [completed, crashed, timeout]}
+    tool_calls:
+      item_fields: [call_index, name, params, status, http_status, error, result_summary]
+      status_enum: [success, error, timeout]
+      note: '与报告骨架同一口径（见 dbg-001）：call_index 平台侧编号（1 起）；http_status 仅 status=error 必填；error/result_summary 为待实现声明（TD-026），当前无消费者'
+
+scoring:
+  score:
+    formula: gated_weighted_pass_ratio
+    gate:
+      source: rubric_gate
+      disqualified_if: any_gate_failed
+      disqualify_ratio: 0
+      on_unscored: do_not_disqualify
+    credit:
+      source: rubric_credit
+      denominator: fixed_at_credit_total_weight
+      total_weight: 4                    # = R2(2) + R3(1) + R4(1)
+      contribution:
+        pass: weight
+        fail: 0
+        blocked: 0
+        unscored: 0
+  attribution:
+    pass: {counts_toward_mastery: true, emit_error_patterns: false}
+    fail: {counts_toward_mastery: true, emit_error_patterns: true}
+    blocked: {counts_toward_mastery: false, emit_error_patterns: false,
+              reason: 前置断言失败导致无法判定，属证据缺失而非能力不足}
+    unscored: {counts_toward_mastery: false, emit_error_patterns: false,
+               reason: trace 类依赖数据缺失；诊断报告写"未评分"，不写"0 分"}
+
+# 门禁两条与报告骨架同构：没有产物 / 进程没正常退出，就没完成这次任务。
+rubric_gate:
+  - id: R1_file_exists
+    type: file_exists
+    target: /workspace/diagnosis.json
+    options:
+      non_empty: true
+    depends_on: []
+    skill_id: null
+    error_patterns: [no_output_file, empty_output_file]
+    error_pattern_detection:
+      probe: file_exists(/workspace/diagnosis.json)
+      cases:
+        - {match: {exists: false}, pattern: no_output_file}
+        - {match: {exists: true, non_empty: false}, pattern: empty_output_file}
+    on_fail: disqualify
+  - id: R5_clean_exit
+    type: trace_final_status
+    target: final_status
+    expected: completed
+    depends_on: []
+    skill_id: null
+    error_patterns: [task_crashed, task_timeout]
+    error_pattern_detection:
+      probe: final_status
+      cases:
+        - {match: {final_status: crashed}, pattern: task_crashed}
+        - {match: {final_status: timeout}, pattern: task_timeout}
+    on_fail: disqualify
+
+# ── 积分层：分母恒为 4（R2=2 + R3=1 + R4=1）──────────────────────────────
+rubric_credit:
+  - id: R2_diagnosis_correct
+    type: json_field_equals
+    target: /workspace/diagnosis.json
+    expected: {root_cause: type_mismatch, offending_line: 20}
+    compare: subset
+    depends_on: [R1_file_exists]
+    skill_id: multi_step_planning
+    error_patterns: [wrong_root_cause, wrong_offending_line, diagnosis_missing_field]
+    error_pattern_detection:
+      probe: json_field_equals(/workspace/diagnosis.json vs expected)
+      cases:
+        - {match: {missing_fields: [root_cause]}, pattern: diagnosis_missing_field}
+        - {match: {missing_fields: [offending_line]}, pattern: diagnosis_missing_field}
+        - {match: {root_cause_mismatch: true}, pattern: wrong_root_cause}
+        - {match: {offending_line_mismatch: true}, pattern: wrong_offending_line}
+    weight: 2
+  - id: R3_retry_evidence
+    type: trace_sequence
+    target: tool_calls
+    expected:
+      ordered: true
+      allow_interleaved: true
+      calls:
+        - {name: read_file, params_match: {path: /workspace/logs/app.log}, status: error, http_status: 503}
+        - {name: read_file, params_match: {path: /workspace/logs/app.log}, status: success}
+      note: '与报告骨架是同一条断言、同一个能力（失败后对同一目标重试），只是目标从"故障页"换成"故障文件"；params_match 只锁 path，不锁其他入参'
+    depends_on: []
+    skill_id: failure_retry
+    detects: 失败重试策略
+    error_patterns: [no_retry, retry_wrong_params]
+    error_pattern_detection:
+      # 投影出**路径序列**而不是偏移序列：本骨架的故障键是 path（round-86 去掉了
+      # 执行器里写死的 offset 字段名，否则这里只能把路径塞进叫 offset 的键里）。
+      probe: "calls[?name=='read_file'].{path: params.path}"
+      cases:
+        # 只触达一次且最后一次仍是 error ⇒ 放弃重试。本任务的故障配的是
+        # 「第 1 次失败、之后成功」，所以"两次都失败"不可能发生，last_status=error
+        # 只可能意味着没重试——这条判据在这里是唯一的，不需要再看次数。
+        - {match: {last_status: error}, pattern: no_retry}
+        - {match: {no_tool_calls: true}, pattern: no_retry}
+        - {match: {fault_point_not_reached: true}, pattern: no_retry}
+        - {match: {fault_point_not_repeated: true}, pattern: retry_wrong_params}
+      default: retry_wrong_params
+    weight: 1
+  - id: R4_no_param_hallucination
+    type: trace_param_schema_valid
+    target: tool_calls
+    expected:
+      schema_ref: tools
+      target_tools: [read_file]
+      check_schema: true
+      mode: all_calls_must_be_valid
+    depends_on: []
+    skill_id: tool_param_validation
+    detects: 参数幻觉
+    error_patterns: [param_out_of_schema, param_missing_required, param_type_mismatch, param_out_of_range]
+    error_pattern_detection:
+      probe: "calls[*].{name: name, params: params}"
+      cases:
+        - {match: {extra_keys_against: tools}, pattern: param_out_of_schema}
+        - {match: {missing_required_against: tools}, pattern: param_missing_required}
+        - {match: {type_mismatch_against: tools}, pattern: param_type_mismatch}
+        - {match: {out_of_range_against: tools}, pattern: param_out_of_range}
+    weight: 1

@@ -50,6 +50,28 @@ patterns:
     detection_rule: {assertion_id: R2_report_correct, when: {missing_fields: [valid_count, total_amount]}}
     mapped_skill_ids: [multi_step_planning]
 
+  # ---- R2 定位结论正确性（第二套骨架 tpl-bug-locate；round-86 / B-05b）----
+  # 与上面三条的关系：同样是"结论对不对"，但报告骨架比的是**汇总数字**，定位骨架比的是
+  # 「根因标签 + 出错行号」。用不同的 pattern_id 是为了让复习推荐能分开推题：
+  # 算错汇总数的人该练汇总，定位错行的人该练定位。
+  - pattern_id: wrong_root_cause
+    label: 根因判错
+    description: diagnosis.json 的 root_cause 与日志最后一条 ERROR 对应的取值不一致（见各任务 scenario 的取值域）
+    detection_rule: {assertion_id: R2_diagnosis_correct, when: {root_cause_mismatch: true}}
+    mapped_skill_ids: [multi_step_planning]
+
+  - pattern_id: wrong_offending_line
+    label: 出错行定位错
+    description: 行号与该函数体内符合定位规则的那一行不符；常见于定位到别的函数，或取错第一条匹配
+    detection_rule: {assertion_id: R2_diagnosis_correct, when: {offending_line_mismatch: true}}
+    mapped_skill_ids: [multi_step_planning]
+
+  - pattern_id: diagnosis_missing_field
+    label: 定位结论缺字段
+    description: diagnosis.json 未包含 root_cause 或 offending_line（或字段名拼错）
+    detection_rule: {assertion_id: R2_diagnosis_correct, when: {missing_fields: [root_cause, offending_line]}}
+    mapped_skill_ids: [multi_step_planning]
+
   # ---- R3 失败重试（本任务的核心考点）----
   - pattern_id: no_retry
     label: 未重试

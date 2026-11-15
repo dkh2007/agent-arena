@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -50,13 +51,41 @@ except ImportError:  # 作为独立脚本运行
 REPORT_PATH = "/workspace/report.json"
 AGENT_ID = "reference-agent-v1"
 
+# 骨架（`variant_template_id`）→ 流程。round-86（B-05b）加了第二套：定位题。
+# 两套骨架共用同一个 Agent 进程与同一份 trace 契约，差别只在"要做什么"。
+TEMPLATE_DEBUG = "tpl-tool-debug"
+TEMPLATE_LOCATE = "tpl-bug-locate"
+KNOWN_TEMPLATES = (TEMPLATE_DEBUG, TEMPLATE_LOCATE)
+
+# 根因取值域与判定规则来自任务 scenario 的**明文约定**，不是从代码里推断的：
+#   异常类 TypeError                     ⇒ type_mismatch
+#   异常类 IndexError                    ⇒ off_by_one
+#   异常类 AttributeError 且消息含 NoneType ⇒ null_deref
+#   其余                                 ⇒ other
+# 参考 Agent 按这条规则算，不去读 `test_inputs.expected`（读了就等于抄答案，
+# 那份夹具也就再也证明不了题目可解）。
+ROOT_CAUSE_BY_EXCEPTION = {
+    "TypeError": "type_mismatch",
+    "IndexError": "off_by_one",
+}
+ROOT_CAUSE_OTHER = "other"
+
 # 缺陷形态：用来证明「评测器区分得开」，不是产品功能。
 # 每种形态都对应一个**能单独把某条断言打到 fail** 的真实行为：
 #   correct       正确执行（对照组）
-#   wrong_filter  不剔除无效行（amount 缺失/null/负数照算）⇒ 应只打掉 R2
+#   wrong_filter  不剔除无效行（汇报题）/ 把行号算错一位（定位题）⇒ 应只打掉 R2
 #   extra_param   多传一个 schema 外参数 debug=True      ⇒ 应只打掉 R4
-#   no_retry      遇 500 不重试                          ⇒ 应打掉 R3（并连带 R1/R5）
-FLAWS = ("correct", "wrong_filter", "extra_param", "no_retry")
+#   no_retry      遇 5xx 不重试                          ⇒ 应打掉 R3（并连带 R1/R5）
+#   wrong_line    定位题专属：行号算错，别的都对          ⇒ 应只打掉 R2
+# 两套骨架各实现自己那几条；拿到不认识的形态一律 AgentError，不静默当 correct。
+FLAWS = ("correct", "wrong_filter", "extra_param", "no_retry", "wrong_line")
+
+# 骨架 → 它实现了哪些缺陷形态。一套骨架不能"假装实现了"另一套的形态。
+_TEMPLATE_FLAWS = {
+    TEMPLATE_DEBUG: ("correct", "wrong_filter", "extra_param", "no_retry"),
+    TEMPLATE_LOCATE: ("correct", "extra_param", "no_retry", "wrong_line"),
+}
+
 
 
 class AgentError(RuntimeError):
@@ -125,8 +154,63 @@ class ReferenceAgent:
         self._deadline_s = self._invoke_timeout(task)
         # 配置错误在构造期就暴露：带着缺声明的任务跑到一半崩，会产出一份
         # "crashed" 的 trace，看起来像 Agent 的问题，实际是任务 YAML 的问题。
-        self._fetch_tool()
-        self._page_size()
+        self._template = self._template_of(task)
+        self._check_flaw_supported()
+        if self._template == TEMPLATE_LOCATE:
+            self._locate = self._read_locate_paths(task)
+        else:
+            self._fetch_tool()
+            self._page_size()
+
+    def _check_flaw_supported(self) -> None:
+        """缺陷形态与骨架必须配套，在构造期就拒。
+
+        放到 `run()` 里再抛会被那条 `except Exception` 收走，变成一份 crashed 的 trace——
+        看起来像"任务失败"，实际是我把形态接错了。构造期抛，测试才会红在正确的地方。
+        """
+        allowed = _TEMPLATE_FLAWS[self._template]
+        if self.flaw not in allowed:
+            raise AgentError(
+                f"缺陷形态 flaw={self.flaw!r} 不属于骨架 {self._template}；可选 {allowed}"
+            )
+
+    # ── 骨架分派 ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _template_of(task: dict) -> str:
+        """按 `variant_template_id` 选流程。不认识的骨架直接拒跑。
+
+        不默认走汇报流：那不是"兼容旧任务"，是让一道定位题被当成汇报题跑完，
+        产出一份看着正常、其实答非所问的 trace。
+        """
+        tpl = task.get("variant_template_id")
+        if tpl not in KNOWN_TEMPLATES:
+            raise AgentError(
+                f"任务的 variant_template_id={tpl!r} 未实现；已实现 {KNOWN_TEMPLATES}"
+            )
+        return tpl
+
+    @staticmethod
+    def _read_locate_paths(task: dict) -> dict[str, str]:
+        """定位题的三个路径全部来自 YAML 的 `locate` 块，代码里不写死。
+
+        写死会让「改任务 = 改 YAML」失效：变体换了日志路径，Agent 还去读母本那份，
+        于是拿到的是旧日志——判出来"根因没错但行号不对"，看起来像学习者的问题。
+        """
+        locate = task.get("locate") or {}
+        fields = ("log_path", "source_path", "diagnosis_path")
+        missing = [f for f in fields
+                   if not isinstance(locate.get(f), str) or not locate.get(f)]
+        if missing:
+            raise AgentError(f"定位任务缺 locate.{missing}，拒绝猜路径")
+        files = ((task.get("test_inputs") or {}).get("files")) or {}
+        unreadable = [f for f in ("log_path", "source_path") if locate[f] not in files]
+        if unreadable:
+            raise AgentError(
+                f"locate 里的 {unreadable} 不在 test_inputs.files 里，读不到内容"
+            )
+        return {f: locate[f] for f in fields}
+
 
     # ── 任务派生的参数（不硬编码） ──────────────────────────────────────────
 
@@ -200,9 +284,13 @@ class ReferenceAgent:
         notes: list[str] = []
 
         try:
-            orders = self._fetch_all_orders(notes)
-            answer = _summarize_orders(orders, apply_filter=self.flaw != "wrong_filter")
-            self._write_report(answer)
+            if self._template == TEMPLATE_LOCATE:
+                answer = self._locate_root_cause(notes)
+                self._write_report(answer, self._locate["diagnosis_path"])
+            else:
+                orders = self._fetch_all_orders(notes)
+                answer = _summarize_orders(orders, apply_filter=self.flaw != "wrong_filter")
+                self._write_report(answer, REPORT_PATH)
         except Exception as exc:  # noqa: BLE001 - 任何意外都要如实落到 final_status
             # 不往上抛：平台要的是"这次跑挂了"这个事实，而不是一份缺失的提交。
             # trace 里已有的调用记录全部保留，R3/R5 据此判失败或 inconclusive。
@@ -263,12 +351,44 @@ class ReferenceAgent:
             )
         return rows
 
-    def _write_report(self, answer: dict) -> None:
+    def _locate_root_cause(self, notes: list[str]) -> dict:
+        """定位题：先读日志（会撞上注入的 5xx 并重试），再读源码，最后按规则给结论。
+
+        **顺序不参与判定**：R3 是子序列匹配，先读源码再读日志同样能判出重试。
+        先读日志的理由只有一条：故障落在日志上，先读它就能在"没重试"时立刻失败，
+        不必先花一次成功调用。两处都必须读，那是 R2 的要求（日志给函数名、源码给行号）。
+        """
+        log_path, src_path = self._locate["log_path"], self._locate["source_path"]
+
+        log_params: dict[str, Any] = {"path": log_path}
+        if self.flaw == "extra_param":
+            # schema 外参数：mock 会忽略它（服务端不替评测器判分），
+            # 算不算幻觉由 R4 从 trace 判——这条形态正好验证那个分工。
+            log_params["debug"] = True
+        status, body = self._invoke("read_file", log_params)
+        if status != 200:
+            raise AgentError(f"read_file({log_path}) 最终失败：{status} {body}")
+
+        src_status, src_body = self._invoke("read_file", {"path": src_path})
+        if src_status != 200:
+            raise AgentError(f"read_file({src_path}) 最终失败：{src_status} {src_body}")
+
+        answer = _diagnose(str(body.get("content") or ""), str(src_body.get("content") or ""))
+        if self.flaw == "wrong_line":
+            answer["offending_line"] += 1
+            notes.append("缺陷形态 wrong_line：行号多算一行，只该打掉 R2")
+        notes.append(
+            f"定位结论：{answer['root_cause']} @ 第 {answer['offending_line']} 行"
+            f"（依据 {log_path} 最后一条 ERROR + {src_path} 函数体）"
+        )
+        return answer
+
+    def _write_report(self, answer: dict, path: str) -> None:
         content = json.dumps(answer, ensure_ascii=False, sort_keys=True)
-        status, body = self._invoke("write_report", {"path": REPORT_PATH, "content": content})
+        status, body = self._invoke("write_report", {"path": path, "content": content})
         if status != 200:
             raise AgentError(f"write_report 失败：{status} {body}")
-        self._artifacts = {REPORT_PATH: content}
+        self._artifacts = {path: content}
 
     def _trace(self, final_status: str) -> dict:
         return {
@@ -276,6 +396,68 @@ class ReferenceAgent:
             "final_status": final_status,
             "tool_calls": self._calls,
         }
+
+
+_ERROR_LINE = re.compile(r"\b(\w+Error)\s+in\s+(\w+):\s*(.+?)\s*$")
+_NOT_SUPPORTED = re.compile(r"'(<=|>=|==|!=|<|>)'?\s+not supported")
+_NO_ATTRIBUTE = re.compile(r"has no attribute '(\w+)'")
+
+
+def _diagnose(log_text: str, source_text: str) -> dict:
+    """从「服务日志 + 源码」推出根因与出错行号。
+
+    规则与任务 scenario 的明文约定一致，不是从代码里猜的：
+      1. 取**最后一条** ERROR —— 服务用全局异常处理器把每次异常压成一行，最后一条对应本次失败；
+         （更早的 ERROR 是别的已知问题，是干扰项，读日志的意义就在于分辨它们）
+      2. 异常类 → 根因，取值域见 `ROOT_CAUSE_BY_EXCEPTION`；
+      3. 从消息里取出"定位特征"：比较类看哪个运算符不被支持，空值类看少了哪个属性；
+      4. 在该函数体内找**第一处**含该特征的行 —— 日志只给了函数名，行号只能从源码里找。
+
+    日志里给了行号就没必要读源码了；正因为它只给函数名，两处证据缺一不可。
+    """
+    lines = [ln for ln in log_text.splitlines() if " ERROR " in ln]
+    if not lines:
+        raise AgentError("日志里没有任何 ERROR 行，无法定位")
+    match = _ERROR_LINE.search(lines[-1])
+    if not match:
+        raise AgentError(f"最后一条 ERROR 行不符合约定格式：{lines[-1]!r}")
+    error_class, func, message = match.group(1), match.group(2), match.group(3)
+
+    if error_class == "AttributeError" and "NoneType" in message:
+        root_cause = "null_deref"
+    else:
+        root_cause = ROOT_CAUSE_BY_EXCEPTION.get(error_class, ROOT_CAUSE_OTHER)
+
+    op = _NOT_SUPPORTED.search(message)
+    attr = _NO_ATTRIBUTE.search(message)
+    if op:
+        needle = op.group(1)
+    elif attr:
+        needle = "." + attr.group(1)
+    else:
+        raise AgentError(f"异常 {error_class} 的消息里没有可定位的特征：{message!r}")
+
+    return {"root_cause": root_cause,
+            "offending_line": _line_in_function(source_text, func, needle)}
+
+
+def _line_in_function(source_text: str, func: str, needle: str) -> int:
+    """在 `def <func>` 的函数体内找第一处含 needle 的行，返回 1 基行号。"""
+    lines = source_text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith(f"def {func}("):
+            start = i
+            break
+    if start is None:
+        raise AgentError(f"源码里找不到函数 {func}()")
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line and not line[0].isspace():   # 回到列首 = 函数体结束
+            break
+        if needle in line:
+            return i + 1
+    raise AgentError(f"函数 {func}() 体内找不到含 {needle!r} 的行")
 
 
 def _summary(body: dict) -> dict:
@@ -287,7 +469,10 @@ def _summary(body: dict) -> dict:
     """
     if "orders" in body and isinstance(body["orders"], list):
         return {"orders": len(body["orders"]), "total": body.get("total")}
-    return {k: v for k, v in body.items() if k in ("written", "bytes")} or {"ok": True}
+    # 定位骨架的 read_file：记路径与规模即可，内容不进 trace（同上：不能让"答案"
+    # 与"过程"在 trace 里同时出现，否则出处核查就退化成看运气）。
+    keep = ("path", "written", "lines", "bytes")
+    return {k: v for k, v in body.items() if k in keep} or {"ok": True}
 
 
 def _summarize_orders(rows: list[dict], *, apply_filter: bool = True) -> dict[str, Any]:

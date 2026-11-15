@@ -45,7 +45,7 @@ class MockConfigError(ValueError):
 
 # 本模块自定义的错误码（**不是** YAML 声明）。加进这个集合才算"说得出原因"，
 # 防止以后有人往 body 里塞个新错误串而没人知道它从哪来。
-_LOCAL_ERRORS = {"missing_param", "unknown_tool", "bad_request"}
+_LOCAL_ERRORS = {"missing_param", "unknown_tool", "bad_request", "file_not_found"}
 
 
 def _dotted(task: dict, path: str) -> Any:
@@ -76,6 +76,10 @@ class ToolSpec:
 
         mock = raw.get("mock")
         self.has_mock = bool(mock)
+        # round-86（B-05b）：第二种回放形态——按某个入参去夹具字典里取值。
+        # 分页是「按 offset 切片」，本形态是「按 path 查表」；两者都只回放夹具，
+        # 不判断对错（判断是断言层的事，mock 一旦开始判分就成了第二个真相源）。
+        self.lookup = None
         if not mock:
             self.pagination = None
             self.rows = []
@@ -90,7 +94,18 @@ class ToolSpec:
         if not self.fixture_path:
             raise MockConfigError(f"{name}: mock.fixture 缺失")
 
+        lookup = mock.get("lookup")
+        if lookup is not None:
+            if not isinstance(lookup, str) or not lookup:
+                raise MockConfigError(f"{name}: mock.lookup 必须是非空字符串（入参名）")
+            if lookup not in self.params:
+                raise MockConfigError(f"{name}: mock.lookup={lookup!r} 不是本工具声明的参数")
+            self.lookup = lookup
+
         pag = mock.get("pagination")
+        if self.lookup is not None and pag is not None:
+            # 两种回放形态互斥：一个工具不可能既按 offset 切片又按 path 查表。
+            raise MockConfigError(f"{name}: mock 不能同时声明 lookup 与 pagination")
         if pag is None:
             self.pagination = None
         else:
@@ -127,6 +142,11 @@ class MockToolService:
         for spec in self._specs.values():
             if spec.has_mock:
                 spec.rows = copy.deepcopy(_dotted(task, spec.fixture_path))
+                if spec.lookup is not None and not isinstance(spec.rows, dict):
+                    raise MockConfigError(
+                        f"{spec.name}: mock.lookup 要求夹具是「键 → 文本」的字典，"
+                        f"实际是 {type(spec.rows).__name__}"
+                    )
 
         fi = task.get("fault_injection") or {}
         self._fault = fi if fi.get("enabled") else None
@@ -181,6 +201,9 @@ class MockToolService:
             return int(fault.get("http_status", 500)), {
                 "error": fault.get("error", "internal_error")
             }
+
+        if spec.lookup is not None:
+            return self._replay_by_param(spec, params)
 
         if spec.pagination is not None:
             return self._paginate(spec, params)
@@ -249,6 +272,31 @@ class MockToolService:
 
         page = rows[start:start + limit]
         return 200, {"orders": copy.deepcopy(page), "total": total}
+
+    def _replay_by_param(self, spec: ToolSpec, params: dict) -> tuple[int, dict]:
+        """按 `mock.lookup` 指定的入参去夹具字典里取文本原样返回。
+
+        取不到就 404 并把**可用键**列出来：这不是"服务端判错"，是把"你要的东西不存在"
+        如实告诉调用方（真实的读文件接口也会这么答）。有没有乱猜路径由 R4 从 trace 判。
+        """
+        key = params.get(spec.lookup)
+        if key not in spec.rows:
+            return 404, {
+                "error": "file_not_found",
+                "detail": f"{spec.lookup}={key!r} 不在可读范围内",
+                "available": sorted(spec.rows),
+            }
+        text = spec.rows[key]
+        if not isinstance(text, str):
+            raise MockConfigError(
+                f"{spec.name}: 夹具 {key!r} 的内容必须是字符串，实际是 {type(text).__name__}"
+            )
+        return 200, {
+            "path": key,
+            "content": text,
+            "lines": len(text.splitlines()),
+            "bytes": len(text.encode("utf-8")),
+        }
 
     def _write_report(self, params: dict) -> tuple[int, dict]:
         path = params.get("path")

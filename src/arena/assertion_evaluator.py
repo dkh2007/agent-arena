@@ -408,6 +408,25 @@ def _validate_classification_spec(spec: dict) -> None:
                 raise EvaluatorError(f"分类谓词 {key!r} 只接受 true，收到 {want!r}")
 
 
+def _projected_scalar(item: Any) -> Any:
+    """对象投影只留一个字段时取它的值，标量投影原样返回。
+
+    round-86（B-05b）：原来是写死的 `item.get("offset")`，等于假设"投影出来的字段一定
+    叫 offset"。定位骨架要投影 `params.path`，写死会逼着任务 YAML 把路径塞进一个叫
+    offset 的键里——名不符实，而且下一个人会以为它真是偏移量。
+    只认"单字段对象"这一种形状：多字段对象原样返回，让匹配失败暴露成"看起来没命中"，
+    而不是悄悄取了其中一个值。
+
+    **它只进 evidence，不参与判定**：R3 的通过/失败看的是过滤后的调用序列，
+    分类看的是调用次数与末次状态。所以这段改坏不会让分数变，只会让报告里的
+    "读了哪几个文件"变成一串 None——那正是它必须被测试直接盯住的原因
+    （`.git/mutate_locate.py` 的 M1 打的就是 `test_projected_scalar_takes_the_only_value`）。
+    """
+    if isinstance(item, dict) and len(item) == 1:
+        return next(iter(item.values()))
+    return item
+
+
 def _predicate_holds(key: str, want: Any, ctx: dict) -> bool:
     offsets = ctx["offsets"]
     if key == "offsets_equals":
@@ -1352,10 +1371,7 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
     projected_offsets = jmespath.search(probe, {"calls": calls}) or []
     # TD-025：对象投影把缺 params.offset 的调用保留成 {"offset": null}，
     # 原位还原成标量序列（不丢弃、不重排、不挪末尾）；旧标量 probe 仍兼容。
-    offsets = [
-        item.get("offset") if isinstance(item, dict) else item
-        for item in projected_offsets
-    ]
+    offsets = [_projected_scalar(item) for item in projected_offsets]
     statuses = [p.get("s") for p in projected]
     observed = {
         "offsets": offsets,
