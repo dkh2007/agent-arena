@@ -239,6 +239,22 @@ def register_patterns(conn: sqlite3.Connection, vocab_path: str | Path = VOCAB_P
     return len(patterns)
 
 
+def pattern_skill_map(conn: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
+    """错误模式 → 技能缺口（B-09 的读取口，round-85）。
+
+    `mapped_skill_ids` 一直是"有写入、没读出"——`register_patterns` 写进去，
+    `diagnosis_report` 另有 YAML 直读的兜底路径，而排程层要从**已落库**的模式反查技能，
+    不读这张表就只能再解析一遍 YAML，那会造出第二个真相源。
+
+    返回空元组的模式表示「只诊断不归因」（见 `docs/error-patterns-v0.yaml` 文件头），
+    它与"表里查不到这个模式"是两件事：前者是口径，后者是数据缺失。这里不合并二者，
+    查不到就是不在字典里，由调用方决定怎么处理。
+    """
+    rows = conn.execute("SELECT pattern_id, mapped_skill_ids FROM error_patterns").fetchall()
+    return {str(r["pattern_id"]): tuple(str(s) for s in (_load(r["mapped_skill_ids"]) or ()))
+            for r in rows}
+
+
 def register_task(conn: sqlite3.Connection, yaml_path: str | Path,
                   git_hash: str | None = None) -> str:
     """从任务 YAML 注册一条 Task 元数据（幂等 upsert）。只存元数据，评测配置仍只在 YAML 里。

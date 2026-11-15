@@ -193,6 +193,35 @@
 >    这**不改** P 的口径（P 仍按 A 现状照记，见 B-07b）；
 > ③ `daily_review_cap`（本文件 `User` 表那个字段）只截断**今日队列视图**，被截掉的项仍是 `pending`。
 
+### 5.3 排程层（建议排期）的口径（round-85 / B-09）
+
+> 本层**不新增实体、不改任何字段**。它只读 `review_items` / `user_skill_states` / `submissions` /
+> `error_patterns`，产出一份"建议 + 理由 + 改序审计"。权威实现见 `src/arena/schedule_advisor.py` 文件头。
+
+**四个因子的数据来源（第三列就是对外该怎么说）**
+
+| 因子（优先级由高到低） | 来源 | 现状 |
+|---|---|---|
+| 项目截止 | —— | **无数据源**：`SCHEMA_SQL` 无任何截止字段，也无项目实体 ⇒ 一律**弃权** |
+| 遗忘风险 `1-R` | py-fsrs `get_card_retrievability(card, at)` | 有。`stability is None`（未复习过的卡）记 `None`，**不用 py-fsrs 的 0.0**——那会把"还没开始"说成"已经忘完" |
+| 错误热度 | `submissions.detected_patterns` × `error_patterns.mapped_skill_ids`，近 7 天 | 有。按**提交**计数：一份提交同时踩两个同类错，对该技能只算 1 次 |
+| 掌握度缺口 `1-P` | `mastery.replay()`（`submissions.diagnosis`） | 有。P 不落库，但排程只要"此刻的 P"，不需要历史快照 |
+
+**缺数据的三条处置（顺序不能乱）**：① 个别项缺 ⇒ 用**同批均值**顶，并在理由里标出来；
+② 整批都缺 ⇒ 该因子退出、权重归一化（此时对所有项一视同仁，不改相对顺序）；
+③ **绝不记 0** ——那是把"未知"说成"不紧急"（决策 7 的反面），也绝不重归一化到只剩已有因子
+（那会让"数据越少分越高"）。
+
+**数字全是假设**：权重 8:4:2:1、平手格 0.02、热度窗口 7 天、截止视界 7 天，与 λ / rating 阈值同一性质，
+未标定（`docs/BACKLOG.md` B-09c）。**权重必须沿优先级严格递减**，由导入期校验强制——
+否则"截止优先"是空话，而排序结果看着仍然正常。
+
+**改序审计不落库**：审计行（系统建议第几 → 实际第几 + 理由 + 时刻）目前写本地 JSONL
+（`advise.append_audit`）。它**不是防篡改的**，作用只是"改过就会被看见"；
+要"改不了"需要服务端 append-only + 身份认证，等 B-10 有前端之后再定表。
+**禁止**在对外材料里说"四因子排程已实现"——准确说法是「四因子框架、三因子已接入数据、
+截止因子留接口并会显式弃权」。
+
 ## 3. 关系一览
 
 ```
@@ -202,11 +231,17 @@ User ──1:N── Submission ──N:1── Task ──N:1── Skill（pri
   └──1:N── UserSkillState ──N:1── Skill          └── ErrorPattern ──N:N── Skill（mapped_skill_ids）
 ```
 
-一次闭环的数据流：提交 → Submission（trace+分数+检出模式）→ detected_patterns ∘ mapped_skill_ids 定位技能缺口 → 初始化/更新 UserSkillState 卡片（fsrs_rating）→ 生成 ReviewItem（due）→ 排程层读 due 集合产出建议排期。
+一次闭环的数据流：提交 → Submission（trace+分数+检出模式）→ detected_patterns ∘ mapped_skill_ids 定位技能缺口 → 初始化/更新 UserSkillState 卡片（fsrs_rating）→ 生成 ReviewItem（due）→ 排程层读 due 集合 + 卡片 + 历史产出建议排期（§5.3：四因子加权，三因子有数据、截止弃权）。
 
 ## 4. 开放决策记录
 
 1. **运行时实体扩编**：✅ 已裁决（2026-11-06）——采纳扩到 7（+Submission、+UserSkillState）。
 2. **fsrs_rating 映射**（断言通过率 → FSRS 1–4）：草案假设 ≥0.9→4 / ≥0.7→3 / ≥0.4→2 / <0.4→1。**标为假设**，dogfooding 后校准；学长若认为应纳入 judge 软分权重，在此改。
 3. **prerequisites 先决关系**：MVP 只存不推（推荐层是规则表，用不到图遍历）；留字段是为 pyBKT 升级免迁移。
-4. **评测资产 vs DB 实体边界**（2026-11-06 外部评审第 7 条采纳）：`tasks/<task_id>.yaml` 是**评测任务资产**（rubric/测试输入/故障注入/trace 要求/分页 mock 语义），只走 Git 版本控制；Task 表只存核心元数据 + `yaml_path` + `git_hash` 指向资产。`secondary_skill_ids` 等多对多关系 v0 用 JSON 数组存（SQLite 现实约束），M1 出现按技能反查任务的需求时再建关联表——届时为破坏性变更，单独一步。
+4. **项目截止挂在什么粒度**（round-85 新增，**待裁决**）：排程层四个因子里唯一没有数据的一个。
+   候选：按**任务**（`tasks.deadline`，改动最小，但"这个技能什么时候要用"表达不出来）/
+   按**技能**（最能驱动复习，但与"项目"的语义脱节）/ 按**项目**（新增实体，最贴计划书措辞，
+   改动最大）。三者都会动 schema，按本文件开头约定单开一步（`docs/BACKLOG.md` B-09b）。
+   **未裁决前**截止因子一律弃权，不编数据、也不把"没截止"当"不紧急"。
+
+5. **评测资产 vs DB 实体边界**（2026-11-06 外部评审第 7 条采纳）：`tasks/<task_id>.yaml` 是**评测任务资产**（rubric/测试输入/故障注入/trace 要求/分页 mock 语义），只走 Git 版本控制；Task 表只存核心元数据 + `yaml_path` + `git_hash` 指向资产。`secondary_skill_ids` 等多对多关系 v0 用 JSON 数组存（SQLite 现实约束），M1 出现按技能反查任务的需求时再建关联表——届时为破坏性变更，单独一步。
