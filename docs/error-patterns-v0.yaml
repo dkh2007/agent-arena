@@ -13,6 +13,9 @@
 #   - label：中文展示名，可改
 #   - detection_rule.assertion_id：唯一检出该模式的原子断言（多检出源时用数组）
 #   - mapped_skill_ids 为空表示「只诊断不归因」：会计分，但不驱动技能掌握度与复习推荐
+#   - detection_rule.when 记的是**母本 dbg-001 的判据形状**（给人读，说明这条规则长什么样）；
+#     真正执行的是各任务 YAML 里的 `error_pattern_detection.cases`（偏移、状态码、阈值随变体不同）。
+#     两者不一致时以任务 YAML 为准——那里是执行器的输入，这里是说明书。
 
 patterns:
   # ---- R1 交付物存在性（交付纪律，不属于当前三技能）----
@@ -31,7 +34,7 @@ patterns:
   # ---- R2 结果正确性（多步执行完整性）----
   - pattern_id: wrong_valid_count
     label: 有效数算错
-    description: valid_count 与依据 fixture 剔除规则算出的 17 不符（漏剔或多剔）
+    description: valid_count 与依据 fixture 剔除规则现算的条数不符（漏剔或多剔）；具体条数见各任务的 test_inputs.expected
     detection_rule: {assertion_id: R2_report_correct, when: {valid_count_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
 
@@ -43,26 +46,26 @@ patterns:
 
   - pattern_id: report_missing_field
     label: 报告缺字段
-    description: report.json 未包含 valid_count 或 total_amount
+    description: report.json 未包含 valid_count 或 total_amount（或字段名拼错）
     detection_rule: {assertion_id: R2_report_correct, when: {missing_fields: [valid_count, total_amount]}}
     mapped_skill_ids: [multi_step_planning]
 
   # ---- R3 失败重试（本任务的核心考点）----
   - pattern_id: no_retry
     label: 未重试
-    description: 首次 500 后没有再对 offset=10 发起调用，直接放弃或退回首页
+    description: 首次失败后没有再对**故障页**（同一 offset）发起调用，直接放弃或退回首页；判定不依赖具体页号
     detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_equals: [0, 10]}}
     mapped_skill_ids: [failure_retry]
 
   - pattern_id: retry_wrong_params
     label: 重试参数错误
-    description: 确实重试了，但游标退回首页（offset 序列 0,10,0）；耗时增加且分页永不收敛
+    description: 确实重试了，但游标退回首页（偏移序列在故障页之后又出现 0）；耗时增加且分页永不收敛
     detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_equals: [0, 10, 0]}}
     mapped_skill_ids: [failure_retry]
 
   - pattern_id: retry_exhausted
     label: 重试耗尽
-    description: 同 offset 连续重试仍失败；缺退避或重试上限设置不当
+    description: 同一故障页连续重试仍失败（最后一次仍是 error）；缺退避或重试上限设置不当
     detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_starts_with: [0, 10, 10], last_status: error}}
     mapped_skill_ids: [failure_retry]
 
@@ -87,7 +90,7 @@ patterns:
 
   - pattern_id: param_out_of_range
     label: 参数越界
-    description: 取值超出 minimum/maximum（如试探 limit=20 触发 invalid_limit）
+    description: 取值超出 minimum/maximum（如试探超过页大小上限的 limit，触发 invalid_limit）
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {out_of_range_against: tools}}
     mapped_skill_ids: [tool_param_validation]
 

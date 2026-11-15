@@ -40,6 +40,17 @@
 | rubric_count | INTEGER | 原子断言条数（冗余存，免解析 YAML） |
 | created_at | DATETIME | |
 
+> **B-05 补充：`variant_template_id` 与 `variant_meta.family_id` 不是一回事，别混用。**
+> - `variant_template_id`（入库，`tpl-tool-debug`）＝**骨架模板**：共用同一套断言骨架、分数可比的那些任务。
+>   现在 10 个任务全是同一个骨架，所以这个值全库相同。
+> - `variant_meta.family_id`（**只存 YAML，不入库**）＝**变体组**：按"练哪个技能"分组
+>   （`order-report` / `retry-drill` / `param-surface`）。复习层按它挑题，才不会一直推同一类。
+> - `variant_meta.difficulty`（1–3，只存 YAML）＝难度，与"要翻几页"绑定（测试锁了下界）。
+> - `variant_meta.kind` 对齐下方 `ReviewItem.kind`（`variant` / `fault_injection` / `timed` / `replay`）。
+>
+> 为什么不把 `variant_meta` 也入库：它只被"挑题"用，而挑题发生在读到 YAML 之后；
+> 先入库等于给它一个自己会漂移的副本。等复习层真需要按难度/家族做 SQL 过滤时再入库。
+
 ### Skill（技能节点，全局共享，不含用户状态）
 
 | 字段 | 类型 | 说明 |

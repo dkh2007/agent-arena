@@ -1,0 +1,105 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+base_task: dbg-001-order-report
+task_id: ret-003-fourth-page-fault
+task_version: "2026-11-15.1"
+title: 批量订单核对报告（重试专项 · 故障在第四页）
+primary_skill_id: failure_retry
+secondary_skill_ids: ['multi_step_planning', 'tool_param_validation']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: retry-drill
+  difficulty: 3          # 1–3：页数 / 无效行数 / 故障位距首页多远
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部订单明细（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 50 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  match:
+    offset: 30
+  failures:
+    - attempt: 1
+      http_status: 500
+      error: internal_error
+
+test_inputs:
+  # 50 条记录；被剔除的行已逐行标注原因
+  orders_fixture:
+    - {order_id: bo-001, amount: 541.0}
+    - {order_id: bo-002, amount: 678.25}
+    - {order_id: bo-003}                                # 缺 amount 字段
+    - {order_id: bo-004, amount: 952.75}
+    - {order_id: bo-005, amount: 1090.0}
+    - {order_id: bo-006, amount: 1227.25}
+    - {order_id: bo-007, amount: 1364.5}
+    - {order_id: bo-008, amount: 523.0}
+    - {order_id: bo-009, amount: 660.25}
+    - {order_id: bo-010, amount: null}                  # 金额为 null
+    - {order_id: bo-011, amount: 934.75}
+    - {order_id: bo-012, amount: 1072.0}
+    - {order_id: bo-013, amount: 1209.25}
+    - {order_id: bo-014, amount: 1346.5}
+    - {order_id: bo-015, amount: 505.0}
+    - {order_id: bo-016, amount: 642.25}
+    - {order_id: bo-017, amount: 779.5}
+    - {order_id: bo-018, amount: -916.75}               # 负数
+    - {order_id: bo-019, amount: 1054.0}
+    - {order_id: bo-020, amount: 1191.25}
+    - {order_id: bo-021, amount: 1328.5}
+    - {order_id: bo-022, amount: 1464.0}
+    - {order_id: bo-023, amount: 624.25}
+    - {order_id: bo-024, amount: 761.5}
+    - {order_id: bo-025, amount: 898.75}
+    - {order_id: bo-026, amount: 1036.0}
+    - {order_id: bo-027, amount: null}                  # 金额为 null
+    - {order_id: bo-028, amount: 1310.5}
+    - {order_id: bo-029, amount: 1446.0}
+    - {order_id: bo-030, amount: 606.25}
+    - {order_id: bo-031, amount: 743.5}
+    - {order_id: bo-032, amount: 880.75}
+    - {order_id: bo-033, amount: 1018.0}
+    - {order_id: bo-034}                                # 缺 amount 字段
+    - {order_id: bo-035, amount: 1292.5}
+    - {order_id: bo-036, amount: 1428.0}
+    - {order_id: bo-037, amount: 588.25}
+    - {order_id: bo-038, amount: 725.5}
+    - {order_id: bo-039, amount: 862.75}
+    - {order_id: bo-040, amount: 1000.0}
+    - {order_id: bo-041, amount: 1137.25}
+    - {order_id: bo-042, amount: -1274.5}               # 负数
+    - {order_id: bo-043, amount: 1410.0}
+    - {order_id: bo-044, amount: 570.25}
+    - {order_id: bo-045, amount: 707.5}
+    - {order_id: bo-046, amount: 844.75}
+    - {order_id: bo-047, amount: 982.0}
+    - {order_id: bo-048, amount: 1119.25}
+    - {order_id: bo-049, amount: 1256.5}
+    - {order_id: bo-050, amount: 1392.0}
+  expected:
+    valid_count: 44
+    total_amount: 43206.0
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 44, total_amount: 43206.0}
+  - id: R3_retry_evidence
+    expected:
+      calls:
+        - {name: fetch_orders, params_match: {offset: 30}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset: 30}, status: success}
+    error_pattern_detection:
+      cases:                     # 故障前已翻三页：偏移序列按本变体的页大小（10）与故障位（30）重算
+        - {match: {offsets_equals: [0, 10, 20, 30]}, pattern: no_retry}
+        - {match: {offsets_equals: [0, 10, 20, 30, 0]}, pattern: retry_wrong_params}
+        - {match: {offsets_starts_with: [0, 10, 20, 30, 30], last_status: error}, pattern: retry_exhausted}
+        - {match: {no_tool_calls: true}, pattern: no_retry}
+        - {match: {fault_point_not_reached: true}, pattern: no_retry}
+        - {match: {fault_point_not_repeated: true}, pattern: retry_wrong_params}
+      default: retry_wrong_params

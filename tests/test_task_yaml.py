@@ -1,8 +1,10 @@
 # 任务 YAML 结构校验（M-1 第 3 步验证沉淀；2026-11-06 按外部评审 P0/P1 修订同步更新）
 # 这些用例同时是后续变体模板生成器与断言执行器的约束来源
 import math
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +15,9 @@ TASK_FILE = TASKS / "dbg-001-order-report.yaml"
 
 RESULT_ONLY = {"R1_file_exists", "R2_report_correct"}  # 不依赖 trace 的结果断言
 STATES = {"pass", "fail", "blocked", "unscored"}      # 断言四态（第 6 轮定义）
+
+sys.path.insert(0, str(ROOT / "src"))
+from arena import diagnosis_report as dr  # noqa: E402
 
 
 def _load(path: Path) -> dict:
@@ -318,3 +323,117 @@ def test_fault_injection_resets_per_submission():
     """第 3 轮评审 ①-2 的真实缺口：mock 状态必须在两次提交之间重置。"""
     fi = _task()["fault_injection"]
     assert fi["reset_policy"] == "per_submission"
+
+# ============================================================================
+# B-05：任务库 1 → 10 之后，上面那些用例只覆盖母本（很多还写死了 17 / 1837.99）。
+# 这里把「引用完整性 / 两段式计分 / 依赖折叠 / 归因四态」逐条对**每个**任务再跑一遍。
+# 变体虽然继承母本，但它可以覆盖 rubric 里的任何字段——覆盖之后仍然要自洽，
+# 所以"母本对"不等于"十个任务都对"。
+# ============================================================================
+
+ALL_TASK_FILES = sorted(TASKS.glob("*.yaml"))
+
+
+def _ids(param) -> str:
+    return param.stem
+
+
+def _all_rubric(task: dict) -> list[dict]:
+    return [{**r, "layer": "gate"} for r in task["rubric_gate"]] + [
+        {**r, "layer": "credit"} for r in task["rubric_credit"]
+    ]
+
+
+@pytest.mark.parametrize("path", ALL_TASK_FILES, ids=_ids)
+def test_every_task_rubric_is_atomic_and_layered(path):
+    task = dr.load_task(path)   # 变体要按继承后的结果校验
+    rubric = _all_rubric(task)
+    assert 3 <= len(rubric) <= 5, f"{path.stem} 的断言条数超出 3–5"
+    assert len({r["id"] for r in rubric}) == len(rubric), f"{path.stem} 有重复断言 id"
+    for r in rubric:
+        assert {"id", "type", "target", "skill_id", "depends_on", "error_patterns"} <= set(r), \
+            f"{path.stem}.{r['id']} 缺必填字段"
+        if r["layer"] == "gate":
+            assert r["on_fail"] == "disqualify", f"{path.stem}.{r['id']} 是门禁，必须声明 on_fail: disqualify"
+            assert "weight" not in r, f"{path.stem}.{r['id']} 是门禁，不许带 weight（会偷偷计分）"
+        else:
+            assert r["weight"] > 0, f"{path.stem}.{r['id']} 在积分层，权重必须为正"
+
+
+@pytest.mark.parametrize("path", ALL_TASK_FILES, ids=_ids)
+def test_every_task_references_exist(path):
+    """技能 id、错误模式 id、检出规则回指——三处引用都不许悬空。"""
+    task = dr.load_task(path)   # 变体要按继承后的结果校验
+    skills = {s["skill_id"] for s in _load(TAXONOMY)["skills"]}
+    patterns = _patterns()
+    assert task["primary_skill_id"] in skills, f"{path.stem} 的主技能不存在"
+    assert set(task["secondary_skill_ids"]) <= skills, f"{path.stem} 的次技能有悬空 id"
+    for r in _all_rubric(task):
+        sid = r["skill_id"]
+        if sid is not None:
+            assert sid in skills, f"{path.stem}.{r['id']}.skill_id={sid} 不在分类学里"
+        assert r["error_patterns"], f"{path.stem}.{r['id']} 未声明错误模式"
+        for code in r["error_patterns"]:
+            assert code in patterns, f"{path.stem}.{r['id']} 引用了未登记的模式 {code}"
+            assert patterns[code]["detection_rule"]["assertion_id"] == r["id"], \
+                f"{path.stem}: {code} 的检出规则指向别的断言"
+            if sid is None:
+                assert patterns[code]["mapped_skill_ids"] == [], \
+                    f"{path.stem}.{r['id']} 声明只计分不归因，但 {code} 映射了技能"
+
+
+@pytest.mark.parametrize("path", ALL_TASK_FILES, ids=_ids)
+def test_every_task_dependencies_are_resolvable_and_acyclic(path):
+    task = dr.load_task(path)   # 变体要按继承后的结果校验
+    rubric = {r["id"]: r for r in _all_rubric(task)}
+
+    def walk(node: str, seen: tuple[str, ...]) -> None:
+        assert node not in seen, f"{path.stem}: depends_on 有环 {seen + (node,)}"
+        for dep in rubric[node]["depends_on"]:
+            assert dep in rubric, f"{path.stem}: {node} 依赖不存在的断言 {dep}"
+            walk(dep, (*seen, node))
+
+    for rid in rubric:
+        walk(rid, ())
+
+
+@pytest.mark.parametrize("path", ALL_TASK_FILES, ids=_ids)
+def test_every_task_declares_the_same_scoring_policy(path):
+    """计分口径全库统一：分母固定、四态贡献、归因四态缺一不可。
+
+    变体若偷偷改分母或让 blocked 参与计分，分数就跨任务不可比——
+    而"跨任务可比"正是掌握度跨任务累计的前提。
+    """
+    task = dr.load_task(path)   # 变体要按继承后的结果校验
+    score = task["scoring"]["score"]
+    assert score["formula"] == "gated_weighted_pass_ratio"
+    assert score["gate"]["disqualified_if"] == "any_gate_failed"
+    assert score["gate"]["disqualify_ratio"] == 0
+    assert score["gate"]["on_unscored"] == "do_not_disqualify"
+    credit = score["credit"]
+    assert credit["denominator"] == "fixed_at_credit_total_weight"
+    assert credit["total_weight"] == sum(r["weight"] for r in task["rubric_credit"])
+    assert set(credit["contribution"]) == STATES
+    assert credit["contribution"]["pass"] == "weight"
+    for s in ("fail", "blocked", "unscored"):
+        assert credit["contribution"][s] == 0, f"{path.stem}: {s} 对分数贡献必须为 0"
+
+    attr = task["scoring"]["attribution"]
+    assert set(attr) == STATES
+    assert attr["pass"]["counts_toward_mastery"] is True
+    assert attr["fail"]["counts_toward_mastery"] is True
+    for s in ("blocked", "unscored"):
+        assert attr[s]["counts_toward_mastery"] is False
+        assert attr[s]["emit_error_patterns"] is False
+        assert attr[s]["reason"], f"{path.stem}: {s} 必须写明理由"
+
+
+@pytest.mark.parametrize("path", ALL_TASK_FILES, ids=_ids)
+def test_every_task_declares_trace_and_execution_boundaries(path):
+    task = dr.load_task(path)   # 变体要按继承后的结果校验
+    minimum = task["trace_requirements"]["minimum"]
+    assert minimum["final_status"]["required"] is True
+    assert set(minimum["tool_calls"]["status_enum"]) == {"success", "error", "timeout"}
+    assert task["execution"]["platform_retry"] == 0, "平台代劳重试会让 R3 测不到"
+    assert task["fault_injection"]["reset_policy"] == "per_submission"
+    assert task["fault_injection"]["retry_scope"] == "agent"

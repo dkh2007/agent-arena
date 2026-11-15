@@ -7533,3 +7533,127 @@ C 同时满足"数据缺失≠能力不足"与"别让白卷拿满"，是两条�
 2. 反证条件②的答案因此是「部分成立」：若空集判 fail，81.2 从"两个技能被抬满"降为
    "一个技能被抬满"，**结论方向不变、幅度减半**，`test_one_white_paper_looks_like_a_perfect_run`
    需按 `tool_param_validation` 重写而不是删掉。
+
+---
+
+## 82. B-05：任务库 1 → 10 与变体模板（2026-11-15，round-83）
+
+计划书 M2 写的是「10 个任务；3 技能 × 2–3 变体；变体模板跑通」。这一轮把它做实。
+
+### 82.1 怎么做到 10 个而不是 10 份拷贝
+
+10 个任务各写完整 YAML，重复部分会超过一半（母本 300 行里，rubric 与口径占 2/3）。
+更麻烦的是：改一处口径要改十处，漏一处就漂移——而这种漂移**在测试全绿的时候看不出来**。
+
+所以按 review-response 第 1 节第 3 行已采纳的方案（「基础任务 + 补丁」继承）实现：
+
+```
+变体文件（40–100 行）          母本（1 份）
+base_task: dbg-001-order-report
+task_id: ret-002-second-page-fault
+variant_meta: {family_id: retry-drill, difficulty: 2, kind: variant}
+scenario: ...（改文案）
+fault_injection: {match: {offset: 20}, ...}
+test_inputs: ...（换数据与期望值）
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 35, total_amount: 32690.25}
+  - id: R3_retry_evidence
+    expected: {calls: [... offset: 20 ...]}
+    error_pattern_detection: {cases: [... 偏移序列重算 ...]}
+```
+
+合并规则只有三条（写在 `diagnosis_report._merge_dict` 注释里）：
+字典递归合并；`rubric_gate` / `rubric_credit`（按 `id`）与 `tools`（按 `name`）**按 id 合并**；
+其余列表（如 `test_inputs.orders_fixture`）**整体替换**。
+
+三条边界都做成报错而不是兜底：补丁 id 拼错（会静默变成"新增一条断言"）、
+继承成环、`task_id` 与母本相同（注册表按 id 索引，会互相覆盖）。
+
+**母本不参与生成**：`dbg-001` 里的 30 多段评审注释是不可再生资产（`test_stale_zero_score_comment_is_gone`
+还要按字面检查其中一句），把它当模板去渲染只会把这些注释丢掉。所以它是母本，变体从它派生。
+
+### 82.2 三个家族，难度不是随手填的数
+
+| 家族 | 主技能 | 任务数 | 旋钮 |
+|---|---|---|---|
+| `order-report` | `multi_step_planning` | 4 | 页数 2→4、无效行 3→6 |
+| `retry-drill` | `failure_retry` | 3 | 故障页 第2→第4页、故障码 500/503 |
+| `param-surface` | `tool_param_validation` | 3 | 页上限 10→5→4（照 10 传就撞 `invalid_limit`） |
+
+难度 1–3 与「要翻几页」绑定，并写成了测试（`test_difficulty_is_not_decorative`）：
+难度 2 至少 3 页、难度 3 至少 4 页。这样"难度"不是一个人拍的数字，而是配置的函数。
+
+家族 → 主技能也是测试锁的（`test_family_maps_to_declared_primary_skill`）：
+否则 `tasks.primary_skill_id` 只是装饰——它现在确实是只进表（注册与筛选），**不影响分数**。
+
+### 82.3 三层锁：继承发生了 / 骨架没变 / 变体真能跑
+
+| 层 | 锁什么 | 为什么缺了不行 |
+|---|---|---|
+| A 继承 | 变体文件里不许出现 `rubric_gate:` / `scoring:` / `trace_requirements:` / `submission_requirements:` | 抄进骨架就等于切断"改母本 ⇒ 全体跟着变"，两份口径从此各自演化 |
+| B 骨架 | 10 个任务的断言 `id/type/target/weight/skill_id/depends_on/on_fail/error_patterns` 与母本**逐字段相同**；`scoring`/`execution`/`trace_requirements` 全等 | 防"某个变体悄悄把 R2 权重改成 1"，那会让分数跨任务不可比，而掌握度正是跨任务累计的 |
+| C 能跑 | 每个任务真起 mock 服务、跑参考 Agent、走完 `recompute_all → build_report → validate_report`，且 `no_retry` 形态的错误模式必须是 `no_retry` | 只跑通不算数：偏移改错的变体照样判 0 分，但模式会落到兜底的 `retry_wrong_params`——**分数对、诊断错**，复习层就会推错题 |
+
+C 层第一次跑就抓到东西：`no_retry` 在 offset=20 / 30 / 8 / 15 的变体上都正确归到 `no_retry`
+（不是兜底），说明重算的偏移序列是对的。
+
+### 82.4 自己撞的坑：同一件事写了两处，变体首跑全部 0.5
+
+第一次端到端跑：**9 个变体全部 `ratio=0.5`，且只有 `multi_step_planning` 有缺口**。
+原因不是数据错，是 `rubric_credit[R2].expected` 与 `test_inputs.expected` 是同一组数字的两份副本，
+变体只改了后者，R2 仍按母本的 17 / 1837.99 判。
+
+这是**结构问题而非笔误**：同一件事有两处真相源，模板化会把它放大十倍。
+处置不是"以后小心点"，而是加一条相等锁
+（`test_page_ceiling_and_report_expectations_are_self_consistent` 里 `r2["expected"] == task["test_inputs"]["expected"]`）。
+这条锁第一次跑就红——因为我在补丁里又抄错了一个数。
+
+同一类漂移还修了两处（都在多任务下才会暴露）：
+
+1. 母本 R3 的 `note` 写死「只锁第二页起点 offset=10」，而变体的故障位是 5/8/15/20/30 ⇒ 改成"故障页的起始 offset"。
+2. 词表里 6 条 `description` 写死「17 条订单」「offset=10」（`wrong_valid_count` / `no_retry` /
+   `retry_wrong_params` / `retry_exhausted` / `param_out_of_range` / `report_missing_field`）
+   ⇒ 改成与具体任务无关的表述，并注明 `detection_rule.when` 只是母本形状，**执行以各任务 `cases` 为准**。
+
+### 82.5 一个原本担心、实测没发生的问题
+
+母本 R3 的分类用例写的是字面偏移序列 `[0, 10]`（"没重试"），它隐含"学习者用最大页大小"。
+换成页上限 5 / 4 的变体后，用更小页大小（limit=3）翻页的学习者，序列会是 `[0, 3, 6]`，
+字面用例匹配不上 ⇒ 会落到兜底 `retry_wrong_params`。
+
+实测（`offset=5` 的任务，学习者用 limit=3 翻到 6 就放弃）：错误模式仍是 **`no_retry`**。
+原因是 `error_pattern_detection` 里还有三条**由 `expected.calls` 派生的谓词**
+（`no_tool_calls` / `fault_point_not_reached` / `fault_point_not_repeated`，Q10-A 时补的），
+它们不依赖页大小。⇒ 这个担心不成立，但**只在小页大小这一种形态上验证过**，
+仍然把结论记在这里，免得下次有人重新担心一遍。
+
+### 82.6 主动承认的边界（三处）
+
+1. **10 个任务共用一套 rubric 骨架**，所以在"分数怎么算"这个维度上它们是同一个任务。
+   差异在情景变量与故障位。这是模板化的必然形态（计划书 §4.2 第 3 条写的就是"情景变量 + 固定骨架"），
+   但**不能宣称"任务库有 10 种题型"**。要异型任务需第二套骨架，登记 B-05b。
+2. **难度齐次性未验证**：难度按页数定义，但"页数多"是不是真的更吃力，没有数据。
+   这是 B-05c（难度归一）要处理的事，它同时是 P 可解释性的前提。
+3. **没有真实学习者**：10 个任务的"能跑通"是参考 Agent 跑的（确定性执行体，不做规划）。
+   它能证明"任务真的可执行、判得对"，**不能**证明"模型会在这些题上犯错"。
+
+### 82.7 本轮裁判
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/` | **984 passed / 984** |
+| 新增 `tests/test_task_variants.py` | **36 条**（继承 6 / 骨架与不变量 9 / 端到端 20） |
+| 泛化 `tests/test_task_yaml.py` | 28 → **73 条**（对 10 个任务各跑一遍引用完整性/计分口径/依赖/边界） |
+| 逐任务端到端 | 10/10 拿 `ratio=1.0`；`no_retry` 形态 10/10 判 `R3=fail` 且模式 `no_retry` |
+| `ls tasks/*.yaml \| wc -l` | **10** |
+
+### 82.8 反证条件
+
+① 若新增变体时有人把 `rubric_gate` / `scoring` 抄进变体文件 ⇒ A 层锁红，**先修结构再加题**。
+② 若某变体的 `R2.expected` 与 `test_inputs.expected` 不一致 ⇒ 一致性锁红；
+   这条红意味着"分数会按错的标准判"，不要绕过它改测试。
+③ 若将来出现"两个变体的难度标号不同但页数相同" ⇒ `test_difficulty_is_not_decorative` 会允许
+   （它只锁下界），此时应改用 B-05c 的难度系数，而不是继续加难度标号。
+④ 若真实学习者数据显示"页数多并不更吃力"（例如 4 页与 2 页的错误率无差别）⇒
+   难度定义要换旋钮（改成故障位或无效行隐蔽度），B-05c 的难度系数也不该用页数。

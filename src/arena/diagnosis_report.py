@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -47,8 +48,92 @@ class ReportError(ValueError):
     """报告不自洽——必须停下来修，不允许产出一份"看起来像报告"的坏数据。"""
 
 
-def load_task(path: str | Path) -> dict:
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+# 变体继承（B-05；采纳项见 review-response-v1.md 第 1 节第 3 行「基础任务 + 补丁」）
+#
+# 10 个任务各写完整 YAML，重复配置会超过一半，而且改一处口径要改十处、漏一处就漂移。
+# 所以变体只写**差异**：`base_task: dbg-001-order-report` + 要改的字段，加载时深合并。
+#
+# 合并规则只有三条，都能一眼说清（规则越"聪明"，越没人敢用）：
+#   1. 字典：递归合并。子文件写了的键覆盖，没写的继承。
+#   2. rubric_gate / rubric_credit（按 `id`）、tools（按 `name`）：**按 id 合并**——
+#      子文件只写要改的那一条断言/工具，其余从母本继承。出现母本没有的 id ⇒ 报错，
+#      不让一个拼错的 id 静默变成"新增了一条断言"。
+#   3. 其余列表（如 `test_inputs.orders_fixture`）：**整体替换**。测试数据不做元素级合并——
+#      两份数据按下标混起来，期望值就对不上了，而且没人能一眼看出结果是什么。
+_ID_MERGE_KEYS = {"rubric_gate": "id", "rubric_credit": "id", "tools": "name"}
+
+
+def _find_task_file(task_id: str, folder: Path) -> Path:
+    """按 task_id 找同目录下的任务文件（先按同名约定，再退化为扫目录）。"""
+    direct = folder / f"{task_id}.yaml"
+    if direct.exists():
+        got = yaml.safe_load(direct.read_text(encoding="utf-8")).get("task_id")
+        if got != task_id:
+            raise ReportError(
+                f"{direct.name} 的文件名暗示 task_id={task_id}，但文件里写的是 {got!r}"
+                "——两者不一致时按谁走都会有歧义"
+            )
+        return direct
+    for cand in sorted(folder.glob("*.yaml")):
+        if yaml.safe_load(cand.read_text(encoding="utf-8")).get("task_id") == task_id:
+            return cand
+    raise ReportError(f"base_task={task_id} 在 {folder} 下找不到")
+
+
+def _merge_by_id(base_list: list, patch_list: list, id_key: str, trail: str) -> list:
+    index = {item[id_key]: i for i, item in enumerate(base_list) if isinstance(item, dict) and id_key in item}
+    out = copy.deepcopy(base_list)
+    for item in patch_list:
+        if not isinstance(item, dict) or id_key not in item:
+            raise ReportError(f"{trail} 的补丁项必须带 {id_key}，否则无法判断它在改哪一条：{item!r}")
+        key = item[id_key]
+        if key not in index:
+            raise ReportError(
+                f"{trail} 里没有 {id_key}={key}。补丁只改已有条目，不能新增"
+                "（要新增就整份替换这个列表）——先确认是不是拼错了"
+            )
+        i = index[key]
+        out[i] = _merge_dict(out[i], item, f"{trail}[{key}]")
+    return out
+
+
+def _merge_dict(base: dict, patch: dict, trail: str) -> dict:
+    out = dict(base)
+    for key, val in patch.items():
+        here = f"{trail}.{key}" if trail else str(key)
+        if key in out and isinstance(out[key], dict) and isinstance(val, dict):
+            out[key] = _merge_dict(out[key], val, here)
+        elif key in _ID_MERGE_KEYS and isinstance(out.get(key), list) and isinstance(val, list):
+            out[key] = _merge_by_id(out[key], val, _ID_MERGE_KEYS[key], here)
+        else:
+            out[key] = copy.deepcopy(val)
+    return out
+
+
+def load_task(path: str | Path, *, _chain: tuple[Path, ...] = ()) -> dict:
+    """读任务 YAML；带 `base_task` 时先加载母本再深合并（见上方三条规则）。
+
+    `_chain` 只为检测循环继承（A 继承 B、B 又继承 A），外部调用不要传。
+    """
+    p = Path(path).resolve()
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ReportError(f"{p.name} 不是一个 YAML 映射（顶层写成了 {type(raw).__name__}）")
+    base_id = raw.get("base_task")
+    if not base_id:
+        return raw
+    if p in _chain:
+        raise ReportError(f"变体继承成环：{' -> '.join(x.name for x in (*_chain, p))}")
+    base = load_task(_find_task_file(str(base_id), p.parent), _chain=(*_chain, p))
+    if base.get("task_id") == raw.get("task_id"):
+        raise ReportError(
+            f"{p.name} 的 task_id 与母本相同（{raw.get('task_id')}）——"
+            "注册表按 task_id 索引，同 id 会互相覆盖"
+        )
+    patch = {k: v for k, v in raw.items() if k != "base_task"}
+    merged = _merge_dict(base, patch, "")
+    merged["base_task"] = base_id          # 保留来源，便于审计"这个变体继承了谁"
+    return merged
 
 
 def load_vocabulary(path: str | Path = VOCAB_PATH) -> set[str]:

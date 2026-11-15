@@ -1,0 +1,73 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+base_task: dbg-001-order-report
+task_id: dbg-004-sensor-batch
+task_version: "2026-11-15.1"
+title: 传感器批数据核对报告（调试向 · 变体）
+primary_skill_id: multi_step_planning
+secondary_skill_ids: ['tool_param_validation', 'failure_retry']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: order-report
+  difficulty: 3          # 1–3：页数 / 无效行数 / 故障位距首页多远
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部采集记录（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 40 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+test_inputs:
+  # 40 条记录；被剔除的行已逐行标注原因
+  orders_fixture:
+    - {order_id: sn-001, amount: 541.0}
+    - {order_id: sn-002, amount: 678.25}
+    - {order_id: sn-003, amount: 815.5}
+    - {order_id: sn-004, amount: 952.75}
+    - {order_id: sn-005, amount: null}                  # 金额为 null
+    - {order_id: sn-006, amount: 1227.25}
+    - {order_id: sn-007, amount: 1364.5}
+    - {order_id: sn-008, amount: 523.0}
+    - {order_id: sn-009, amount: 660.25}
+    - {order_id: sn-010, amount: 797.5}
+    - {order_id: sn-011}                                # 缺 amount 字段
+    - {order_id: sn-012, amount: 1072.0}
+    - {order_id: sn-013, amount: 1209.25}
+    - {order_id: sn-014, amount: 1346.5}
+    - {order_id: sn-015, amount: 505.0}
+    - {order_id: sn-016, amount: 642.25}
+    - {order_id: sn-017, amount: -779.5}                # 负数
+    - {order_id: sn-018, amount: 916.75}
+    - {order_id: sn-019, amount: 1054.0}
+    - {order_id: sn-020, amount: 1191.25}
+    - {order_id: sn-021, amount: 1328.5}
+    - {order_id: sn-022, amount: 1464.0}
+    - {order_id: sn-023, amount: null}                  # 金额为 null
+    - {order_id: sn-024, amount: 761.5}
+    - {order_id: sn-025, amount: 898.75}
+    - {order_id: sn-026, amount: 1036.0}
+    - {order_id: sn-027, amount: 1173.25}
+    - {order_id: sn-028, amount: 1310.5}
+    - {order_id: sn-029, amount: 1446.0}
+    - {order_id: sn-030}                                # 缺 amount 字段
+    - {order_id: sn-031, amount: 743.5}
+    - {order_id: sn-032, amount: 880.75}
+    - {order_id: sn-033, amount: 1018.0}
+    - {order_id: sn-034, amount: 1155.25}
+    - {order_id: sn-035, amount: 1292.5}
+    - {order_id: sn-036, amount: -1428.0}               # 负数
+    - {order_id: sn-037, amount: 588.25}
+    - {order_id: sn-038, amount: 725.5}
+    - {order_id: sn-039, amount: 862.75}
+    - {order_id: sn-040, amount: 1000.0}
+  expected:
+    valid_count: 34
+    total_amount: 33182.0
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 34, total_amount: 33182.0}

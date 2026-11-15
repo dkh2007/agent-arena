@@ -1,0 +1,101 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+base_task: dbg-001-order-report
+task_id: prm-002-ceiling-5-long
+task_version: "2026-11-15.1"
+title: 货品流水核对报告（参数专项 · 页上限 5 · 长数据）
+primary_skill_id: tool_param_validation
+secondary_skill_ids: ['multi_step_planning', 'failure_retry']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: param-surface
+  difficulty: 2          # 1–3：页数 / 无效行数 / 故障位距首页多远
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部货品流水（limit 取值必须在 1 到 5 之间，超过 5 服务端会返回错误 invalid_limit；共 30 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  match:
+    offset: 15
+  failures:
+    - attempt: 1
+      http_status: 503
+      error: service_unavailable
+
+tools:
+  - name: fetch_orders
+    parameters:
+      - name: offset
+        type: integer
+        required: true
+        minimum: 0
+      - name: limit
+        type: integer
+        required: true
+        minimum: 1
+        maximum: 5
+    mock:
+      pagination:
+        page_size_max: 5
+
+test_inputs:
+  # 30 条记录；被剔除的行已逐行标注原因
+  orders_fixture:
+    - {order_id: gr-001, amount: 541.0}
+    - {order_id: gr-002, amount: 678.25}
+    - {order_id: gr-003, amount: 815.5}
+    - {order_id: gr-004, amount: 952.75}
+    - {order_id: gr-005, amount: null}                  # 金额为 null
+    - {order_id: gr-006, amount: 1227.25}
+    - {order_id: gr-007, amount: 1364.5}
+    - {order_id: gr-008, amount: 523.0}
+    - {order_id: gr-009, amount: 660.25}
+    - {order_id: gr-010, amount: 797.5}
+    - {order_id: gr-011}                                # 缺 amount 字段
+    - {order_id: gr-012, amount: 1072.0}
+    - {order_id: gr-013, amount: 1209.25}
+    - {order_id: gr-014, amount: 1346.5}
+    - {order_id: gr-015, amount: 505.0}
+    - {order_id: gr-016, amount: 642.25}
+    - {order_id: gr-017, amount: 779.5}
+    - {order_id: gr-018, amount: 916.75}
+    - {order_id: gr-019, amount: -1054.0}               # 负数
+    - {order_id: gr-020, amount: 1191.25}
+    - {order_id: gr-021, amount: 1328.5}
+    - {order_id: gr-022, amount: 1464.0}
+    - {order_id: gr-023, amount: 624.25}
+    - {order_id: gr-024, amount: 761.5}
+    - {order_id: gr-025, amount: null}                  # 金额为 null
+    - {order_id: gr-026, amount: 1036.0}
+    - {order_id: gr-027, amount: 1173.25}
+    - {order_id: gr-028, amount: 1310.5}
+    - {order_id: gr-029, amount: 1446.0}
+    - {order_id: gr-030, amount: 606.25}
+  expected:
+    valid_count: 26
+    total_amount: 24972.75
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 26, total_amount: 24972.75}
+  - id: R3_retry_evidence
+    expected:
+      calls:
+        - {name: fetch_orders, params_match: {offset: 15}, status: error, http_status: 503}
+        - {name: fetch_orders, params_match: {offset: 15}, status: success}
+    error_pattern_detection:
+      cases:                     # 页大小 5，故障在第四页（偏移 15）：偏移序列按本变体的页大小（5）与故障位（15）重算
+        - {match: {offsets_equals: [0, 5, 10, 15]}, pattern: no_retry}
+        - {match: {offsets_equals: [0, 5, 10, 15, 0]}, pattern: retry_wrong_params}
+        - {match: {offsets_starts_with: [0, 5, 10, 15, 15], last_status: error}, pattern: retry_exhausted}
+        - {match: {no_tool_calls: true}, pattern: no_retry}
+        - {match: {fault_point_not_reached: true}, pattern: no_retry}
+        - {match: {fault_point_not_repeated: true}, pattern: retry_wrong_params}
+      default: retry_wrong_params
