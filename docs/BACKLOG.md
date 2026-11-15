@@ -4,7 +4,12 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
-> 更新：2026-11-15（round-83：**B-05 关闭——任务库 1 → 10，9 个变体由 `base_task` 继承母本骨架**。
+> 更新：2026-11-15（round-84：**B-08 关闭——FSRS 调度与 ReviewItem 生成落地，衰减明确拆到 B-08b**。
+> `scheduler.py` + store 六个落库函数；每条复习项由报告自动产出、`due` 由 py-fsrs 给出、
+> 每日上限只截断视图不删数据。两条新增口径判断：「本次不算数」的提交不动卡；做过的到期项标 `done`。
+> 顺带修掉 round-83 引入的 `register_task` 不走继承（变体 `rubric_count` / `fault_injection` 全错））。
+>
+> 上一版：2026-11-15（round-83：**B-05 关闭——任务库 1 → 10，9 个变体由 `base_task` 继承母本骨架**。
 > 三个家族按"练哪个技能"分（order-report / retry-drill / param-surface），难度 1–3 由页数与故障位决定。
 > 每个任务都真起 mock 服务跑过参考 Agent 判到 1.0；拆出 B-05b（第二套骨架）与 B-05c（难度归一））。
 >
@@ -331,15 +336,77 @@
 - **验证**：写 → 关连接 → 重开 → 读回的 P 等于 `build_series()` 的终值。
 - **谁推**：我（出现排序需求时；不必等 B-08）。
 
-### [ ] B-08 FSRS 调度 + ReviewItem 生成
+### [x] B-08 FSRS 调度 + ReviewItem 生成 — 2026-11-15 关闭（衰减拆出，见 B-08b）
 
-- **是什么**：`fsrs` 在 `src/` 0 命中；ReviewItem 只有实体定义。
-- **为什么现在不做**：依赖 B-01/B-07；且 `fsrs_rating` 映射（≥0.9→4 …）仍是**假设**，要 dogfooding 校准。
-- **做完判据**：一次失败提交产出 1 个 `pending` 的 ReviewItem，`due` 由 py-fsrs 给出；
-  每日队列上限生效（`daily_review_cap`）。
-- **验证**：跑一次失败 → 查 ReviewItem 表 → `due` 距今 > 0 且 ≤ 上限条数
-- **谁推**：我（M4）。**注意**：B-08 一并解锁 P 的**衰减**（唯一时间轴 = 复习间隔），
-  届时 `test_decay_is_not_implemented_yet` 必须反转，而不是删除。
+- **是什么**：`fsrs` 在 `src/` 0 命中；ReviewItem 只有实体定义（有表无行为）。
+- **落地形态**：`src/arena/scheduler.py`（纯函数：rating 映射 / 卡更新 / 复习项草案 /
+  队列排序与每日截断）+ `store` 四个落库函数（`save_fsrs_cards` / `load_fsrs_cards` /
+  `save_review_items` / `close_due_reviews` / `list_review_items` / `daily_review_cap`）。
+- **做完判据（已满足）**：一次失败提交产出 `pending` 的 ReviewItem，`due` 由 py-fsrs 给出；
+  `daily_review_cap` 生效。判据写成
+  `test_scheduler.py::test_criterion_failed_submission_yields_pending_item_within_cap`。
+- **验证**：`python scripts/schedule_walk.py` —— 五次提交真落库，逐条打印卡 `due`、
+  队列、上限截断、白卷不动卡；手算对照是"首次 due = at + 1 分钟"（py-fsrs 的 learning step）。
+- **七条设计决定**（写在 `scheduler.py` 文件头，每条都有测试否得掉）：
+  ① **关 fuzz**（`enable_fuzzing=False`）：默认开 fuzz 会给 due 加随机偏移，
+     同一份提交跑两次得到两个 due ⇒ 复核对不上账。实测天级间隔上五次能出四种 due。
+  ② rating 映射是**假设**（0.9/0.7/0.4 三档），阈值必须降序且闭区间右侧，
+     顺序写反会让整张表静默错档（导入期校验 + 测试）。
+  ③ 只给"有证据且这次没过"的技能建项：`counted_weight=0` 不推（决策 7）、
+     `c=1.0` 不推，但**卡照样更新**（做题即复习，间隔该往后推）。
+  ④ `review_id` 由 (user, skill, due) 派生 ⇒ 同一提交重跑幂等、下一次 due 变了才有新 id
+     （历史保留，不被覆盖）。
+  ⑤ `card_id` 由 sha256 派生（不用 `hash()`，它按 `PYTHONHASHSEED` 随机化；
+     跨进程测试锁住这点）。
+  ⑥ 卡的 `due` 与 `new_card` 的 `due` 全部显式给，`due` 字符串统一到秒
+     （`review_id` 是它的 sha256，精度不统一会让同一时刻变成两条队列项）。
+  ⑦ **每日上限只截断视图，不删数据**：超出的项仍是 pending，明天自然还在。
+- **两条本轮新增的口径判断**（不是既有口径的推论，是我的判断，可被人推翻）：
+  - **「本次不算数」的提交不动卡、不建项、不关旧项**。判据是
+    `diagnosis_report.suppression_reasons()`（门禁不合格 / 任务版本不一致 / 缺过程）。
+    依据：这三类在报告里的语义就是"本次不算数"（`ratio` 被压成 0 的三种原因），
+    而卡是**复习排期**不是能力估计；让一次不算数的提交以 rating=4 推进间隔，
+    会把真实需求推远 8 天且看不出来。
+    **这不动 P 的口径**（P 仍按 A 现状照记，要不要给门禁开例外是 B-07b）——
+    两者分开是因为它们回答不同问题：P 问"能力估计"，卡问"下次什么时候练"。
+  - **旧的待复习项在"该技能做了一次有效提交"后标 `done`**（`close_due_reviews`，
+    且只关**已到期**的）。否则 `review_id` 只增不减，队列永远只堆积不清空。
+- **顺带修掉一个真 bug（round-83 引入）**：`store.register_task` 原来用 `yaml.safe_load`
+  直接读文件，看不见 `base_task` 继承 ⇒ 9 个变体注册进库时 `rubric_count=2`（母本 5）、
+  `fault_injection=0`（母本 1）。后者正是 `kind` 的依据，错了等于"故障注入课永远不推故障注入复习"。
+  已改成走 `load_task()`，并加测试锁住变体与母本的元数据一致。
+- **裁判**：`test_scheduler.py` **46 条**；测试总数 1029 → 见 §83.7；
+  变异 **14 组全 DETECTED**（`.git/mutate_scheduler.py`）；决策 3 从 PARTIAL 升到 **PASS**。
+- **主动承认的边界**：① 只自动产出 `variant` / `fault_injection` 两种形态，
+  `timed` / `replay` 要人工介入；② 不挑题（`task_id` 记的是缺口来源任务，
+  "用哪个变体复习"留给 B-09）；③ rating 阈值与 learning steps 都是假设，未标定。
+
+### [ ] B-08b P 的衰减（原计划并入 B-08，本轮**明确拆出**）
+
+- **是什么**：`P` 随"该复习却没复习"的时间下降。现在 `test_decay_is_not_implemented_yet`
+  仍绿（间隔 1 天与 300 天的 P 完全相同）。
+- **为什么 B-08 没顺手做**（两条都是硬理由，不是排期问题）：
+  ① **曲线形状要用一个常数或一个映射，两者都被既有材料限制。** data-model §5.2 写明
+     「不引入第二套时间常数」，且「不把 S 当衰减系数……若要用 S 须先定义并标定 α=f(S)」。
+     唯一免于新常数的做法是借用 FSRS 的 `R(t,S)`，但那正是被限制的那条。
+  ② **现在只有"到期时刻"，没有"实际复习发生的时刻"序列。** 用到期时刻衰减等于把计划当历史。
+     `ReviewLog` 表按 data-model 是后置的；`close_due_reviews` 只能近似"这条做过了"。
+- **开工条件（三条同时满足）**：① 人拍"衰减曲线用 FSRS 的 `R(t,S)` 还是自定形状"；
+  ② 落 `ReviewLog`（或等价的"复习完成事件"表），让衰减有真实时刻；
+  ③ `mastery` 的读取接口显式接 `as_of`（否则 P 会随墙钟变化，复核时说不出"谁改的"）。
+- **做完判据**：给定同一批提交 + 一个 `as_of`，P 随 `as_of` 单调不增；
+  间隔 1 天与 300 天在**同一个 `as_of`** 下 P 不同；`test_decay_is_not_implemented_yet` 反转（不删）。
+- **谁推**：我，但 ① 需人拍。
+
+### [ ] B-08c 真实复习事件（ReviewLog / 复习完成回写）
+
+- **是什么**：现在"复习做完了"只会由**新提交**间接推出（`close_due_reviews`），
+  没有"我看了这道题但没交代码"这类事件。`ReviewLog` 表按 data-model 是后置的。
+- **为什么现在不做**：需要一个前端（B-10）才有"标记已复习"这个动作；没有消费者时先建表
+  就是又一次"有表无行为"（B-08 之前 `review_items` 就是这个状态）。
+- **做完判据**：用户标记完成 ⇒ 写一条复习事件 + 推进卡 + 关闭对应 pending 项；
+  与"提交一份代码"两条路产生的卡状态可区分。
+- **谁推**：我（B-10 之后）。
 
 ### [ ] B-09 四因子建议排程
 

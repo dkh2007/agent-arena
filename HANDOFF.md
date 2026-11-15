@@ -399,7 +399,30 @@
 > **C-03 本轮没触发**（一次收敛），但机制没改，仍挂着——别当成已修。
 > 待人拍板项：**无**。下一步 B-03（真 trace 采集）或 B-04（judge 双评）。
 
-> **最新状态（round-83，§82，B-05 关闭：任务库 1 → 10，变体用继承而不是拷贝）**：人回「现在从B-05开始」。
+> **最新状态（round-84，§83，B-08 关闭：FSRS 调度落地，衰减明确拆出）**：人回「先做B-08」。
+> **落地**：`src/arena/scheduler.py`（rating 映射 → 卡更新 → 复习项草案 → 队列排序/每日截断，纯函数）
+> + `store` 六个落库函数（`save_fsrs_cards` / `load_fsrs_cards` / `save_review_items` /
+> `close_due_reviews` / `list_review_items` / `daily_review_cap`）。判据达成：一份失败提交产出
+> `pending` 项、`due` 由 py-fsrs 给出、`daily_review_cap` 生效。复核：`python scripts/schedule_walk.py`。
+> **三条最值钱的决定**：① **关 fuzz**（默认开 fuzz 会让天级间隔五次出四种 due ⇒ 幂等键漂移、
+> 复核对不上账）；② `review_id` 由 (user, skill, due) 派生 ⇒ 重跑幂等 + 下次 due 变了才有新 id
+> （历史保留）；③ 每日上限**只截断视图不删数据**（否则"今天看不下"变成"永远不看"）。
+> **顺带修掉 round-83 的真 bug**：`store.register_task` 用 `yaml.safe_load` 读文件、看不见
+> `base_task` 继承 ⇒ 9 个变体注册进库 `rubric_count=2`（母本 5）、`fault_injection=0`（母本 1），
+> 而 `fault_injection` 正是 `kind` 的依据 ⇒ "故障注入"分支曾是死代码。已改走 `load_task()` + 加锁。
+> **两条新增口径判断**（可被推翻）：① 「本次不算数」的提交（`suppression_reasons()`：门禁不合格 /
+> 版本不一致 / 缺过程）**不动卡、不建项、不关旧项**——卡是排期不是能力估计；这**不改 P 的口径**
+> （白卷抬高 P 仍属 B-07b 待人拍）；② 旧的待复习项在"该技能做了一次有效提交"后标 `done`（只关已到期的），
+> 否则队列只增不减。
+> **为什么衰减没一起做（计划里写了"一并解锁"）**：① 曲线形状要么引入第二套时间常数（data-model 禁止）、
+> 要么借用 FSRS 的 `R(t,S)`（被明文列为"须先标定 α=f(S)"）⇒ 需人拍；② 现在只有"到期时刻"、
+> 没有"实际复习发生的时刻"序列，用它衰减等于把计划当历史。已拆 B-08b（衰减）/B-08c（真实复习事件），
+> `test_decay_is_not_implemented_yet` 仍绿并改写了 docstring。
+> 裁判：`test_scheduler.py` **46 条**；变异 **14 组全 DETECTED**；决策 3 由 PARTIAL 升 **PASS**
+> （演示台 PASS 8 / PARTIAL 3 / FAIL 0）。**下一步我倾向 B-09 四因子排程**（现在有 due 集合了，
+> 四因子里"遗忘风险"这一项才有输入），或先做 B-08b 的曲线拍板。
+
+> **上一状态（round-83，§82，B-05 关闭：任务库 1 → 10，变体用继承而不是拷贝）**：人回「现在从B-05开始」。
 > **10 个任务**：`dbg-001` 是骨架母本（评审注释不可再生，不参与生成），另外 9 个变体用
 > `base_task: dbg-001-order-report` 只写差异（文案 / 数据 / 故障位 / 页上限）。合并规则三条：
 > 字典递归、`rubric_*` 与 `tools` 按 id 合并、其余列表整体替换；拼错 id / 成环 / task_id 撞车都报错。

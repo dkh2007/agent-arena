@@ -50,14 +50,23 @@ def test_partial_and_noexec_are_not_counted_as_pass():
     assert dd.PARTIAL in verdicts
 
 
-def test_decision_3_stays_partial_until_review_items_are_written():
-    """表建了但没有任何代码读写 `review_items` ⇒ 决策 3 只能是 PARTIAL。
+def test_decision_3_is_pass_once_review_items_are_really_written():
+    """B-08 落地后决策 3 从 PARTIAL 升到 PASS（round-84 反转，不是删除）。
 
-    这条红了的正常原因是 M4 真的落地了（有 INSERT/SELECT review_items）。
-    那时候把断言改成 PASS 并写清依据，**不要直接删掉**——删掉之后就没有东西
-    阻止"建了张表就宣布复习闭环完成"。
+    原来锁的是「表建了但没有任何代码读写 ⇒ 只能是 PARTIAL」，并写明"这条红了的正常原因
+    是 M4 真的落地了，那时候改成 PASS 并写清依据"。
+    依据（三条都现场跑，见 `scripts/demo_decision.py` 的 demo_3）：
+    ① 一份失败提交自动产出 ≥1 条复习项；② 形态 ∈ {variant, fault_injection}，仍不是抽认卡；
+    ③ 每条带 `task_id` 与 `source_submission_id`，且 `due` 与 py-fsrs 给出的卡片 `due` 一致。
+
+    **不许退化成"PASS 就完了"**：这里同时断言"边界仍在"——若哪天 `timed`/`replay`
+    被自动产出，或 `due` 变成常量，demo_3 会掉回 FAIL，这条随之红。
     """
-    assert dd.DEMOS[3]()[0] == dd.PARTIAL
+    verdict, lines = dd.DEMOS[3]()
+    assert verdict == dd.PASS
+    text = "\n".join(lines)
+    assert "只自动产出" in text, "边界说明不能丢：四种形态里只有两种是自动产出的"
+    assert "due 与 py-fsrs 给出的卡片 due 一致" in text
 
 
 def test_exit_code_zero_when_no_fail():

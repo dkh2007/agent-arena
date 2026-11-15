@@ -457,6 +457,32 @@ def _process_fact(task: dict, raw: dict, trace_ok: bool) -> dict:
             "missing": bool(required and not submitted)}
 
 
+def suppression_reasons(report: dict) -> list[str]:
+    """这份报告是否「本次不算数」，以及为什么（B-08 的第一个跨模块消费者）。
+
+    `build_report()` 内部有一个局部量 `suppressed = disqualified or voided or missing_process`，
+    它决定 `weighted_sum` / `ratio` 是否归零，但**没有作为字段写进报告**——
+    于是下游（复习调度）要判断"这份提交算不算一次有效复习"，只能自己再把三项拼一遍。
+    这个函数就是那个拼接处，放回唯一知道这三个分量含义的模块里，
+    并**加测试锁住它与 `build_report` 内部口径一致**（改一处不改另一处会红）。
+
+    **不等于** `report_attribution.counts_toward_mastery`：
+    后者是「能力证据是否计入」，按现行 A 口径（门禁只管分数、不管观测），
+    一份门禁不合格的提交仍然是 `True`（白卷能抬高 P 就是这条推出来的）。
+    而这里问的是「本次算不算数」——门禁不合格、任务版本不一致、缺过程，三者都算"不算数"。
+    两个问题不同，所以两个字段都得能读；混用会让"白卷抬高 P"与"白卷推进复习间隔"绑在一起。
+    """
+    score = report.get("score") or {}
+    reasons: list[str] = []
+    if score.get("disqualified"):
+        reasons.append("disqualified")
+    if score.get("voided"):
+        reasons.append("voided")
+    if (report.get("process_fact") or {}).get("missing"):
+        reasons.append("process_missing")
+    return reasons
+
+
 def _report_attribution(policy: dict, by_state: dict, suppressed: bool) -> dict:
     """整份报告的归因开关（派生值）。
 
@@ -565,6 +591,8 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
     # 与 disqualified 分开记：disqualified 是学生没交东西/没跑完，voided 是这次不算数。
     void_reason = _task_version_mismatch(task, raw)
     voided = void_reason is not None
+    # 与模块级 `suppression_reasons()` 必须等价——那是给下游（复习调度等）读的同一判定。
+    # 改这里就改那里；`tests/test_scheduler.py` 有一条测试锁住两者一致。
     suppressed = disqualified or voided or missing_process
     weighted_sum = 0 if suppressed else counterfactual_credit
     ratio = 0.0 if suppressed else round(counterfactual_credit / credit_total, 6)

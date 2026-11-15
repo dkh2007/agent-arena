@@ -241,11 +241,19 @@ def register_patterns(conn: sqlite3.Connection, vocab_path: str | Path = VOCAB_P
 
 def register_task(conn: sqlite3.Connection, yaml_path: str | Path,
                   git_hash: str | None = None) -> str:
-    """从任务 YAML 注册一条 Task 元数据（幂等 upsert）。只存元数据，评测配置仍只在 YAML 里。"""
-    import yaml
+    """从任务 YAML 注册一条 Task 元数据（幂等 upsert）。只存元数据，评测配置仍只在 YAML 里。
 
+    **必须走 `diagnosis_report.load_task()`，不能 `yaml.safe_load()`。** round-83 起变体用
+    `base_task` 继承母本骨架，直接读文件只看得到补丁里写的那几条断言——
+    `rubric_count` 会记成 2（母本是 5）、`fault_injection` 会记成 0，
+    而后者正是复习层选 `kind` 的依据（见 `scheduler.schedule_submission`）。
+    这个坑是 round-84 接复习层时才暴露的：元数据错了，`kind` 分支就永远是死代码。
+    """
     path = Path(yaml_path)
-    task = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # 局部导入：`store` 是地基模块，不在导入期拉起整条评测链（与 llm_judge 同一取舍）。
+    from arena.diagnosis_report import load_task
+
+    task = load_task(path)
     task_id = task.get("task_id")
     primary = task.get("primary_skill_id")
     if not task_id or not primary:
@@ -434,3 +442,203 @@ def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
         (user_id,),
     ).fetchall()
     return [_row_to_dict(r, "submissions") for r in rows]
+
+
+# ── 复习层的落库（B-08）──────────────────────────────────────────────────────
+# 分工：调度逻辑（rating 映射、due 计算）在 `scheduler.py`，这里只负责"照写、照读"。
+# 因此本模块**不 import fsrs**：卡在库里是 JSON（`fsrs_card` 列），反序列化由调度层做。
+# 这样两张表都不会长出第二套业务口径。
+
+def save_fsrs_cards(conn: sqlite3.Connection, user_id: str, cards: dict[str, dict],
+                    *, at: str | None = None) -> int:
+    """写 `user_skill_states`（按 (user, skill) upsert）。返回写入条数。
+
+    **覆盖是正确语义**：一张卡的新状态就是它的全部内容（`due` / `stability` /
+    `last_review` 都在里面），没有"保留旧字段"这回事。与 `submissions` 的"不覆盖"
+    相反——那边是历史证据，这边是当前状态。
+
+    `cards` 的值必须是 `Card.to_dict()` 的形态（dict）；写成别的会在读回时炸，
+    而那时已经落库了——所以这里**先校验类型**，不靠读回发现。
+    """
+    if not isinstance(cards, dict):
+        raise StoreError(f"cards 必须是 skill_id → dict 的映射（收到 {type(cards).__name__}）")
+    if not cards:
+        return 0
+    ensure_user(conn, user_id)
+    stamp = at or _now()
+    written = 0
+    with conn:
+        for skill_id, card in cards.items():
+            if not isinstance(skill_id, str) or not skill_id:
+                raise StoreError(f"skill_id 必须是非空字符串（收到 {skill_id!r}）")
+            if not isinstance(card, dict):
+                raise StoreError(
+                    f"{skill_id} 的卡片必须是 dict（来自 Card.to_dict()），收到 {type(card).__name__}"
+                )
+            if conn.execute("SELECT 1 FROM skills WHERE skill_id = ?", (skill_id,)).fetchone() is None:
+                raise StoreError(
+                    f"技能 {skill_id} 未注册——先 register_skills()；"
+                    "允许未注册技能写卡片等于让 skills 外键变成装饰"
+                )
+            conn.execute(
+                "INSERT INTO user_skill_states (user_id, skill_id, fsrs_card, updated_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(user_id, skill_id) DO UPDATE SET "
+                "fsrs_card = excluded.fsrs_card, updated_at = excluded.updated_at",
+                (user_id, skill_id, _dump(card), stamp),
+            )
+            written += 1
+    return written
+
+
+def load_fsrs_cards(conn: sqlite3.Connection, user_id: str) -> dict[str, dict]:
+    """读回该用户所有卡片（`skill_id → Card.to_dict()` 形态）。
+
+    返回原始 dict 而不是 `Card` 对象：本模块不认识 py-fsrs 的类型，
+    反序列化交给调度层（`scheduler.cards_from_rows`）——否则两处都能构造卡片，
+    一张卡片的 `due` 就有两个解释处。
+    """
+    rows = conn.execute(
+        "SELECT skill_id, fsrs_card FROM user_skill_states WHERE user_id = ? ORDER BY skill_id",
+        (user_id,),
+    ).fetchall()
+    return {r["skill_id"]: _load(r["fsrs_card"]) for r in rows}
+
+
+def save_review_items(conn: sqlite3.Connection, items) -> tuple[int, int]:
+    """写 `review_items`（**幂等**：`review_id` 已存在就跳过）。返回 (新增数, 跳过数)。
+
+    幂等是有意的：同一份提交重跑调度必须不产生第二条队列项。`review_id` 由
+    (user, skill, due) 派生（见 `scheduler.review_id_for`），所以"重跑"与"已建过"
+    天然撞同一个 id——这里只要不覆盖即可。
+
+    **不覆盖已有项**：一条 `done` 的历史项不该被后来的调度改回 `pending`；
+    新的 due 会派生新的 id，历史因此完整保留。
+    """
+    added = skipped = 0
+    with conn:
+        for item in items:
+            row = item.to_row() if hasattr(item, "to_row") else dict(item)
+            cur = conn.execute(
+                "INSERT INTO review_items (review_id, user_id, skill_id, kind, task_id, "
+                "source_submission_id, due, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(review_id) DO NOTHING",
+                (
+                    row["review_id"],
+                    row["user_id"],
+                    row["skill_id"],
+                    row["kind"],
+                    row.get("task_id"),
+                    row.get("source_submission_id"),
+                    row["due"],
+                    row.get("status", "pending"),
+                    _now(),
+                ),
+            )
+            if cur.rowcount:
+                added += 1
+            else:
+                skipped += 1
+    return added, skipped
+
+
+def list_review_items(conn: sqlite3.Connection, user_id: str, *,
+                      status: str | None = None) -> list[dict]:
+    """该用户的复习项（不带 SQL 排序，顺序由 `scheduler.take_daily` 决定）。
+
+    为什么不在 SQL 里排序：`due` 是 ISO 字符串，跨偏移（`+08:00` 与 `Z`）直接比会判反。
+    库里统一存 UTC（`scheduler._iso` 的约定），但读侧不该依赖"写侧一定守规矩"——
+    排一次序、只有一处，比两处各自保证一致更可靠。
+    """
+    sql = "SELECT * FROM review_items WHERE user_id = ?"
+    params: tuple = (user_id,)
+    if status is not None:
+        sql += " AND status = ?"
+        params = (user_id, status)
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
+def daily_review_cap(conn: sqlite3.Connection, user_id: str) -> int:
+    """读 `users.daily_review_cap`（产品口径"一天别推太多"，默认 2）。"""
+    row = conn.execute("SELECT daily_review_cap FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if row is None:
+        raise StoreError(f"没有这个用户：{user_id}")
+    return int(row["daily_review_cap"])
+
+
+def set_daily_review_cap(conn: sqlite3.Connection, user_id: str, cap: int) -> int:
+    """改每日上限。0 合法（今天不复习）；负数由表约束拒（`CHECK (cap >= 0)`），这里先挡一层。"""
+    if isinstance(cap, bool) or not isinstance(cap, int):
+        raise StoreError(f"daily_review_cap 必须是整数（收到 {type(cap).__name__}）")
+    if cap < 0:
+        raise StoreError(f"daily_review_cap 不能为负（收到 {cap}）")
+    ensure_user(conn, user_id)
+    with conn:
+        conn.execute("UPDATE users SET daily_review_cap = ? WHERE user_id = ?", (cap, user_id))
+    return cap
+
+
+def close_due_reviews(conn: sqlite3.Connection, user_id: str, skill_ids, *,
+                      at: str) -> int:
+    """把 `skill_ids` 下「`at` 之前已到期且仍 pending」的复习项标 `done`。返回关闭条数。
+
+    **为什么必须有这一步**：`review_id` 由 (user, skill, due) 派生，所以下一次复习一定是
+    新的一条，旧的那条不会自动消失。若不关闭，队列就只增不减——那不是调度，是堆积。
+    「在 `at` 时刻对某技能做了一份有效提交」在语义上就等于"这轮的复习做掉了"，
+    不论做对做错（做错会产生新的 due，见 `scheduler.schedule_submission`）。
+
+    **只关已到期的**（`due <= at`）：还没到期的那条是"未来的计划"，被一次提前的提交
+    关掉会让后续排期凭空消失——那不是完成，是抹掉。
+
+    只接受 UTC 且秒级精度的 `at`（`scheduler` 的 `_iso` 就是这形态）。跨偏移的 ISO 串
+    直接比字符串会判反，所以这里**不做解析**：解析归 `scheduler`，本模块只负责一次比较。
+    """
+    ids = [s for s in skill_ids if isinstance(s, str) and s]
+    if not ids:
+        return 0
+    placeholders = ", ".join("?" for _ in ids)
+    with conn:
+        cur = conn.execute(
+            f"UPDATE review_items SET status = 'done' "
+            f"WHERE user_id = ? AND status = 'pending' AND due <= ? AND skill_id IN ({placeholders})",
+            (user_id, at, *ids),
+        )
+    return int(cur.rowcount or 0)
+
+
+def save_schedule(conn: sqlite3.Connection, result, *, user_id: str | None = None) -> dict:
+    """把一次调度的结果整体落库：先关已完成、再更新卡片、最后加新复习项。
+
+    **顺序三条理由**：
+    1. 卡片先于复习项：复习项的 `due` 是卡片算出来的。若卡片写失败而复习项写成功，
+       库里会出现"卡片说 8 天后、队列说 1 分钟后"的分裂。
+    2. 关旧项先于加新项：新项的 `due` 一定晚于本次提交时刻（FSRS 从 `at` 往后推），
+       理论上不会被自己关掉——但先关再加让这个不变量不依赖"理论上"。
+    3. 只关「本次有效复习过的技能」：`suppressed` / `no_evidence` 的技能不算复习，
+       关掉它们等于用一次不算数的提交抹掉排期。
+
+    幂等：卡片是 upsert、复习项按确定性 id 去重、关旧项是幂等 UPDATE。同一份结果重复落库，
+    库里状态不变（第二次 `items_added` 为 0）。
+    """
+    uid = user_id or getattr(result, "user_id", None)
+    if not isinstance(uid, str) or not uid:
+        raise StoreError("save_schedule 需要 user_id（结果对象上没有时可显式传）")
+    at = getattr(result, "at", None)
+    if not isinstance(at, str) or not at:
+        raise StoreError("结果对象缺 at（本次提交的评测时刻）——关闭已完成项要用它做分界")
+
+    decisions = list(getattr(result, "decisions", ()))
+    effective = [d.skill_id for d in decisions if getattr(d, "action", None) in ("review", "passed")]
+    cards = {k: v.to_dict() for k, v in getattr(result, "cards", {}).items()}
+    items = list(getattr(result, "items", ()))
+
+    closed = close_due_reviews(conn, uid, effective, at=at)
+    written = save_fsrs_cards(conn, uid, cards, at=at)
+    added, skipped = save_review_items(conn, items)
+    return {
+        "user_id": uid,
+        "submission_id": getattr(result, "submission_id", None),
+        "cards_written": written,
+        "items_closed": closed,
+        "items_added": added,
+        "items_skipped": skipped,
+    }

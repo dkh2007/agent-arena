@@ -45,6 +45,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from arena import diagnosis_report as dr  # noqa: E402
 from arena import reconciliation as rc  # noqa: E402
+from arena import scheduler as sched  # noqa: E402
 from arena import store  # noqa: E402
 from arena.assertion_evaluator import SUPPORTED_TYPES  # noqa: E402
 
@@ -229,7 +230,9 @@ def demo_3() -> tuple[str, list[str]]:
     card_form = re.search(r"flashcard|card_front|card_back|front\s+TEXT|back\s+TEXT", body, re.I)
     refs_task = "REFERENCES tasks(task_id)" in body
     refs_sub = "REFERENCES submissions(submission_id)" in body
-    lines.append(f"  review_items.kind 取值：{sorted(kinds)}")
+    # 这个正则把表里的**所有**单引号字面量都抓了，所以 `status` 的三个值也在里面。
+    # 标签照实写"kind + status"：判据只用 `want <= kinds`，但读数不能骗人。
+    lines.append(f"  review_items 里的枚举取值（kind + status）：{sorted(kinds)}")
     lines.append(f"  引用任务 / 历史提交：{refs_task} / {refs_sub}")
     lines.append(f"  卡片正反面文本类字段：{'有' if card_form else '无'}")
 
@@ -249,10 +252,57 @@ def demo_3() -> tuple[str, list[str]]:
                      p.read_text(encoding="utf-8"), re.I):
             used.append(p.name)
     lines.append(f"  实际读写 review_items 的模块：{used or '无'}")
-    lines.append("  结论：**表结构**与决策 3 的形态一致（四种形态 + 引用任务/历史提交，无卡片正反面），")
-    lines.append("        但没有任何代码往里写或读——复习项生成（M4）与调度都没实现，所以只算 PARTIAL。")
-    lines.append("  反证条件：把 kind 改成 flashcard、或删掉 task_id 引用 ⇒ 立刻 FAIL（已用变异锁过）。")
-    return PARTIAL, lines
+    if not used:
+        lines.append("  结论：**表结构**与决策 3 的形态一致（四种形态 + 引用任务/历史提交，无卡片正反面），")
+        lines.append("        但没有任何代码往里写或读——复习项生成与调度都没实现，所以只算 PARTIAL。")
+        lines.append("  反证条件：把 kind 改成 flashcard、或删掉 task_id 引用 ⇒ 立刻 FAIL（已用变异锁过）。")
+        return PARTIAL, lines
+
+    # 判据升级（round-84 / B-08）。"源码里有 SQL 字样"只是代理指标——真正的实质是：
+    # 复习项**由一份报告自动产出**，`due` **来自 py-fsrs 而不是脚本拍的**，且形态仍是可执行任务。
+    # 三条都现场跑，不读注释。
+    items: list = []
+    cards: dict = {}
+    probe_error = ""
+    try:
+        result = sched.schedule_submission(
+            build(raw("raw-fake-retry")), user_id="demo-decision",
+            at="2026-11-15T00:00:00Z", task_has_fault=True,
+        )
+        items, cards = list(result.items), dict(result.cards)
+    except Exception as exc:  # 演示台不许因为新模块报错就整台崩
+        probe_error = repr(exc)
+    lines.append(f"  真跑一次失败提交 → 复习项 {len(items)} 条"
+                 + (f"（探针异常：{probe_error}）" if probe_error else ""))
+    for item in items:
+        lines.append(f"    {item.skill_id:<24}kind={item.kind:<16}due={item.due}  "
+                     f"task={item.task_id}  ← {item.source_submission_id}")
+
+    due_matches_card = bool(items) and all(
+        item.due == cards[item.skill_id].due.astimezone(sched.timezone.utc).replace(
+            microsecond=0).isoformat()
+        for item in items
+    )
+    ok_g, detail_g = _verdict([
+        ("真跑一次失败提交能产出复习项", bool(items), f"{len(items)} 条"),
+        ("形态限定在可执行任务（无抽认卡）",
+         bool(items) and all(i.kind in sched.AUTO_KINDS for i in items),
+         str(sorted({i.kind for i in items}))),
+        ("每条都带任务与历史提交引用",
+         bool(items) and all(i.task_id and i.source_submission_id for i in items),
+         "齐" if items else "无"),
+        ("due 与 py-fsrs 给出的卡片 due 一致", due_matches_card,
+         "一致" if due_matches_card else "不一致"),
+    ])
+    lines += detail_g
+    if not ok_g:
+        return FAIL, lines + [
+            "反证条件已触发：复习项的生成/形态/引用/due 有任一条不成立 ⇒ 决策 3 未真正落地。"]
+    lines.append("  结论：复习项**由报告自动生成**、`due` 由 py-fsrs 给出、形态是可执行任务而非卡片。")
+    lines.append("  边界（不许含糊）：只自动产出 `variant` / `fault_injection` 两种；"
+                 "`timed` / `replay` 要人工介入，登记在 scheduler.py 文件头。")
+    lines.append("  反证条件：把 kind 改成 flashcard、删掉 task_id 引用、或让 due 变成固定常量 ⇒ FAIL。")
+    return PASS, lines
 
 
 # ---------------------------------------------------------------------------
