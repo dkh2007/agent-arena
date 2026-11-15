@@ -7495,7 +7495,7 @@ C 同时满足"数据缺失≠能力不足"与"别让白卷拿满"，是两条�
 |---|---|
 | `pytest tests/test_mastery.py` | **39 passed**（新增 3 条：白卷量级锁 / `gate_status` 留痕 / 缺 `score` 必炸） |
 | `pytest tests/ --collect-only` | **897 collected** |
-| 变异（`.git/mutate_mastery.py`） | **15 组全 `DETECTED`**（新增 M14 留痕失效、M15 静默默认 `ok`） |
+| 变异（`tools/mutations/mutate_mastery.py`） | **15 组全 `DETECTED`**（新增 M14 留痕失效、M15 静默默认 `ok`） |
 | `scripts/mastery_walk.py` | 仍 `1.0000 → 0.7000 → 0.7900`（口径未变，留痕字段不动结果） |
 | `scripts/demo_decision.py --all` | FAIL 0 |
 
@@ -7758,7 +7758,7 @@ BACKLOG 原文说 B-08「一并解锁 P 的衰减，届时 `test_decay_is_not_im
 |---|---|
 | `pytest tests/test_scheduler.py` | **46 passed** |
 | `pytest tests/` | 见 `docs/review-packet.md` 的实测计数（评审包每轮重生成） |
-| 变异（`.git/mutate_scheduler.py`） | **14 组全 `DETECTED`** |
+| 变异（`tools/mutations/mutate_scheduler.py`） | **14 组全 `DETECTED`** |
 | `python scripts/schedule_walk.py` | 五次提交全跑通；首次 `due` = at + 1 分钟（learning step）；cap 1/0 均生效且 pending 条数不变 |
 | `python scripts/mastery_walk.py` | 仍 `1.0000 → 0.7000 → 0.7900`（未触碰掌握度口径） |
 | `python scripts/demo_decision.py --all` | **PASS 8 / PARTIAL 3 / FAIL 0**（决策 3 由 PARTIAL 升 PASS） |
@@ -7860,7 +7860,7 @@ BACKLOG 原文说 B-08「一并解锁 P 的衰减，届时 `test_decay_is_not_im
 |---|---|
 | `pytest tests/test_schedule_advisor.py` | **43 passed** |
 | `pytest tests/` | 见 `docs/review-packet.md` 的实测计数（评审包每轮重生成；本轮 1030 → 1073） |
-| 变异（`.git/mutate_advisor.py`） | **13 组全 `DETECTED`** |
+| 变异（`tools/mutations/mutate_advisor.py`） | **13 组全 `DETECTED`** |
 | `python scripts/advice_walk.py` | 五段全跑通：真数据两条（fr 0.5613 > msp 0.4571）、算例五条与测试同源、改序审计 2 行、三组权重敏感性、非法权重被拒 |
 | 排程前后库 | `review_items` / `user_skill_states` / `submissions` 三张表逐行相同（只读不写） |
 
@@ -7965,14 +7965,22 @@ BACKLOG 原文说 B-08「一并解锁 P 的衰减，届时 `test_decay_is_not_im
 
 | 检查 | 结果 |
 |---|---|
-| `pytest tests/test_locate_skeleton.py` | **33 passed** |
+| `pytest tests/test_locate_skeleton.py` | **34 passed** |
 | `pytest tests/test_task_variants.py tests/test_task_yaml.py` | **128 passed** |
-| `pytest tests/` | 见 `docs/review-packet.md` 的实测计数（评审包每轮重生成；本轮 1073 → 1092） |
-| 变异（`.git/mutate_locate.py`） | **11 组全 `DETECTED`**（M1 首跑 MISSED，见 85.5） |
+| `pytest tests/` | 见 `docs/review-packet.md` 的实测计数（评审包每轮重生成；本轮 1073 → **1126**） |
+| 变异（`tools/mutations/mutate_locate.py`） | **11 组全 `DETECTED`**（M1 首跑 MISSED，见 85.5） |
 | 四形态端到端 | `correct` 1.00 / `extra_param` 0.75 / `wrong_line` 0.50 / `no_retry` 0.00，两题同形 |
 
-限定的「可复核」路径：`python -m pytest tests/test_locate_skeleton.py -q`（33 条，含四形态）；
-`python .git/mutate_locate.py`（11 条变异，全 DETECTED）；单题冒烟见 §85.6 的两条命令。
+限定的「可复核」路径（在仓根执行；仓库里不放本机绝对路径，`push_gate` 的 `ABS_PATH`
+规则会拦）：
+
+```bash
+python -m pytest tests/test_locate_skeleton.py -q      # 34 条，含四种缺陷形态
+python tools/mutations/mutate_locate.py                # 11 条变异，全 DETECTED
+```
+
+计数口径提醒：`34` 是 **collected**（含参数化展开），`grep -c "^def test"` 只数到 24——
+本轮我先写"33"再被实测纠正为 34，记在这里免得下一个人拿函数个数当条数。
 
 ### 85.7 主动承认的边界（四条）
 

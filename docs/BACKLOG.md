@@ -222,7 +222,7 @@
   `R3`/`R4` 沿用同一 id（同一能力、同一判据，跨骨架可比）。
 - **做完判据（已满足）**：不含分页的两个任务能跑参考 Agent 得 1.0；四种缺陷形态
   `correct` 1.0 / `extra_param` 0.75（只挂 R4）/ `wrong_line` 0.50（只挂 R2）/ `no_retry` 0
-  （R3 + 连带 R1/R5）——`tests/test_locate_skeleton.py` 33 条逐形态锁死。
+  （R3 + 连带 R1/R5）——`tests/test_locate_skeleton.py` 34 条逐形态锁死。
 - **一处超出计划书，摆明面**：计划书 M2 写"任务库 ≤10"，现在是 **12**（10 汇报族 + 2 定位族）。
   两条路：① 对外说"10 个题库 + 2 个异型样例题"（改一个词，不动计划书结构）；
   ② 下线 2 个汇报族变体回到 10（但 3 技能 × 2–3 变体会变薄）。**我按 ① 落地，待人确认措辞。**
@@ -324,7 +324,7 @@
   落到计入层（≤10 行）+ 反转 `test_gate_failure_still_lifts_credit_skills` /
   `test_one_white_paper_looks_like_a_perfect_run` 两条现状锁；A3 给出打标查询与阈值。
 - **验证**：`python scripts/mastery_walk.py`（λ 敏感性已有机制）；白卷量级见上面那条测试；
-  `python .git/mutate_mastery.py`（15 组变异，含 2 组守 `gate_status` 留痕）。
+  `python tools/mutations/mutate_mastery.py`（15 组变异，含 2 组守 `gate_status` 留痕）。
 - **谁推**：我（B-05 之后）＋ ③ 需人拍。
 - **A1 展示规则（展示层还没有，先记契约）**：分数列与技能列**都要带"本次不合格"限定词**，
   例如「0（本次不合格，任务未完成）」+「重试规范 ✓（本次证据来自不合格提交）」。
@@ -388,7 +388,7 @@
   `fault_injection=0`（母本 1）。后者正是 `kind` 的依据，错了等于"故障注入课永远不推故障注入复习"。
   已改成走 `load_task()`，并加测试锁住变体与母本的元数据一致。
 - **裁判**：`test_scheduler.py` **46 条**；测试总数 1029 → 见 §83.7；
-  变异 **14 组全 DETECTED**（`.git/mutate_scheduler.py`）；决策 3 从 PARTIAL 升到 **PASS**。
+  变异 **14 组全 DETECTED**（`tools/mutations/mutate_scheduler.py`）；决策 3 从 PARTIAL 升到 **PASS**。
 - **主动承认的边界**：① 只自动产出 `variant` / `fault_injection` 两种形态，
   `timed` / `replay` 要人工介入；② 不挑题（`task_id` 记的是缺口来源任务，
   "用哪个变体复习"留给 B-09）；③ rating 阈值与 learning steps 都是假设，未标定。
@@ -459,7 +459,7 @@
   「MVP 只做两因子（遗忘风险 + 掌握度）」并把"截止/错误热度"写成规划迭代；但计划书 §五 第 3 条
   与 ROADMAP 第 5 层都写四因子。本轮走第三条路：**错误热度已有数据源就做成真代码**（少写一句
   "规划"），**截止因子做成留接口的弃权**（不编数据）。措辞口径需人拍（B-09b）。
-- **裁判**：`test_schedule_advisor.py` **43 条**；变异 `.git/mutate_advisor.py` **13 组全 DETECTED**；
+- **裁判**：`test_schedule_advisor.py` **43 条**；变异 `tools/mutations/mutate_advisor.py` **13 组全 DETECTED**；
   `advice_walk.py` 五段全跑通、排程前后三张表逐行相同；测试总数 1030 → 1073。
 - **主动承认的边界（四条）**：
   ① 权重 8:4:2:1、平手格 0.02、热度窗口 7 天、截止视界 7 天——四个数全是**假设**，未标定（B-09c）。

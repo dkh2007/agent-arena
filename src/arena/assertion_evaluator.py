@@ -420,7 +420,7 @@ def _projected_scalar(item: Any) -> Any:
     **它只进 evidence，不参与判定**：R3 的通过/失败看的是过滤后的调用序列，
     分类看的是调用次数与末次状态。所以这段改坏不会让分数变，只会让报告里的
     "读了哪几个文件"变成一串 None——那正是它必须被测试直接盯住的原因
-    （`.git/mutate_locate.py` 的 M1 打的就是 `test_projected_scalar_takes_the_only_value`）。
+    （`tools/mutations/mutate_locate.py` 的 M1 打的就是 `test_projected_scalar_takes_the_only_value`）。
     """
     if isinstance(item, dict) and len(item) == 1:
         return next(iter(item.values()))
