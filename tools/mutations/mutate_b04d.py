@@ -113,6 +113,39 @@ MUTATIONS = [
      "            skipped.append(Skipped(ev.submission_id, ev.at, \"no_counted_assertion\"))\n"
      "            continue",
      f"{T}::test_disputed_submission_still_counts_for_mastery_and_scheduling"),
+
+    # ── 一笔原子写（B-07d ③ / 外审 T6，round-93）─────────────────────────────
+    ("M11 atomic() 退回 with conn（内层提前提交，假原子）",
+     ST,
+     '    name = f"sp_{next(_SAVEPOINT_SEQ)}"\n'
+     '    conn.execute(f"SAVEPOINT {name}")\n'
+     "    try:\n"
+     "        yield\n"
+     "    except BaseException:\n"
+     '        conn.execute(f"ROLLBACK TO {name}")\n'
+     '        conn.execute(f"RELEASE {name}")\n'
+     "        raise\n"
+     "    else:\n"
+     '        conn.execute(f"RELEASE {name}")',
+     "    with conn:  # 变异：假原子\n"
+     "        yield",
+     "tests/test_mastery_snapshot.py::test_nested_atomic_does_not_commit_the_outer_write"),
+
+    ("M12 submit() 不包事务（提交先落，入队失败留半状态）",
+     API,
+     "        with store.atomic(conn):\n"
+     "            store.ensure_user(conn, prep.user_id)",
+     "        if True:  # 变异：不包事务\n"
+     "            store.ensure_user(conn, prep.user_id)",
+     f"{T}::test_queue_failure_rolls_back_the_submission_and_the_snapshot"),
+
+    ("M13 重评落库不包事务（结论进了、成绩没刷）",
+     Path("src/arena/reappraisal.py"),
+     "        with store.atomic(conn):\n"
+     "            row = store.save_reappraisal(conn, submission_id, new_report,",
+     "        if True:  # 变异：不包事务\n"
+     "            row = store.save_reappraisal(conn, submission_id, new_report,",
+     "tests/test_reappraisal.py::test_a_failed_refresh_rolls_back_the_reappraisal_record"),
 ]
 
 

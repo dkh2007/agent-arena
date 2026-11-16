@@ -8841,3 +8841,116 @@ INTEGRITY_OK=True
 ④ 若对不存在的提交返回空 `reappraisals` 数组 ⇒ "id 拼错"和"没改过分"混成一样。
 ⑤ 若 `submissions.assert_score` 被重评改写 ⇒ "当时算出的分"与"当前生效的分"
    被合并成一个数，分数争议就再也没有可对账的基线。
+
+---
+
+## §94 round-93 下半场：B-07d ③ 事务原子性——把"三步各写各的"改成"一笔"
+
+### 94.1 缺陷的样子，不止一种
+
+B-07d ③（外审 T6）原来只记了一条：提交落了、快照刷新炸了 ⇒ `submissions=1 / snapshots=0`。
+本轮顺着同一根因把三处全查了一遍，**同一种断法有三个落点**：
+
+| 断在哪 | 半状态 | 谁看得见 |
+|---|---|---|
+| 提交 ↔ 快照刷新 | 提交在、成绩没算 | 报告层看得见，成绩层看不见 |
+| 提交 ↔ 仲裁入队 | 提交在、待办没有 | 报告层看得见，人工复核永远看不到它 |
+| 重评落库 ↔ 快照刷新 | 新结论在、旧成绩在 | 两处都"权威"，谁都以为自己对 |
+
+第三条最隐蔽：`effective_ratio()` 返回它读到的东西，不会质疑；读重评链的人看到 0.50、
+读成绩的人看到 1.00，**两边都不会报错**。
+
+三种半状态有一个共同点：**没有任何一层会失败**。所以判据只能是"异常之后查询结果为 0"，
+不能是"抛了异常"——假原子同样抛异常。
+
+### 94.2 根因不是"没包事务"，而是 `with conn:` 的两个陷阱
+
+第一版实现我写的是"外层包 `with conn:`，内层改成 savepoint 分支"，跑测试直接红。
+红的地方很值得记：
+
+> **`with conn:` 进入时不 BEGIN。** Python sqlite3 只在遇到 DML 时才隐式开启事务，
+> `SELECT` 不会。所以"外层 `with conn:` → 内层先查一下再写"这段里，内层调
+> `conn.in_transaction` 看到的是 `False`，于是它自己 BEGIN + COMMIT——外层保护当场失效。
+
+加上第二个陷阱（`with conn:` 是 COMMIT 包装而不是 SAVEPOINT，内层退出会提交外层），
+结论是：**只要用 `with conn:` 参与嵌套，就一定会漏。**
+
+### 94.3 落地：`store.atomic()` 统一用 SAVEPOINT，不分叉
+
+```python
+name = f"sp_{next(_SAVEPOINT_SEQ)}"
+conn.execute(f"SAVEPOINT {name}")
+try:
+    yield
+except BaseException:
+    conn.execute(f"ROLLBACK TO {name}"); conn.execute(f"RELEASE {name}"); raise
+else:
+    conn.execute(f"RELEASE {name}")
+```
+
+选 SAVEPOINT 而不是"检测有没有事务再分叉"，因为 SQLite 给了一条正好对口的性质：
+**`SAVEPOINT` 在事务外执行时自己开启事务，`RELEASE` 最外层 savepoint 即提交；
+嵌套时只释放自己那一层。** 一条性质同时解决上面两个陷阱，也让实现不依赖驱动的
+隐式 BEGIN 行为——换连接模式不会静默退化（`test_atomic_saves_even_when_the_driver_has_no_transaction_open`
+在 `autocommit=True` 的连接上验了这一点）。
+
+替换范围：`store.py` 内 15 处 `with conn:` → `with atomic(conn):`。
+**两处保留 `with conn:`**：`init_db()` 与 `migrate()` 里包 `executescript` 的那两段——
+`executescript` 会隐式 COMMIT，把外层事务连同 savepoint 一起结束。它们不被嵌套。
+
+三处调用方各包一层：
+
+| 位置 | 包住什么 |
+|---|---|
+| `store.save_submission()` | INSERT + `refresh_user()` |
+| `submission_api.submit()` | `ensure_user` + `save_submission` + `record_arbitration` |
+| `reappraisal.reappraise()` | `save_reappraisal` + `refresh_user` |
+
+### 94.4 顺带修掉一个错误码
+
+`submit()` 原来是外层 `except store.StoreError → 409 store_rejected` 统一转换。
+现在 `record_arbitration` 也在同一段里，**入队失败会被报成"你的提交有问题"**——
+调用方会去改一个本来没问题的请求体，而我们自己的队列写坏了。
+
+改成在 `save_submission()` 周围就地转 409，入队失败走 `_guard` 的 500 兜底。
+`test_a_duplicate_id_still_reports_409_and_leaves_the_first_untouched` 锁的是
+"转换之后对外表现与以前一致"。
+
+### 94.5 状态锁反转
+
+```python
+# 以前（锁缺陷）
+def test_refresh_failure_leaves_the_submission_committed_without_snapshot(...):
+    assert submissions == 1 and snapshots == 0
+
+# 现在（锁修复）
+def test_refresh_failure_rolls_back_the_submission_too(...):
+    assert submissions == 0 and snapshots == 0
+```
+
+外加三条新测试：
+`test_nested_atomic_does_not_commit_the_outer_write`（嵌套语义单独钉住，
+防"两个 `with conn:` 套起来碰巧能过"）、
+`test_reappraisal_rolls_back_when_the_snapshot_refresh_fails`、
+`test_queue_failure_rolls_back_the_submission_and_the_snapshot`。
+
+### 94.6 边界
+
+① **`atomic()` 只管一个连接内**。跨连接、跨进程的一致性不在本函数职责内，
+   也管不了——那是"要不要上 WAL / 事务隔离级别"的另一件事，未开。
+② **不处理 `executescript`**（见 94.3）。
+③ **回滚之后做的事要能安全重试**：现在异常上抛、库里什么没变，客户端重发同一份
+   `submission_id` 不会被"已存在"挡住——这条**是修复带来的新可用性**，但没有单独的
+   端到端重试测试（需要 HTTP 层模拟一次失败再重发，登记为下一步可选）。
+④ **不改变写放大**：每条 savepoint 多 2–3 条语句。SQLite 单写者，本地文件，
+   量级可忽略；不构成性能论证，只是"没有数量级的坏事"。
+
+### 94.7 反证条件
+
+① 若刷新失败后 `submissions` 里仍有那一条 ⇒ 退回了"插入先提交"。
+② 若嵌套 `atomic()` 时外层写入被保留 ⇒ 有人把它改成了 `with conn:`（M11 就是这个）。
+③ 若入队失败返回 409 ⇒ 错误码又混成一处了。
+④ 若 `init_db()` / `migrate()` 被包进 `atomic()` ⇒ `executescript` 会提前 COMMIT，
+   迁移中途失败会留下半迁移的库（比现在更糟）。
+⑤ 若 `test_atomic_saves_even_when_the_driver_has_no_transaction_open` 红 ⇒
+   实现又开始依赖驱动的隐式 BEGIN 了。

@@ -113,8 +113,8 @@ MUTATIONS = [
 
     # ⑭ 提交后不刷新 ⇒ 判据①「save_submission 后 P 落库」直接不成立
     ("M14 写路径不自动刷新快照",
-     S, '    if refresh_mastery:\n        # 局部导入：mastery_snapshot → mastery → store，模块级导入会成环。',
-     '    if False and refresh_mastery:\n        # 局部导入：mastery_snapshot → mastery → store，模块级导入会成环。',
+     S, '        if refresh_mastery:\n            # 局部导入：mastery_snapshot → mastery → store，模块级导入会成环。',
+     '        if False and refresh_mastery:\n            # 局部导入：mastery_snapshot → mastery → store，模块级导入会成环。',
      f"{T}::test_save_submission_refreshes_snapshots_by_default"),
 
     # ⑮ 允许降级 ⇒ 用旧代码开新库会静默写坏结构

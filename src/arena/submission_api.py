@@ -499,20 +499,28 @@ def submit(payload: Any, *, registry: TaskRegistry, conn_factory, now: str | Non
 
     conn = conn_factory()
     try:
-        store.ensure_user(conn, prep.user_id)
-        store.save_submission(
-            conn, report, user_id=prep.user_id,
-            trace=prep.trace, artifacts=prep.artifacts,
-            agent_endpoint_url=prep.endpoint_url,
-            judge_scores=report.get("judge_scores"),
-            judge_agreement=report.get("judge_agreement"),
-        )
-        if outcome is not None:
-            # 必须在落库之后：队列外键指向 submissions，先入队会指向不存在的证据。
-            jp.record_arbitration(conn, outcome)
-    except store.StoreError as exc:
-        # 重复 submission_id 走这里：409 + 不覆盖，诊断记录要能回溯到「当时那份」
-        raise SubmissionError("store_rejected", str(exc), status=409) from exc
+        # 三步写成一笔（round-93 / B-07d ③）：用户、提交（含 P 快照刷新）、仲裁入队
+        # 要么全成、要么全不成。以前各写各的，中断会留下"有提交、没成绩"或
+        # "有提交、该排队却没排"的半状态——两者都不会被任何上游断言发现。
+        with store.atomic(conn):
+            store.ensure_user(conn, prep.user_id)
+            try:
+                store.save_submission(
+                    conn, report, user_id=prep.user_id,
+                    trace=prep.trace, artifacts=prep.artifacts,
+                    agent_endpoint_url=prep.endpoint_url,
+                    judge_scores=report.get("judge_scores"),
+                    judge_agreement=report.get("judge_agreement"),
+                )
+            except store.StoreError as exc:
+                # 重复 submission_id 走这里：409 + 不覆盖，诊断记录要能回溯到「当时那份」。
+                # **就地转换再上抛**，而不是放到外层 except：外层还包含入队那一步，
+                # 入队失败是平台侧故障（500 兜底），冒充成 409 "store_rejected"
+                # 会让调用方去改一个本来没问题的请求体。
+                raise SubmissionError("store_rejected", str(exc), status=409) from exc
+            if outcome is not None:
+                # 必须在落库之后：队列外键指向 submissions，先入队会指向不存在的证据。
+                jp.record_arbitration(conn, outcome)
     finally:
         conn.close()
     return report

@@ -1,6 +1,11 @@
 # 数据模型 v0.1（M-1 第 2 步）
 
-> 状态：**v0.5（2026-11-16 / round-92：B-04d 接线第一步，`SCHEMA_VERSION` 4→5。
+> 状态：**v0.6（2026-11-16 / round-93：无表结构变更，补一条**写契约**——`store.atomic()`。
+> 凡是"写结论 + 刷派生值"（提交↔P 快照、提交↔仲裁入队、重评落库↔P 快照）必须在同一笔里；
+> 它是 SAVEPOINT 实现、可嵌套。`with conn:` 不可参与嵌套：它退出即 commit（内层会提交外层），
+> 且**进入时不 BEGIN**（`SELECT` 不触发隐式事务），内层会自行 BEGIN+COMMIT。
+> 详见 `review-response-v1.md` §94）**。
+> 上一版：**v0.5（2026-11-16 / round-92：B-04d 接线第一步，`SCHEMA_VERSION` 4→5。
 > 新增第十张表 `reappraisals`（重评记录，append-only，见 §5.5），并把「按时间重放」
 > 的读数入口改成**生效报告**（`store.user_reports()` 返回 `report`，不再返回 `diagnosis`）。
 > 旧表一个字段没动、没删；`submissions` 一行不新增——**一份作答在 P 的重放里永远只算一个 step**）**。

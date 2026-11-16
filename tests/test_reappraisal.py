@@ -334,3 +334,41 @@ def test_batch_reappraisal_only_touches_the_given_task(env):
         assert rap.reappraise_user(c, USER, other, reason=REASON, apply=False) == []
     finally:
         c.close()
+
+
+# ── 6. 重评落库与刷新同一笔（B-07d ③，round-93）─────────────────────────────
+
+def test_a_failed_refresh_rolls_back_the_reappraisal_record(env, monkeypatch):
+    """刷新 P 失败 ⇒ 重评记录也不许留。
+
+    半状态在这里的具体样子：`reappraisals` 里有一条新结论、而 `mastery_snapshots`
+    还是旧的。读成绩的人看到旧分，读重评链的人看到新分，**两边都是"权威"**，
+    而且没有任何一层会报错——`effective_ratio()` 只是返回它读到的东西。
+
+    这条与 `test_refresh_failure_rolls_back_the_submission_too` 是同一条理由的
+    两个落点：凡是"写结论 + 刷派生值"，两者必须同一笔。
+    """
+    from arena import mastery_snapshot as snap
+
+    _submit(env, _payload())
+    c = env["conn"]()
+    try:
+        assert store.effective_ratio(c, "s-1") == 1.0
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("模拟刷新失败")
+
+        monkeypatch.setattr(snap, "refresh_user", boom)
+        with pytest.raises(RuntimeError, match="模拟刷新失败"):
+            rap.reappraise(c, "s-1", _changed_task(), reason=REASON, created_at=AT)
+
+        assert store.list_reappraisals(c, "s-1") == [], "重评记录留下了 ⇒ 半状态"
+        assert store.effective_ratio(c, "s-1") == 1.0
+
+        # 反面对照：恢复之后同一次重评能正常落地（防"永远回滚"也能过上面几条）。
+        monkeypatch.undo()
+        out = rap.reappraise(c, "s-1", _changed_task(), reason=REASON, created_at=AT)
+        assert out.state == "reappraised" and out.revision == 1
+        assert store.effective_ratio(c, "s-1") == 0.5
+    finally:
+        c.close()

@@ -538,12 +538,20 @@ def test_orphan_rows_outside_registered_scope_are_detected_but_not_repaired(db):
     assert before == after, "现状：范围外孤儿行修不掉；B-07d 修复后把本断言反转"
 
 
-def test_refresh_failure_leaves_the_submission_committed_without_snapshot(db, monkeypatch):
-    """外审 T6 的**现状锁**（已知缺陷，B-07d 修复时反转本测试）。
+def test_refresh_failure_rolls_back_the_submission_too(db, monkeypatch):
+    """刷新失败 ⇒ 提交也撤销，库里什么都不留（B-07d ③ / 外审 T6，round-93 修）。
 
-    `save_submission()` 的 INSERT 与快照刷新不在同一事务：刷新抛异常时，
-    提交已落库、快照为空。真修要把两者放进同一事务，注意 `refresh_*`
-    内部各自还有 `with conn:`，得先拆掉嵌套提交，不能只在外层再套一个。
+    **这条是反转过来的**：以前它锁的是缺陷本身——`submissions=1` / `snapshots=0`，
+    留下"有提交、没成绩"的半状态。那种状态特别难查，因为：
+      · 报告层看得见它（`GET /submissions/{id}` 返回一份正常报告）；
+      · 成绩层看不见它（快照里没有这一份的贡献）；
+      · 重放也修不回来（`recompute_all()` 只重放提交，而它已经在提交里了，
+        所以"重算一次"看起来什么都没变）。
+    三者叠加的结论是"数据是对的"，而它其实从头到尾只存在于一半的地方。
+
+    修复不允许是"外层再套一个 `with conn:`"——那是假原子：内层 refresh 内部的
+    `with conn:` 会 `commit()`，把外层已经写进去的行一起提交掉。所以判据必须是
+    **异常之后查询结果为 0**，而不是"抛了异常"。
     """
     def boom(*args, **kwargs):
         raise RuntimeError("模拟刷新失败")
@@ -552,5 +560,54 @@ def test_refresh_failure_leaves_the_submission_committed_without_snapshot(db, mo
     with pytest.raises(RuntimeError, match="模拟刷新失败"):
         store.save_submission(db, _report("raw-perfect", submission_id="half", at=AT1),
                               user_id="u", created_at=AT1)
-    assert db.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 0
     assert db.execute("SELECT COUNT(*) FROM mastery_snapshots").fetchone()[0] == 0
+
+
+def test_nested_atomic_does_not_commit_the_outer_write(db):
+    """嵌套 `atomic()` 用 SAVEPOINT，不是提前 commit——这是"真原子"与"假原子"的分界。
+
+    只有 `test_refresh_failure_rolls_back_the_submission_too` 一条的话，
+    "两个 `with conn:` 套起来也能过"这种写法有可能碰巧满足它（内层恰好没 commit）。
+    这条把语义单独钉住：**外层已经写完、内层才失败，外层那条也必须没了**。
+    """
+    with pytest.raises(RuntimeError, match="inner boom"):
+        with store.atomic(db):
+            store.ensure_user(db, "u-outer")
+            with store.atomic(db):
+                raise RuntimeError("inner boom")
+
+    assert db.execute("SELECT COUNT(*) FROM users WHERE user_id = 'u-outer'").fetchone()[0] == 0
+
+    # 反面对照：不抛异常时两层都该落地（防"永远回滚"也能过上面那条）。
+    with store.atomic(db):
+        store.ensure_user(db, "u-outer")
+        with store.atomic(db):
+            pass
+    assert db.execute("SELECT COUNT(*) FROM users WHERE user_id = 'u-outer'").fetchone()[0] == 1
+
+
+def test_atomic_saves_even_when_the_driver_has_no_transaction_open(db):
+    """`atomic()` 不依赖驱动的隐式 BEGIN，所以在 autocommit 连接上照样能回滚。
+
+    这条防的是"改了连接模式、保护悄悄消失"：`with conn:` 在 `autocommit=True` 下
+    什么都不做（每条语句自己提交），而所有原子性测试仍会绿——因为正常路径本来
+    就不会失败。直接在一个 autocommit 连接上验一次回滚，把这个前提钉死。
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:", autocommit=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE t (k TEXT PRIMARY KEY)")
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            with store.atomic(conn):
+                conn.execute("INSERT INTO t VALUES ('x')")     # autocommit 下已落盘
+                raise RuntimeError("boom")
+        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+
+        with store.atomic(conn):
+            conn.execute("INSERT INTO t VALUES ('x')")
+        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 1
+    finally:
+        conn.close()

@@ -380,3 +380,59 @@ def test_a_stored_submission_can_be_replayed_under_a_changed_rubric(env):
         assert abs(new_p - old_p) >= 0.02, "差异小于人工复核阈值，这个用例证明不了筛查机制"
     finally:
         c.close()
+
+
+# ── 6. 一笔原子写（B-07d ③ / 外审 T6，round-93）─────────────────────────────
+
+def test_queue_failure_rolls_back_the_submission_and_the_snapshot(env, monkeypatch):
+    """入队失败 ⇒ 提交、快照、队列**一律不留**。
+
+    以前三步各写各的，"提交落了、入队炸了"会留下：报告层看得见这份提交、
+    成绩层按它算过了 P、但待办里没有它——于是这份争议**永远不会被人工看见**，
+    而所有上游断言都是绿的（它们各自只查自己那一层）。
+
+    判据必须是"异常之后查询结果为 0"，不是"抛了异常"：假原子（外层再套
+    `with conn:`）同样会抛异常，但库里会留下那条提交。
+    """
+    from arena import judge_pipeline as jp
+
+    def boom(*args, **kwargs):
+        raise store.StoreError("队列写坏了")
+
+    monkeypatch.setattr(jp, "record_arbitration", boom)
+    with pytest.raises(store.StoreError, match="队列写坏了"):
+        _submit(env, _payload(user_id=DISPUTED, submission_id="s-qfail"),
+                judge=DISAGREE(), arbitration_threshold=0.8)
+
+    c = env["conn"]()
+    try:
+        assert store.count_submissions(c) == 0
+        assert store.list_arbitration(c, status=None) == []
+        assert c.execute("SELECT COUNT(*) FROM mastery_snapshots").fetchone()[0] == 0
+    finally:
+        c.close()
+
+
+def test_a_duplicate_id_still_reports_409_and_leaves_the_first_untouched(env):
+    """把 StoreError 就地转成 409 之后，重复 id 的对外表现不许跟着变。
+
+    改这一处最容易顺手改坏：`submit()` 原来是外层 `except store.StoreError`
+    统一转 409，现在必须在 `save_submission()` 周围就地转——否则入队失败
+    （也是 StoreError）会被报成 409 "你的提交有问题"，让调用方去改一个
+    本来没问题的请求体。这条锁的是"转换之后，重复 id 仍然 409、首份仍完好"。
+    """
+    from arena.submission_api import SubmissionError
+
+    _submit(env, _payload(user_id=CLEAN, submission_id="s-dup"))
+    with pytest.raises(SubmissionError) as ei:
+        _submit(env, _payload(user_id=CLEAN, submission_id="s-dup"))
+    assert ei.value.status == 409
+    assert ei.value.code == "store_rejected"
+
+    c = env["conn"]()
+    try:
+        assert store.count_submissions(c) == 1
+        # 首份仍是第一次那份：重复提交不许改掉已有记录的任何字段。
+        assert store.load_submission(c, "s-dup")["assert_score"] == 1.0
+    finally:
+        c.close()

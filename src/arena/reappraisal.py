@@ -196,12 +196,15 @@ def reappraise(
 
     revision = None
     if apply:
-        row = store.save_reappraisal(conn, submission_id, new_report,
-                                     reason=reason, created_at=created_at)
-        revision = int(row["revision"])
-        # 刷新该用户全部技能的快照：重评可能让某个技能从"有证据"变成"证据变弱"，
-        # 也可能影响本提交没直接压到的技能（P 是全量重放的累积量）。
-        ms.refresh_user(conn, store.load_submission(conn, submission_id)["user_id"])
+        # 落库与刷新同一笔（B-07d ③ 的同一条理由）：重评记录写进去了、P 没刷，
+        # 就会得到"档案里是新结论、成绩还是旧的"——而且这种不一致没有任何断言看得见。
+        with store.atomic(conn):
+            row = store.save_reappraisal(conn, submission_id, new_report,
+                                         reason=reason, created_at=created_at)
+            revision = int(row["revision"])
+            # 刷新该用户全部技能的快照：重评可能让某个技能从"有证据"变成"证据变弱"，
+            # 也可能影响本提交没直接压到的技能（P 是全量重放的累积量）。
+            ms.refresh_user(conn, store.load_submission(conn, submission_id)["user_id"])
 
     return ReappraisalOutcome(
         submission_id=submission_id,

@@ -82,8 +82,8 @@ MUTATIONS = [
      f"{T}::test_build_series_uses_db_created_at_as_time_axis"),
 
     ("M11 读历史不过滤用户（跨用户串味）",
-     S, "        \"SELECT * FROM submissions WHERE user_id = ? ORDER BY created_at ASC, submission_id ASC\",\n        (user_id,),",
-     "        \"SELECT * FROM submissions ORDER BY created_at ASC, submission_id ASC\",\n        (),",
+     S, '        "WHERE s.user_id = ? ORDER BY s.created_at ASC, s.submission_id ASC",',
+     '        "WHERE (? IS NOT NULL) ORDER BY s.created_at ASC, s.submission_id ASC",',
      f"{T}::test_build_series_ignores_other_users"),
 
     ("M12 缺 attribution_policy 时静默按 pass/fail 计",

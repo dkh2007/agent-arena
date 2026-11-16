@@ -71,3 +71,9 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
    pytest 退出码是 **4**（不是 5），旧脚本没拦，把 `no tests ran` 当成 `DETECTED` 打印出来。
    现在判定收紧成：**只有 `returncode == 1` 才算抓住**，2/3/4/5 一律 `INVALID`。
    改测试名的同一次提交里必须顺手改对应变异条目的节点。
+6. **不要一边跑全量 `pytest`、一边跑变异脚本。** round-93 同时起了 `pytest tests/ -q`
+   和 `mutate_mastery.py`（后者自己再 spawn 一批 pytest 子进程），全量那边报
+   `84 failed` —— 而每个文件单跑、以及串行重跑全量都是 `1250 passed`。
+   两个真实原因叠在一起：SQLite 同一批临时库上的锁竞争，以及临时目录清理互相踩。
+   **这类假红最贵**：它会让人去改本来没问题的代码。判据很简单——**失败不集中在一个文件、
+   且每个文件单跑都绿 ⇒ 先怀疑并发，别先怀疑代码**。

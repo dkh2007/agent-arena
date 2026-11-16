@@ -29,11 +29,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import itertools
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILL_TAXONOMY = ROOT / "docs" / "skill-taxonomy-v0.yaml"
@@ -285,6 +287,48 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+_SAVEPOINT_SEQ = itertools.count(1)
+
+
+@contextlib.contextmanager
+def atomic(conn: sqlite3.Connection) -> Iterator[None]:
+    """一次原子写，**允许嵌套**。
+
+    ## 为什么不能用 `with conn:`
+
+    两层问题，都会让"原子"变成假原子：
+
+    1. `with conn:` 是 `commit()` / `rollback()` 的包装，**不是 SAVEPOINT**：
+       内层退出时 `commit()`，把外层已写的东西一起提交，外层再抛异常也回不去。
+    2. 更隐蔽的是**它进入时不 BEGIN**。Python sqlite3 只在遇到 DML 时才隐式开启
+       事务，`SELECT` 不会。所以"外层 `with conn:` → 内层先查一下再写"这段里，
+       内层看到的是"没有事务"，于是它自己 BEGIN + COMMIT——外层的保护当场失效。
+
+    ## 因此统一用 SAVEPOINT（不再区分有没有活动事务）
+
+    SQLite 的 `SAVEPOINT` 在事务外执行时会**自己开启**一个事务，
+    `RELEASE` 最外层 savepoint 即提交；嵌套时只释放自己那一层，不提交外层。
+    这一条性质同时解决上面两个问题，也让本函数不依赖驱动的隐式 BEGIN 行为
+    （将来换连接模式也不会静默退化）。
+
+    ## 唯一的边界
+
+    **不处理 `executescript`**：它会隐式 `COMMIT`，把外层事务连同 savepoint 一起结束。
+    所以建表/迁移那两处（`init_db()` / `migrate()`）仍用 `with conn:`，它们不被嵌套。
+    """
+    # 名字由模块内计数器生成，不接受外部输入，故 f-string 拼 SQL 无注入面。
+    name = f"sp_{next(_SAVEPOINT_SEQ)}"
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        yield
+    except BaseException:
+        conn.execute(f"ROLLBACK TO {name}")
+        conn.execute(f"RELEASE {name}")
+        raise
+    else:
+        conn.execute(f"RELEASE {name}")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """建表（幂等）+ 把结构版本升到当前值。
 
@@ -425,7 +469,7 @@ def save_mastery_snapshot(conn: sqlite3.Connection, row: dict) -> None:
             "允许未注册技能写快照等于让外键变成装饰"
         )
 
-    with conn:
+    with atomic(conn):
         conn.execute(
             "INSERT INTO mastery_snapshots (user_id, skill_id, mastery_p, lam, p0, "
             "evidence_count, last_submission_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
@@ -472,7 +516,7 @@ def list_mastery_snapshots(conn: sqlite3.Connection, *, skill_id: str | None = N
 
 def delete_mastery_snapshot(conn: sqlite3.Connection, user_id: str, skill_id: str) -> int:
     """删一条快照。返回删除行数。用于"该技能已无证据"时避免留下陈旧值。"""
-    with conn:
+    with atomic(conn):
         cur = conn.execute(
             "DELETE FROM mastery_snapshots WHERE user_id = ? AND skill_id = ?",
             (user_id, skill_id),
@@ -508,7 +552,7 @@ def ensure_user(conn: sqlite3.Connection, user_id: str, display_name: str = "") 
     """
     if not isinstance(user_id, str) or not user_id.strip():
         raise StoreError("user_id 必须是非空字符串（不从 agent_id 推断，见模块文档第 2 条）")
-    with conn:
+    with atomic(conn):
         conn.execute(
             "INSERT INTO users (user_id, display_name, created_at) VALUES (?, ?, ?) "
             "ON CONFLICT(user_id) DO NOTHING",
@@ -524,7 +568,7 @@ def register_skills(conn: sqlite3.Connection, taxonomy_path: str | Path = SKILL_
     data = yaml.safe_load(Path(taxonomy_path).read_text(encoding="utf-8"))
     skills = data.get("skills") or []
     now = _now()
-    with conn:
+    with atomic(conn):
         for s in skills:
             conn.execute(
                 "INSERT INTO skills (skill_id, name, prerequisites, created_at) VALUES (?, ?, ?, ?) "
@@ -541,7 +585,7 @@ def register_patterns(conn: sqlite3.Connection, vocab_path: str | Path = VOCAB_P
     data = yaml.safe_load(Path(vocab_path).read_text(encoding="utf-8"))
     patterns = data.get("patterns") or []
     now = _now()
-    with conn:
+    with atomic(conn):
         for p in patterns:
             conn.execute(
                 "INSERT INTO error_patterns "
@@ -610,7 +654,7 @@ def register_task(conn: sqlite3.Connection, yaml_path: str | Path,
     # 取 `enabled` 而不是"配置块非空"：块存在但 `enabled: false` 表示这一版没开故障注入，
     # 记成 True 会让排程层把正常任务当调试题推。
     fault_injection = 1 if (task.get("fault_injection") or {}).get("enabled") else 0
-    with conn:
+    with atomic(conn):
         conn.execute(
             "INSERT INTO tasks (task_id, yaml_path, title, primary_skill_id, secondary_skill_ids, "
             "variant_template_id, fault_injection, git_hash, rubric_count, created_at) "
@@ -688,6 +732,12 @@ def save_submission(
     迁移回填、故意构造"过期快照"的测试需要这个开关。
     刷新失败会抛（不吞）：缓存写坏了还让提交报成功，是最难查的那种不一致。
 
+    **刷新与 INSERT 在同一事务里（round-93 / B-07d ③）**：以前两者分开提交，
+    刷新抛异常会留下"有提交、没成绩"的半状态。现在整块包在 `atomic()` 内，
+    刷新失败 ⇒ INSERT 也回滚 ⇒ 客户端拿到错误且库里什么都没变（可以安全重试）。
+    这依赖 `refresh_*` 内部改用 `atomic()`——它们原本各自 `with conn:` 会提前提交，
+    只在外层再套一个 `with conn:` 是**假原子**。
+
     **v4 / B-04d**：`artifacts`（原始产物）与 `trace` 一起落库。报告里的 credit 断言
     是拿产物判的，只留报告等于只留结论；判据改动后想按新标准重评历史提交，
     必须有这份产物作为输入。不传就是 NULL——那是"这份提交不可回溯"的诚实记法，
@@ -720,7 +770,7 @@ def save_submission(
         )
 
     stamp = created_at or sub.get("evaluated_at") or _now()
-    with conn:
+    with atomic(conn):
         conn.execute(
             "INSERT INTO submissions (submission_id, user_id, task_id, task_git_hash, agent_endpoint_url, "
             "trace, artifacts, assert_score, judge_scores, judge_agreement, detected_patterns, diagnosis, "
@@ -742,11 +792,14 @@ def save_submission(
                 stamp,
             ),
         )
-    if refresh_mastery:
-        # 局部导入：mastery_snapshot → mastery → store，模块级导入会成环。
-        from . import mastery_snapshot
+        if refresh_mastery:
+            # 局部导入：mastery_snapshot → mastery → store，模块级导入会成环。
+            from . import mastery_snapshot
 
-        mastery_snapshot.refresh_user(conn, user_id, at=stamp)
+            # **必须在同一个事务里**（B-07d ③ / 外审 T6）：刷新抛异常时提交也要撤销，
+            # 否则留下"有提交、没成绩"的半状态——成绩层看不到它、报告层看得见它，
+            # 而它自己既不会被重算纠正（重放只认提交），也不会被任何断言发现。
+            mastery_snapshot.refresh_user(conn, user_id, at=stamp)
     return submission_id
 
 
@@ -883,7 +936,7 @@ def save_arbitration_entry(
     if existing is not None:
         return existing
 
-    with conn:
+    with atomic(conn):
         conn.execute(
             "INSERT INTO arbitration_queue (submission_id, user_id, task_id, judge_agreement, "
             "threshold, reason, status, opened_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
@@ -941,7 +994,7 @@ def resolve_arbitration(conn: sqlite3.Connection, submission_id: str, *,
             f"{submission_id} 已经裁决过（{current['status']}）——不覆盖；"
             "要改结论请另存一条说明或走新的提交"
         )
-    with conn:
+    with atomic(conn):
         conn.execute(
             "UPDATE arbitration_queue SET status = ?, resolved_at = ?, resolution_note = ? "
             "WHERE submission_id = ? AND status = 'pending'",
@@ -1016,7 +1069,7 @@ def save_reappraisal(
     ).fetchone()[0]
     revision = int(last) + 1
 
-    with conn:
+    with atomic(conn):
         conn.execute(
             "INSERT INTO reappraisals (submission_id, revision, report, reason, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -1105,7 +1158,7 @@ def save_fsrs_cards(conn: sqlite3.Connection, user_id: str, cards: dict[str, dic
     ensure_user(conn, user_id)
     stamp = at or _now()
     written = 0
-    with conn:
+    with atomic(conn):
         for skill_id, card in cards.items():
             if not isinstance(skill_id, str) or not skill_id:
                 raise StoreError(f"skill_id 必须是非空字符串（收到 {skill_id!r}）")
@@ -1153,7 +1206,7 @@ def save_review_items(conn: sqlite3.Connection, items) -> tuple[int, int]:
     新的 due 会派生新的 id，历史因此完整保留。
     """
     added = skipped = 0
-    with conn:
+    with atomic(conn):
         for item in items:
             row = item.to_row() if hasattr(item, "to_row") else dict(item)
             cur = conn.execute(
@@ -1210,7 +1263,7 @@ def set_daily_review_cap(conn: sqlite3.Connection, user_id: str, cap: int) -> in
     if cap < 0:
         raise StoreError(f"daily_review_cap 不能为负（收到 {cap}）")
     ensure_user(conn, user_id)
-    with conn:
+    with atomic(conn):
         conn.execute("UPDATE users SET daily_review_cap = ? WHERE user_id = ?", (cap, user_id))
     return cap
 
@@ -1234,7 +1287,7 @@ def close_due_reviews(conn: sqlite3.Connection, user_id: str, skill_ids, *,
     if not ids:
         return 0
     placeholders = ", ".join("?" for _ in ids)
-    with conn:
+    with atomic(conn):
         cur = conn.execute(
             f"UPDATE review_items SET status = 'done' "
             f"WHERE user_id = ? AND status = 'pending' AND due <= ? AND skill_id IN ({placeholders})",
