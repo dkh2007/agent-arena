@@ -31,6 +31,16 @@
 >    实测：改 `R2` 标准答案后重评历史提交，`ratio` 1.00→0.50、`P` 1.00→0.00
 >    （`scripts/reappraisal_probe.py`）。**遗留**：重评入口未接主流程（需"报告版本"概念）；
 >    v4 之前落库的提交 `artifacts` 为 `NULL`，不可重评。
+> ⑧ **round-92（2026-11-16）重评接线完成**：`SCHEMA_VERSION` 4→5，第十张表 `reappraisals`
+>    （append-only，`(submission_id, revision)`）。新模块 `src/arena/reappraisal.py`——
+>    `rebuild_report()` 用**库里存的** trace + artifacts 按新 rubric 重跑断言执行器，
+>    `reappraise()` 落库并刷新 P，`reappraise_user()` 是"批量回溯重算"的入口。
+>    **不新增 `submissions` 行**：一份作答在 P 的重放里永远只算一个 step（否则掌握度会因
+>    "系统改了判据"凭空变化）。`store.user_reports()` 的键 `diagnosis` → `report`，
+>    值是**生效报告**；`load_report()` 仍返回当时那份。缺产物一律 `missing_artifacts`、
+>    成绩不动（不用 `{}` 顶替）。端到端演示 `scripts/reappraisal_walk.py`（`INTEGRITY_OK=True`）。
+>    **遗留**：受影响提交的范围仍要人指定（B-04e）；复核阈值 0.02 未标定（归 B-04c）。
+>    表数 9 → 10。
 > 单文件交接请以 `docs/BACKLOG.md` 顶部更新块 + `docs/ROADMAP.md` 五层表为现役状态，
 > 下方 §2「当前状态（截至 2026-11-07）」是**历史快照**，勿据此判断现行状态。
 

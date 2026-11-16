@@ -46,12 +46,11 @@ def db(tmp_path):
 
 # --- 地基：建表、外键、真的落了盘 -------------------------------------------------
 
-def test_init_db_is_idempotent_and_creates_nine_tables(tmp_path):
-    """建表两次不报错、表齐九张、结构版本可读。
+def test_init_db_is_idempotent_and_creates_ten_tables(tmp_path):
+    """建表两次不报错、表齐十张、结构版本可读。
 
-    **现状锁，改一次反转一次**：round-88（B-07c）把 v1 的 7 张改成 8 张，
-    round-90（B-04b）再加 `arbitration_queue` 成 9 张；
-    round-91（B-04d）**不再加表**，只给 `submissions` 加 `artifacts` 列（v4）。
+    **现状锁，改一次反转一次**：round-88（B-07c）7 → 8 张，round-90（B-04b）→ 9 张，
+    round-91（B-04d）只加列不加表（v4），round-92 加 `reappraisals` → 10 张（v5）。
     锁的**不是数字本身**，而是「`init_db()` 会顺带把版本抬到 `SCHEMA_VERSION`」——
     表建了而版本没抬，才是真故障（半迁移）。
     """
@@ -61,10 +60,9 @@ def test_init_db_is_idempotent_and_creates_nine_tables(tmp_path):
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"users", "skills", "tasks", "error_patterns", "submissions",
             "user_skill_states", "review_items", "mastery_snapshots",
-            "arbitration_queue"} <= names
-    # v4 是加列不是加表：表数仍是 9，但版本号必须是 4。
-    assert len({n for n in names if not n.startswith("sqlite_")}) == 9
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 4
+            "arbitration_queue", "reappraisals"} <= names
+    assert len({n for n in names if not n.startswith("sqlite_")}) == 10
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 5
     cols = {r[1] for r in conn.execute("PRAGMA table_info(submissions)")}
     assert "artifacts" in cols
     conn.close()

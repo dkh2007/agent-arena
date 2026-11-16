@@ -435,13 +435,17 @@ def _user_reports(conn: sqlite3.Connection, user_id: str) -> list[tuple[str, str
     """`(submission_id, created_at, report)`，按 `created_at` 升序。
 
     SQL 与 JSON 解码都留在 `store.py`（那里是表结构的唯一所有者）；本模块只消费。
-    只读 `submissions`，不碰 `user_skill_states`（P 还没有落字段，见模块文档末节）。
+    只读 `submissions` + `reappraisals`，不碰 `user_skill_states`（P 还没有落字段）。
+
+    `report` 是**当前生效**那份（重评过就是最新 revision）。这一点很关键：
+    若这里读的是落库时那份，判据改完的"批量回溯重算"就会变成"库里记了一堆重评、
+    成绩一分没动"——上一轮 §91.5 ② 记的正是这个缺口。
     """
     from . import store  # 局部导入：与 submission_api 同惯例，避免模块级循环依赖
 
     out: list[tuple[str, str, dict]] = []
     for row in store.user_reports(conn, user_id):
-        out.append((row["submission_id"], row["created_at"], row["diagnosis"]))
+        out.append((row["submission_id"], row["created_at"], row["report"]))
     return out
 
 

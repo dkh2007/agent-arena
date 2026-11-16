@@ -1,6 +1,10 @@
 # 数据模型 v0.1（M-1 第 2 步）
 
-> 状态：**v0.4（2026-11-16 / round-91：B-04d 升 `SCHEMA_VERSION` 3→4。两处变更，**一列 + 一条口径**：
+> 状态：**v0.5（2026-11-16 / round-92：B-04d 接线第一步，`SCHEMA_VERSION` 4→5。
+> 新增第十张表 `reappraisals`（重评记录，append-only，见 §5.5），并把「按时间重放」
+> 的读数入口改成**生效报告**（`store.user_reports()` 返回 `report`，不再返回 `diagnosis`）。
+> 旧表一个字段没动、没删；`submissions` 一行不新增——**一份作答在 P 的重放里永远只算一个 step**）**。
+> 上一版：**v0.4（2026-11-16 / round-91：B-04d 升 `SCHEMA_VERSION` 3→4。两处变更，**一列 + 一条口径**：
 > ① `submissions` 增 `artifacts` 列（原始产物）——这是「标准改了能不能按新判据重评历史提交」
 > 唯一的输入来源，此前只存 trace 与报告，等于只存结论不存证据；
 > ② 新增「标准待复核」标记口径：judge 双评不一致的提交照算 P、照排复习（甲），
@@ -413,6 +417,51 @@
 
 > **没有的东西**：没有自动清理（裁决后保留，作为"判据改过几次"的历史）、
 > 没有分配仲裁人（无鉴权，见 B-10 前的边界）、没有 SLA / 提醒。
+
+### 5.5 Reappraisal（v5 / B-04d 接线：同一份作答按改后的判据重新打的分）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| submission_id | TEXT, FK→Submission | 重评的是**哪一份作答**。联合主键的前半 |
+| revision | INTEGER ≥ 1 | 第几次重评。联合主键的后半，`save_reappraisal()` 自动取 `max+1` |
+| report | JSON | 重评得到的**整份新报告**（与 `submissions.diagnosis` 同结构） |
+| reason | TEXT NOT NULL | 为什么重评：改了哪一条判据。**空理由被表级 CHECK 拒绝** |
+| created_at | DATETIME | 重评时刻 |
+
+> **它是什么**：人裁决"判据要改"之后，把受影响的作答按**新 rubric** 重新打一遍分，
+> 新结论存在这里。这是「标准改完后批量回溯重算」这句口径在库里的落点。
+
+> **为什么不是"插一条新 submission"**：那样同一份作答会在 P 的重放里贡献两个 step，
+> 一个人的掌握度会因为"系统改了一次判据"而凭空变化（练一次变成练两次）。
+> **一份作答永远只算一个 step**，换的是那一步用的报告，不是步数。
+> 这条有实测锁：`test_one_submission_still_contributes_exactly_one_step`。
+
+> **为什么不覆盖 `submissions.diagnosis`**：那是"当时按什么判的"的唯一证据。
+> 覆盖它等于让分数争议失去可比对的基线，与"诊断记录不覆盖"是同一条铁律。
+> `submissions.assert_score` 同样不更新——它是**当时算出的分数**，不是当前生效的分数。
+> 当前生效的分数看 `store.effective_ratio()`。
+
+> **为什么不存 ratio / delta / P**：全是 `report` 的派生量。落一列就多一处漂移点，
+> 而这张表的唯一真相源就是 `report` 本身。
+
+> **append-only**：已有 revision 不许改、不许删（主键 + 不提供 UPDATE/DELETE 接口）。
+> 要改结论就再追加一条，`delta` 会从**上一次的结论**起算，不是从最原始那个分数。
+
+> **身份校验（落库层强制）**：新报告的 `submission_id` / `task_id` 必须与原件一致；
+> 报告若带 `user_id`，也必须与提交人一致。把成绩记到别人头上、或拿别的题的 rubric
+> 重评，都在 `store.save_reappraisal()` / `reappraisal.rebuild_report()` 两处被拒。
+
+> **生效报告的读法**：`store.effective_report()`（有重评取最新，否则原始）与
+> `store.effective_ratio()`。**`store.load_report()` 仍然返回当时那份**——两个函数分开
+> 而不是加 `effective=True` 开关：叫 `load_report` 却可能返回另一份，迟早有人拿它去对账历史。
+> 「按时间重放」的入口 `store.user_reports()` 返回的键已从 `diagnosis` 改名为 `report`
+> 且值是生效版，`detected_patterns` 也按生效报告重算（重评可能让某个错误消失或新增）。
+
+> **缺产物就不重评**：`artifacts IS NULL` 的提交返回 `state="missing_artifacts"`，成绩不动。
+> 用 `{}` 顶替会算出"没交产物"的结论——把"我们没存下来"算成"他没交"，
+> 两份在报告里长得一模一样（决策 7）。代价：v4 之前落库的提交永远重评不了，这不是本表能修的。
+
+> **迁移**：`store.migrate()` 4→5，只建本表；从 v1 直连会逐级跑 v2、v3、v4、v5 四段。
 
 ## 3. 关系一览
 

@@ -50,7 +50,11 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # 汇总数对不对）都是拿产物判的；只存 trace 与报告，等于把"判定结果"当成了唯一证据，
 # 一旦判据改动想按新标准重评历史提交，会发现**根本没有输入可评**。
 # 反证条件：若将来发现更完整的行为记录（如平台侧全量抓包）能替代它，可回滚这一列。
-SCHEMA_VERSION = 4
+# v5（B-04d 接线第一步）：新增 `reappraisals`（重评记录）。
+# 这张表回答的是"同一份作答被按改后的判据重新打过分，新结论是什么"，
+# **不是**新提交：`submissions` 一行不动、不新增行。这样 P 的重放仍旧一份作答只贡献
+# 一个 step（翻新了算两次会把一个人的掌握度凭空拉高）。
+SCHEMA_VERSION = 5
 
 # 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
 # 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
@@ -188,7 +192,36 @@ CREATE TABLE IF NOT EXISTS arbitration_queue (
 CREATE INDEX IF NOT EXISTS idx_arbitration_pending ON arbitration_queue(status, opened_at);
 """
 
-SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3
+
+SCHEMA_SQL_V5 = """
+-- v5 / B-04d 接线：重评记录（append-only）。
+--
+-- 它存在的唯一理由：「标准改完后批量回溯重算」需要一个地方放**新结论**，
+-- 而 `submissions.diagnosis` 是历史证据，覆盖它等于把"当时按什么判的"抹掉，
+-- 与"诊断记录不覆盖"是同一条铁律。
+--
+-- 为什么不是"插一条新 submission"：那样同一份作答会在 P 的重放里贡献两个 step，
+-- 一个人的掌握度会因为系统改了一次判据而凭空变化。**一份作答永远只算一个 step**，
+-- 换的是那一步用的报告，不是步数。
+--
+-- 主键 (submission_id, revision) 同时是三道约束：
+--   ① 同一份提交的重评必须编号（谁先谁后不能靠 created_at 猜，同秒会撞）；
+--   ② 已有 revision 不能被覆盖（append-only，改结论只能再起一条）；
+--   ③ 外键保证重评指向的提交真实存在。
+--
+-- 表里**不存** ratio / delta / P：它们都是 `report` 的派生量，落一列就多一处漂移点。
+-- 要查"改了多少"就现场算（见 `effective_ratio()` 与 `reappraisal_delta()`）。
+CREATE TABLE IF NOT EXISTS reappraisals (
+    submission_id TEXT NOT NULL REFERENCES submissions(submission_id),
+    revision      INTEGER NOT NULL CHECK (revision >= 1),
+    report        TEXT NOT NULL,
+    reason        TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (submission_id, revision)
+);
+"""
+
+SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3 + SCHEMA_SQL_V5
 
 
 def _ensure_artifacts_column(conn: sqlite3.Connection) -> None:
@@ -217,6 +250,7 @@ MIGRATION_STEPS: dict[int, tuple[Any, tuple[str, ...]]] = {
     2: (SCHEMA_SQL_V2, ("mastery_snapshots",)),
     3: (SCHEMA_SQL_V3, ("arbitration_queue",)),
     4: (_ensure_artifacts_column, ("submissions.artifacts",)),
+    5: (SCHEMA_SQL_V5, ("reappraisals",)),
 }
 
 
@@ -234,6 +268,7 @@ JSON_COLUMNS = {
     "tasks": ("secondary_skill_ids",),
     "error_patterns": ("detection_rule", "mapped_skill_ids"),
     "submissions": ("trace", "judge_scores", "detected_patterns", "diagnosis", "artifacts"),
+    "reappraisals": ("report",),
     "user_skill_states": ("fsrs_card",),
 }
 
@@ -748,22 +783,48 @@ def count_submissions(conn: sqlite3.Connection, user_id: str | None = None) -> i
 
 
 def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
-    """该用户**全部**提交的完整报告，按 `created_at` 升序（round-80，B-07 的第一个读者）。
+    """该用户**全部**作答的**当前生效**报告，按 `created_at` 升序（round-80，B-07 的第一个读者）。
 
     与 `list_submissions` 的分工：那个是"看列表"（倒序、限条数、不带正文）；
-    这个是"按时间重放"（正序、不限条数、带整份 `diagnosis`）。
+    这个是"按时间重放"（正序、不限条数、带整份报告）。
 
-    三点刻意为之：
+    五点刻意为之：
     - **正序**：状态层要的是"从头往后折"，倒序交给调用方自己翻会诱导出"按列表位置当时间"。
     - **不限条数**：掌握度是累计量，截断等于悄悄少算历史；要限流该在调用方显式做。
     - **`created_at` 排序而不是 `evaluated_at`**：落库时前者已锚到后者，而补录时显式传入的值
       才是"这条记录代表哪一刻"的权威。同一时刻按 `submission_id` 兜底，保证重跑顺序稳定。
+    - **给的是 `report`（生效版）不是 `diagnosis`（当时版）**（round-92 / v5）：
+      判据改过之后重放必须按新结论算，否则「批量回溯重算」这件事在库里做了、在成绩上没发生。
+      键名刻意不叫 `diagnosis`——两个名字相近的报告放在一起，一定有人拿错。
+      要读当时那份用 `load_report()`。
+    - **一份作答仍只有一行**：重评是在 `reappraisals` 链上追加，不是插新 submission，
+      所以这里的行数 = 提交数，P 的 step 数不会因重评而变化。
     """
     rows = conn.execute(
-        "SELECT * FROM submissions WHERE user_id = ? ORDER BY created_at ASC, submission_id ASC",
+        "SELECT s.submission_id, s.user_id, s.task_id, s.created_at, s.diagnosis, "
+        "       r.report AS latest_report "
+        "FROM submissions s "
+        "LEFT JOIN reappraisals r ON r.submission_id = s.submission_id "
+        "     AND r.revision = (SELECT MAX(revision) FROM reappraisals "
+        "                      WHERE submission_id = s.submission_id) "
+        "WHERE s.user_id = ? ORDER BY s.created_at ASC, s.submission_id ASC",
         (user_id,),
     ).fetchall()
-    return [_row_to_dict(r, "submissions") for r in rows]
+    return [
+        {
+            "submission_id": r["submission_id"],
+            "user_id": r["user_id"],
+            "task_id": r["task_id"],
+            "created_at": r["created_at"],
+            "report": report,
+            # 派生列也按**生效报告**重算：重评可能让某个错误消失或新增，
+            # 照读 `submissions.detected_patterns`（落库时那份）会让热度统计停在旧结论上。
+            "detected_patterns": _failed_patterns(report),
+        }
+        for r in rows
+        for report in (_load(r["latest_report"]) if r["latest_report"] is not None
+                       else _load(r["diagnosis"]),)
+    ]
 
 
 # ── 仲裁队列的落库（v3 / B-04b）───────────────────────────────────────────────
@@ -887,6 +948,138 @@ def resolve_arbitration(conn: sqlite3.Connection, submission_id: str, *,
             (status, at or _now(), note.strip(), submission_id),
         )
     return load_arbitration(conn, submission_id)  # type: ignore[return-value]
+
+
+# ── 重评记录的落库（v5 / B-04d 接线）─────────────────────────────────────────
+# 「裁决 → 重评 → 落差异」的最后一步。判定与执行在 `reappraisal.py`，这里只存取。
+#
+# 三条设计决定：
+# 1. **一份作答只算一个 step**。重评不新增 `submissions` 行，只在该提交的
+#    `reappraisals` 链上追加一条；重放读到的是"最新结论"，步数不变。
+# 2. **append-only**。已有 revision 不许改、不许删。要改结论就再追加一条——
+#    覆盖会让"谁在什么时候按什么改成了什么"消失，与 `submissions` 不覆盖同理。
+# 3. **身份字段必须与原件一致**。重评可以把分数改掉，但不许把 `submission_id` /
+#    `task_id` 换成别的：那已经不是"重评这份作答"，而是"拿重评的名义换一份证据"。
+
+def save_reappraisal(
+    conn: sqlite3.Connection,
+    submission_id: str,
+    report: dict,
+    *,
+    reason: str,
+    created_at: str | None = None,
+) -> dict:
+    """追加一条重评记录，revision 自动取 `max+1`。返回新记录。
+
+    校验四件事，任一不成立就抛（不写半条）：
+      - 报告的身份字段与原件一致（`submission_id`、`task_id`）；
+      - 报告带 `user_id` 时（有些报告不含）必须与提交人一致；
+      - `score.ratio` 是 [0,1] 内的数；
+      - `reason` 非空——没有理由的重评和"偷偷改了分数"没有区别。
+    """
+    if not isinstance(submission_id, str) or not submission_id.strip():
+        raise StoreError("重评缺 submission_id")
+    if not isinstance(report, dict):
+        raise StoreError(f"重评的 report 必须是 dict（收到 {type(report).__name__}）")
+    if not isinstance(reason, str) or not reason.strip():
+        raise StoreError(
+            "重评必须写 reason：这是「改判据之后哪一条变了」的唯一线索，"
+            "没有它的重评事后无法复核"
+        )
+
+    original = load_submission(conn, submission_id)     # 不存在就抛
+    new_sub = _require(report, "submission")
+    if new_sub.get("submission_id") != submission_id:
+        raise StoreError(
+            f"重评报告的 submission_id 是 {new_sub.get('submission_id')!r}，"
+            f"与要重评的 {submission_id!r} 不一致——重评不许换证据"
+        )
+    if new_sub.get("task_id") != original["task_id"]:
+        raise StoreError(
+            f"重评报告的 task_id 是 {new_sub.get('task_id')!r}，原件是 {original['task_id']!r}"
+            "——换任务等于换了一份作答，不是重评"
+        )
+    claimed_user = new_sub.get("user_id")
+    if claimed_user is not None and claimed_user != original["user_id"]:
+        raise StoreError(
+            f"重评报告声明的 user_id={claimed_user!r} 与提交人 {original['user_id']!r} 不一致"
+            "——重评不能把成绩记到别人头上"
+        )
+
+    ratio = _require(report, "score", "ratio")
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0.0 <= float(ratio) <= 1.0:
+        raise StoreError(f"重评报告的 score.ratio 必须是 [0,1] 内的数值（收到 {ratio!r}）")
+
+    last = conn.execute(
+        "SELECT COALESCE(MAX(revision), 0) FROM reappraisals WHERE submission_id = ?",
+        (submission_id,),
+    ).fetchone()[0]
+    revision = int(last) + 1
+
+    with conn:
+        conn.execute(
+            "INSERT INTO reappraisals (submission_id, revision, report, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (submission_id, revision, _dump(report), reason.strip(), created_at or _now()),
+        )
+    return load_reappraisal(conn, submission_id)  # type: ignore[return-value]
+
+
+def load_reappraisal(
+    conn: sqlite3.Connection, submission_id: str, *, revision: int | None = None
+) -> dict | None:
+    """读一条重评记录。`revision=None` 取**最新**一条；没有重评过返回 `None`。
+
+    "没重评过"是正常状态（绝大多数提交都是），所以返回 `None` 而不是抛错。
+    """
+    if revision is None:
+        row = conn.execute(
+            "SELECT * FROM reappraisals WHERE submission_id = ? ORDER BY revision DESC LIMIT 1",
+            (submission_id,),
+        ).fetchone()
+    else:
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise StoreError(f"revision 必须是正整数（收到 {revision!r}）")
+        row = conn.execute(
+            "SELECT * FROM reappraisals WHERE submission_id = ? AND revision = ?",
+            (submission_id, revision),
+        ).fetchone()
+    return None if row is None else _row_to_dict(row, "reappraisals")
+
+
+def list_reappraisals(conn: sqlite3.Connection, submission_id: str | None = None) -> list[dict]:
+    """列重评记录：给定提交则按 revision 升序列它的链，否则列全库（按时间）。"""
+    if submission_id is None:
+        rows = conn.execute(
+            "SELECT * FROM reappraisals ORDER BY created_at ASC, submission_id ASC, revision ASC"
+        )
+    else:
+        if not isinstance(submission_id, str) or not submission_id.strip():
+            raise StoreError("submission_id 必须是非空字符串")
+        rows = conn.execute(
+            "SELECT * FROM reappraisals WHERE submission_id = ? ORDER BY revision ASC",
+            (submission_id,),
+        )
+    return [_row_to_dict(r, "reappraisals") for r in rows]
+
+
+def effective_report(conn: sqlite3.Connection, submission_id: str) -> dict:
+    """这份作答**当前生效**的报告：有重评取最新一条，否则是落库时那份。
+
+    这是"重评到底有没有改变成绩"的唯一入口。要读**当时**那份请用 `load_report()`——
+    两个函数分开而不是加个 `effective=True` 开关：叫 `load_report` 却可能返回另一份报告，
+    迟早有人拿它去对账历史。
+    """
+    latest = load_reappraisal(conn, submission_id)
+    if latest is not None:
+        return latest["report"]
+    return load_report(conn, submission_id)
+
+
+def effective_ratio(conn: sqlite3.Connection, submission_id: str) -> float:
+    """这份作答当前生效的分数（`score.ratio`）。原始分数仍看 `submissions.assert_score`。"""
+    return float(_require(effective_report(conn, submission_id), "score", "ratio"))
+
 
 
 # ── 复习层的落库（B-08）──────────────────────────────────────────────────────

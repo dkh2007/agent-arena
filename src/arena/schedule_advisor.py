@@ -633,7 +633,7 @@ def _skill_mastery(conn: sqlite3.Connection, user_id: str, skill_ids: Sequence[s
     不在这里重写公式（P 的权威定义只有一处）。"""
     out: dict[str, float | None] = {}
     for skill in skill_ids:
-        evidence = [mastery.skill_evidence(r["diagnosis"], skill, at=r["created_at"])
+        evidence = [mastery.skill_evidence(r["report"], skill, at=r["created_at"])
                     for r in reports]
         out[skill] = mastery.replay(evidence, user_id=user_id, skill_id=skill).p
     return out
