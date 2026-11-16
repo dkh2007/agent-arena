@@ -102,7 +102,7 @@ def main() -> int:
     print("  ↑ 这是 B-25 的查询地基；本轮不产 rank、不开榜。")
 
     # ⑤ v1 老库迁移：从真的 v1 结构升上来
-    _banner(5, "v1 老库迁移（from=1 → 2，旧报告一个字节不动）")
+    _banner(5, "v1 老库迁移（from=1 → 4，旧报告一个字节不动）")
     again.close()
     v1path = Path(tempfile.mkdtemp()) / "legacy-v1.db"
     old = store.connect(v1path)
@@ -112,8 +112,16 @@ def main() -> int:
     store.register_patterns(old)
     store.register_task(old, TASK_YAML)
     rep = _report("raw-perfect", "legacy-1", "2026-09-01T00:00:00Z")
-    store.save_submission(old, rep, user_id="legacy-user", created_at="2026-09-01T00:00:00Z",
-                          refresh_mastery=False)
+    # 按 **v1 的列集**直插：v4 之后 save_submission() 会写 `artifacts`，而 v1 老库没有这一列。
+    # 这里要构造的是"迁移前就有的历史数据"，就必须用那个版本真实存在的列。
+    store.ensure_user(old, "legacy-user")
+    with old:
+        old.execute(
+            "INSERT INTO submissions (submission_id, user_id, task_id, assert_score, "
+            "detected_patterns, diagnosis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("legacy-1", "legacy-user", rep["submission"]["task_id"],
+             float(rep["score"]["ratio"]), "[]", store._dump(rep), "2026-09-01T00:00:00Z"),
+        )
     names = {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     print(f"  迁移前：version={store.schema_version(old)} 有快照表={'mastery_snapshots' in names} "
           f"旧报告数={store.count_submissions(old)}")

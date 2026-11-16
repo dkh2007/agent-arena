@@ -45,7 +45,12 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # v3（B-04b）：新增 `arbitration_queue`（judge 双评不一致时的人工待办）。
 # 同样纯增量：**旧表一个字段不动**，尤其没有给 `submissions` 加"是否待仲裁"的列——
 # 状态属于队列自己，抄一份到 submissions 就变成第二真相源。
-SCHEMA_VERSION = 3
+# v4（B-04d 甲+护栏）：`submissions` 补 `artifacts` 列（原始产物）。
+# **这不是为查询方便，是"能不能回溯"的前提**：报告里的 credit 断言（交没交产物、
+# 汇总数对不对）都是拿产物判的；只存 trace 与报告，等于把"判定结果"当成了唯一证据，
+# 一旦判据改动想按新标准重评历史提交，会发现**根本没有输入可评**。
+# 反证条件：若将来发现更完整的行为记录（如平台侧全量抓包）能替代它，可回滚这一列。
+SCHEMA_VERSION = 4
 
 # 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
 # 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
@@ -185,18 +190,50 @@ CREATE INDEX IF NOT EXISTS idx_arbitration_pending ON arbitration_queue(status, 
 
 SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3
 
+
+def _ensure_artifacts_column(conn: sqlite3.Connection) -> None:
+    """v4：给 `submissions` 补 `artifacts`（原始产物）。
+
+    为什么这一步是函数而不是一段 DDL：SQLite **没有** `ADD COLUMN IF NOT EXISTS`，
+    而 `migrate()` 在一个"表建好了但 PRAGMA 还是 0"的半旧库上会重放本步——
+    那时 ALTER 会以 `duplicate column name` 炸掉整个迁移。先查列再加，是本步幂等的唯一做法。
+
+    不做重建表（rename → create → copy）：`submissions` 是历史证据表，
+    重建过程中任何一次中断都会让"证据"和"索引"处于两套结构之间，代价远大于省一个函数。
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(submissions)")}
+    if "artifacts" in columns:
+        return
+    conn.execute("ALTER TABLE submissions ADD COLUMN artifacts TEXT")
+
+
 # 版本号 → 该版本要补的 DDL / 新建的表名。`migrate()` 只读这张表，不再写 if 分支。
-MIGRATION_STEPS: dict[int, tuple[str, tuple[str, ...]]] = {
+# 值可以是 SQL 文本，也可以是"接收连接的函数"——后者用于没法写成幂等 DDL 的步骤
+# （v4 的加列：SQLite 缺 `ADD COLUMN IF NOT EXISTS`）。两种形态都只跑一次，由版本号保证。
+#
+# 表名元组的用途有两个：`migrate()` 的返回值（告诉调用方加了什么），以及
+# `tests/test_store.py` 里"表数 = 9 + 列 = 1"的现状锁。
+MIGRATION_STEPS: dict[int, tuple[Any, tuple[str, ...]]] = {
     2: (SCHEMA_SQL_V2, ("mastery_snapshots",)),
     3: (SCHEMA_SQL_V3, ("arbitration_queue",)),
+    4: (_ensure_artifacts_column, ("submissions.artifacts",)),
 }
+
+
+def _apply_step(conn: sqlite3.Connection, step: int) -> None:
+    """执行一步迁移。文本走 `executescript`（DDL 自带 IF NOT EXISTS），函数直接调。"""
+    action = MIGRATION_STEPS[step][0]
+    if callable(action):
+        action(conn)
+    else:
+        conn.executescript(action)
 
 # 需要 JSON 编解码的列：写库前 dumps，读库后 loads（NULL 保持 NULL，不转成空数组）。
 JSON_COLUMNS = {
     "skills": ("prerequisites",),
     "tasks": ("secondary_skill_ids",),
     "error_patterns": ("detection_rule", "mapped_skill_ids"),
-    "submissions": ("trace", "judge_scores", "detected_patterns", "diagnosis"),
+    "submissions": ("trace", "judge_scores", "detected_patterns", "diagnosis", "artifacts"),
     "user_skill_states": ("fsrs_card",),
 }
 
@@ -234,7 +271,8 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
 
     四条硬规矩：
     1. **只做增量**：v1→v2 只补 `mastery_snapshots`，v2→v3 只补 `arbitration_queue`，
-       `ALTER` 一个字段都不改。所以任何一步失败，旧库仍是可用的一堆旧表，不会变砖。
+       v3→v4 只给 `submissions` 加 `artifacts` 一列。**没有一步会重建表或改旧列**。
+       所以任何一步失败，旧库仍是可用的一堆旧表，不会变砖。
     2. **回填是"重算"，不是"猜"**：v1 库里已经有提交时，按 `mastery.build_series()`
        逐用户逐技能重放，把结果写进快照表；原 `submissions` 一个字节不动。
     3. **不许降级**：`PRAGMA user_version > target` 直接抛错。看见看不懂的新版本还继续写，
@@ -243,8 +281,12 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
        以前只拦下界，允许写出 `user_version=5` 而库里其实只有 v1+v2 的结构——
        「不许降级」的同一条理由，反方向也成立。
 
-    **逐级升而不是一步到位**：v1 库升到 v3 会依次执行 v2、v3 两段 DDL。
+    **逐级升而不是一步到位**：v1 库升到 v4 会依次执行 v2、v3、v4 三段动作。
     一步到位的写法（"只跑最新那段"）在加 v4 时必然写错——那时 v1 库会缺 v3 的表。
+
+    **v4 的历史提交补不回来（务必照实说）**：`artifacts` 列对**新增**提交生效，
+    已经落库的旧提交这一列是 NULL。没有产物就无法按新判据重评，那部分历史
+    只能靠"让学生重做"或"承认不可回溯"，不是本函数能修的。
 
     `target` 只接受 `1..SCHEMA_VERSION` 的整数；它是内部常量，不来自用户输入。
     """
@@ -266,13 +308,19 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
     applied: list[int] = []
     with conn:
         if current == 0:
-            # 全新库：一次建齐（各版本的表之间有外键，不能只建最新那段）。
+            # 全新库：先一次建齐（各版本的表之间有外键，不能只建最新那段），
+            # 再把从 v2 起的**步骤动作**跑一遍：文本步骤是幂等的（DDL 自带 IF NOT EXISTS），
+            # 函数步骤自己判重（v4 的加列）。这样全新库与老库走的是同一串动作，
+            # 不会出现"新建库有某列、老库升级后没有"这种最难查的差异。
             conn.executescript(SCHEMA_SQL)
-            applied = [v for v in sorted(MIGRATION_STEPS) if v <= target]
+            for step in sorted(MIGRATION_STEPS):
+                if step <= target:
+                    _apply_step(conn, step)
+                    applied.append(step)
         else:
             for step in sorted(MIGRATION_STEPS):
                 if current < step <= target:
-                    conn.executescript(MIGRATION_STEPS[step][0])
+                    _apply_step(conn, step)
                     applied.append(step)
 
     backfilled = 0
@@ -583,6 +631,7 @@ def save_submission(
     *,
     user_id: str,
     trace: dict | None = None,
+    artifacts: dict | None = None,
     judge_scores: Any = None,
     judge_agreement: float | None = None,
     fsrs_rating: int | None = None,
@@ -603,6 +652,11 @@ def save_submission(
     P 快照，所以"提交完再重开库读回"能拿到最新 P。设 `False` 可关掉——
     迁移回填、故意构造"过期快照"的测试需要这个开关。
     刷新失败会抛（不吞）：缓存写坏了还让提交报成功，是最难查的那种不一致。
+
+    **v4 / B-04d**：`artifacts`（原始产物）与 `trace` 一起落库。报告里的 credit 断言
+    是拿产物判的，只留报告等于只留结论；判据改动后想按新标准重评历史提交，
+    必须有这份产物作为输入。不传就是 NULL——那是"这份提交不可回溯"的诚实记法，
+    **不要**拿空字典冒充"没有产物"（`{}` 会被当成"交了但为空"）。
     """
     sub = _require(report, "submission")
     submission_id = sub.get("submission_id")
@@ -634,8 +688,8 @@ def save_submission(
     with conn:
         conn.execute(
             "INSERT INTO submissions (submission_id, user_id, task_id, task_git_hash, agent_endpoint_url, "
-            "trace, assert_score, judge_scores, judge_agreement, detected_patterns, diagnosis, "
-            "fsrs_rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "trace, artifacts, assert_score, judge_scores, judge_agreement, detected_patterns, diagnosis, "
+            "fsrs_rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 submission_id,
                 user_id,
@@ -643,6 +697,7 @@ def save_submission(
                 sub.get("task_git_hash"),
                 agent_endpoint_url,
                 _dump(trace),
+                _dump(artifacts),
                 float(ratio),
                 _dump(judge_scores),
                 judge_agreement,

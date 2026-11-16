@@ -135,13 +135,30 @@ def _v1_db(path: Path):
     return conn
 
 
+def _insert_legacy_submission(conn, report: dict, *, user_id: str, at: str) -> None:
+    """按 **v1 的列集**直插一条提交——模拟"上个版本的服务写下的历史数据"。
+
+    v4 之后 `save_submission()` 会写 `artifacts` 列，而 v1 老库没有这一列，
+    所以这里不能借它：迁移测试要证明的是"迁移前就有的数据一个字节不动"，
+    构造那段数据就必须用那个版本真实存在的列。
+    """
+    sub = report["submission"]
+    store.ensure_user(conn, user_id)  # save_submission 平时会做这一步，直插要自己补
+    with conn:
+        conn.execute(
+            "INSERT INTO submissions (submission_id, user_id, task_id, assert_score, "
+            "detected_patterns, diagnosis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sub["submission_id"], user_id, sub["task_id"], float(report["score"]["ratio"]),
+             "[]", store._dump(report), at),
+        )
+
+
 def test_criterion_migrate_from_real_v1_keeps_data_and_backfills(tmp_path):
     """迁移必须从一个"没有新表"的 v1 库起跑，不是拿新库改个 PRAGMA 假装。"""
     path = tmp_path / "v1.db"
     conn = _v1_db(path)
     report = _report("raw-perfect", submission_id="old-1", at=AT1)
-    store.save_submission(conn, report, user_id="old-user", created_at=AT1,
-                          refresh_mastery=False)
+    _insert_legacy_submission(conn, report, user_id="old-user", at=AT1)
     before = store.count_submissions(conn)
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "mastery_snapshots" not in names
@@ -149,14 +166,17 @@ def test_criterion_migrate_from_real_v1_keeps_data_and_backfills(tmp_path):
     assert store.schema_version(conn) == 1
 
     result = store.migrate(conn)
-    # v1 → 最新版本要**逐级**跑：v2 建快照表 + 回填，v3 建仲裁队列表。
-    # 一次跳到最新那段是错的写法——这里锁住"每一级的表都在"。
+    # v1 → 最新版本要**逐级**跑：v2 建快照表 + 回填，v3 建仲裁队列表，v4 加产物列。
+    # 一次跳到最新那段是错的写法——这里锁住"每一级的动作都在"。
     assert result["from"] == 1 and result["to"] == store.SCHEMA_VERSION
-    assert result["added_tables"] == ["mastery_snapshots", "arbitration_queue"]
+    assert result["added_tables"] == ["mastery_snapshots", "arbitration_queue",
+                                      "submissions.artifacts"]
     assert result["backfilled"] == 3
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 3
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 4
     assert store.count_submissions(conn) == before
     assert store.load_report(conn, "old-1") == report          # 旧报告一个字节没动
+    # 旧提交的产物补不回来 —— 迁移只加列，不给历史数据编造产物。
+    assert store.load_submission(conn, "old-1")["artifacts"] is None
     assert len(store.list_mastery_snapshots(conn)) == 3        # 回填了三个技能
     assert all(c.consistent for c in ms.verify_all(conn))
     conn.close()

@@ -34,12 +34,24 @@
    这是落字段的意义。新鲜度由 `verify_all()` 单独核——**要不要在展示前核一遍，
    归展示层（B-25，未开）决定，本模块只提供裁判**。
 
+6. **「标准待复核」不落列，从队列现算**（v4 / B-04d 甲+护栏）。
+   争议提交照算 P（决策 7：判据歧义是系统侧的账，不该冻结成学生的成绩缺失），
+   但它的成绩不能无声地进正式档案。判定由 `provisional_pairs()` 现算：
+   对每份**未裁决**的争议提交重跑一次 `skill_evidence()`，问它是否给该技能贡献了
+   计入证据。**为什么不存一列**：存了就得在入队、裁决、重评、迁移四处记得刷新，
+   漏一处会永久留下一条"标准待复核"而队列里什么都没有（谁也不知道该复核什么）；
+   现算的成本只与**争议条数**有关，与历史长度无关，争议通常是个位数。
+   `list_ranked()` 的默认方向是**排除**，不是包含——默认安全才对得起"护栏"这个词。
+
 ## 与 B-08b / B-07b 的边界
 
 - 不改 `build_series()` 一行：P 的算法仍只有一处。
 - 不改 `decay.py` 一行：衰减仍只在显式 `as_of` 时发生。
 - 不标定 λ：这里照抄 `mastery.LAMBDA_DEFAULT`，它仍是**假设**。
 - 不做排名页、不产出名次、不引入跨用户比较口径：那些是 B-25 的事。
+  v4 只提供"这份成绩能不能进榜"的判据，不提供榜单本身。
+- **不做重评**（`sys.path` 里没有这个能力）：这里只回答"成绩要不要打标"，
+  不回答"按新判据重新算一遍"。后者需要原始产物，见 `scripts/reappraisal_probe.py`。
 """
 
 from __future__ import annotations
@@ -294,17 +306,98 @@ def list_ranked(
     skill_id: str,
     *,
     limit: int | None = None,
+    include_provisional: bool = False,
 ) -> list[dict]:
     """按 P 从高到低读快照（B-25 的查询地基）。**只读缓存、不重放、不给名次**。
 
     刻意不返回 `rank` 字段：名次是产品口径（并列怎么算、是否展示），
     排名没开就不许先在接口里长出来。调用方拿到的是有序行列表。
+
+    **默认不含「标准待复核」的行**（v4 / B-04d 甲+护栏）。
+    这里的方向不能反：如果默认含、要显式排掉，任何一个新写的读榜接口都会在
+    "忘了传参数"时把含糊成绩放出去。默认排除 + 显式打开，才叫护栏。
+    `include_provisional=True` 时每行多一个 `provisional` 布尔，供"进档案但带标记"的
+    场景使用（人拍板的口径里，争议成绩可以展示，只是不能无声地进正式榜）。
     """
     if not isinstance(skill_id, str) or not skill_id:
         raise SnapshotError(f"skill_id 必须是非空字符串（收到 {skill_id!r}）")
+    if not isinstance(include_provisional, bool):
+        raise SnapshotError(
+            f"include_provisional 必须是布尔（收到 {include_provisional!r}）"
+            "——传 None/字符串会让过滤条件静默失效"
+        )
     rows = store.list_mastery_snapshots(conn, skill_id=skill_id, order_by_p=True)
+    disputed = provisional_pairs(conn, skill_id=skill_id)
+    if include_provisional:
+        rows = [{**r, "provisional": (r["user_id"], r["skill_id"]) in disputed} for r in rows]
+    else:
+        rows = [r for r in rows if (r["user_id"], r["skill_id"]) not in disputed]
     if limit is not None:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
             raise SnapshotError(f"limit 必须是非负整数（收到 {limit!r}）")
         rows = rows[:limit]
     return rows
+
+
+# ── 「标准待复核」标记（v4 / B-04d 甲+护栏）────────────────────────────────
+# 人拍板的口径：争议答卷**照算成绩、照排复习**，但它的成绩不能无声地进正式档案/排名。
+# 这一步实现的就是那个"标记"，而不是"冻结"——冻结会把系统判据的歧义记成学习者的成绩缺失
+# （决策 7 的反面），那正是被否掉的乙方案。
+
+def pending_disputes(conn: sqlite3.Connection, *, user_id: str | None = None) -> list[dict]:
+    """还没裁决的争议提交，按最早开的在前。`user_id` 给定时只看那个人。
+
+    只读 `arbitration_queue` 的 `pending` 行：已裁决（`resolved` / `dismissed`）的
+    提交不再算争议——它们的判据问题已经有结论，成绩要不要改是重评的事，不是标记的事。
+    """
+    sql = ("SELECT submission_id, user_id, task_id, judge_agreement, threshold, opened_at "
+           "FROM arbitration_queue WHERE status = 'pending'")
+    params: tuple = ()
+    if user_id is not None:
+        if not isinstance(user_id, str) or not user_id:
+            raise SnapshotError(f"user_id 必须是非空字符串（收到 {user_id!r}）")
+        sql += " AND user_id = ?"
+        params = (user_id,)
+    sql += " ORDER BY opened_at ASC, submission_id ASC"
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
+def provisional_pairs(
+    conn: sqlite3.Connection,
+    *,
+    skill_id: str | None = None,
+    user_id: str | None = None,
+) -> set[tuple[str, str]]:
+    """哪些 `(user, skill)` 的当前 P **依赖一份待复核的争议提交**。纯读，不写库。
+
+    判据是"这份提交对该技能贡献了**计入**证据"——用 `mastery.skill_evidence()` 判，
+    与 P 的算法同一个入口。为什么不能只看"这人有争议提交"：
+      - 一份提交可能只压到 `multi_step_planning` 与 `failure_retry`，对第三个技能
+        一条计入断言都没有（`counts=False`）⇒ 那个技能的 P 与争议无关，不该被标；
+      - 作废（`voided`）的提交整份不计入 P，同样不该把技能的 P 标成待复核。
+
+    成本与历史长度**无关**：只对"未裁决的争议提交"逐份重算一次证据，
+    争议条数通常是个位数。所以读榜不必为它做全量重放。
+
+    反证条件：若出现"某技能 P 被标待复核、但重放序列里没有任何争议提交"的情况，
+    说明这里的判定与 `build_series()` 的计入规则漂了——那时应以重放为准并改本函数。
+    """
+    if skill_id is not None and (not isinstance(skill_id, str) or not skill_id):
+        raise SnapshotError(f"skill_id 必须是非空字符串（收到 {skill_id!r}）")
+    disputes = pending_disputes(conn, user_id=user_id)
+    if not disputes:
+        return set()
+    skills = [skill_id] if skill_id is not None else store.list_skill_ids(conn)
+    pairs: set[tuple[str, str]] = set()
+    for row in disputes:
+        report = store.load_report(conn, row["submission_id"])
+        for sid in skills:
+            if mastery.skill_evidence(report, sid).counts:
+                pairs.add((row["user_id"], sid))
+    return pairs
+
+
+def is_provisional(conn: sqlite3.Connection, user_id: str, skill_id: str) -> bool:
+    """单个 `(user, skill)` 的成绩是否挂着「标准待复核」。读榜与展示层共用这一个判据。"""
+    _check_ids(user_id, skill_id)
+    return (user_id, skill_id) in provisional_pairs(conn, skill_id=skill_id, user_id=user_id)

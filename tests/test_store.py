@@ -50,7 +50,8 @@ def test_init_db_is_idempotent_and_creates_nine_tables(tmp_path):
     """建表两次不报错、表齐九张、结构版本可读。
 
     **现状锁，改一次反转一次**：round-88（B-07c）把 v1 的 7 张改成 8 张，
-    round-90（B-04b）再加 `arbitration_queue` 成 9 张。
+    round-90（B-04b）再加 `arbitration_queue` 成 9 张；
+    round-91（B-04d）**不再加表**，只给 `submissions` 加 `artifacts` 列（v4）。
     锁的**不是数字本身**，而是「`init_db()` 会顺带把版本抬到 `SCHEMA_VERSION`」——
     表建了而版本没抬，才是真故障（半迁移）。
     """
@@ -61,7 +62,11 @@ def test_init_db_is_idempotent_and_creates_nine_tables(tmp_path):
     assert {"users", "skills", "tasks", "error_patterns", "submissions",
             "user_skill_states", "review_items", "mastery_snapshots",
             "arbitration_queue"} <= names
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 3
+    # v4 是加列不是加表：表数仍是 9，但版本号必须是 4。
+    assert len({n for n in names if not n.startswith("sqlite_")}) == 9
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 4
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(submissions)")}
+    assert "artifacts" in cols
     conn.close()
 
 
@@ -254,3 +259,26 @@ def test_range_constraints_are_in_the_schema(db):
             with db:
                 db.execute(f"UPDATE submissions SET {column} = ? WHERE submission_id = ?",
                            (value, sid))
+
+
+def test_replaying_the_v4_step_on_a_half_built_database_does_not_crash(tmp_path):
+    """「表建好了、PRAGMA 还是 0」的半旧库，重放 v4 步骤不许炸。
+
+    这种库真的会出现：手工 `executescript(SCHEMA_SQL)` 建库、迁移中途被打断、
+    或者上一版服务跑过建表但没跑 `migrate()`。那时 v4 的 `ALTER TABLE` 会以
+    `duplicate column name` 抛错，而**整个迁移会连同后面所有步骤一起失败**。
+
+    所以 v4 的加列必须自己判重（SQLite 没有 `ADD COLUMN IF NOT EXISTS`）。
+    这条测试就构造那个状态：列先加上，版本仍写 0，然后走正常 `init_db()`。
+    """
+    conn = store.connect(tmp_path / "half.db")
+    conn.executescript(store.SCHEMA_SQL)      # 表全在（v1+v2+v3 的 DDL）
+    store._ensure_artifacts_column(conn)      # 列也在了
+    assert store.schema_version(conn) == 0    # 但版本还是 0 —— 这就是"半旧库"
+
+    store.init_db(conn)                       # 重放 step 2 / 3 / 4
+
+    assert store.schema_version(conn) == store.SCHEMA_VERSION
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(submissions)")]
+    assert cols.count("artifacts") == 1       # 没被加成两列
+    conn.close()

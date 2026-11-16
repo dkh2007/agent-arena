@@ -466,7 +466,8 @@ def submit(payload: Any, *, registry: TaskRegistry, conn_factory, now: str | Non
         store.ensure_user(conn, prep.user_id)
         store.save_submission(
             conn, report, user_id=prep.user_id,
-            trace=prep.trace, agent_endpoint_url=prep.endpoint_url,
+            trace=prep.trace, artifacts=prep.artifacts,
+            agent_endpoint_url=prep.endpoint_url,
             judge_scores=report.get("judge_scores"),
             judge_agreement=report.get("judge_agreement"),
         )
