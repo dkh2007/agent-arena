@@ -102,7 +102,8 @@ def main() -> int:
     print("  ↑ 这是 B-25 的查询地基；本轮不产 rank、不开榜。")
 
     # ⑤ v1 老库迁移：从真的 v1 结构升上来
-    _banner(5, "v1 老库迁移（from=1 → 4，旧报告一个字节不动）")
+    # 不写具体版本号：每加一版就要改一次文案，而漏改的后果是“演示输出与代码不一致”。
+    _banner(5, "v1 老库迁移（逐级升到最新版本，旧报告一个字节不动）")
     again.close()
     v1path = Path(tempfile.mkdtemp()) / "legacy-v1.db"
     old = store.connect(v1path)
