@@ -12,6 +12,11 @@
 > ③ **B-25 排名仍未开**，开榜前必须先切 C 口径（B-07b）——B-07c 是**人显式点名提前开工**，
 >    不是"排序需求出现了"，详见 `docs/BACKLOG.md` B-07c 开头、`docs/review-response-v1.md` §87.3；
 > ④ 表数 7 → 8；测试数、评审包指纹每轮重生成，见 `docs/review-packet.md` 头部。
+> ⑤ **round-89（2026-11-16）口径变更：作废提交（`voided`，任务版本对不上）不计掌握度**，
+>    但 `submissions` 行与报告照留（人拍板原话「作废不计成绩/不计掌握度，但保留练习提交记录」）。
+>    只有作废提交时 `p is None`、快照无行。**`disqualified`（没交产物/没跑完）不受影响，
+>    仍是 A 口径、证据照记**——两者不是一回事，别合并。旧库升级后需跑
+>    `mastery_snapshot.recompute_all()`，否则 `verify_all()` 会一直报 `stale_value`。
 > 单文件交接请以 `docs/BACKLOG.md` 顶部更新块 + `docs/ROADMAP.md` 五层表为现役状态，
 > 下方 §2「当前状态（截至 2026-11-07）」是**历史快照**，勿据此判断现行状态。
 

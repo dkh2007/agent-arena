@@ -43,9 +43,17 @@
      **默认仍不衰减**：不传 `as_of` 的老调用行为一个字没变，所以 `test_decay_*` 的旧断言
      改成"不传 as_of ⇒ 两条序列相同"，而不是删掉。
 
-5. **门禁状态只留痕，不参与计算（为 A→C→B 留切换口）。**
-   现行口径是 **A**：整份不合格（`disqualified`）时，credit 层照常判定的证据**照样计入** P
-   （依据 data-model §5.1「门禁只管分数，不管观测」）。这条口径有个不利后果，已被实测固定：
+5. **门禁状态决定证据算不算，但只按已拍板的那一格切（`voided` 排除 / `disqualified` 照记）。**
+   **`voided`（版本对不上）⇒ 整份不计入 P**（2026-11-16 人拍板「甲」；与
+   `diagnosis-report.schema.json` 的 `task_version` 说明、`review-packet.md` 决策 11 一致）。
+   **提交行与报告照留**——它是一次练习记录，只是不参与长期状态量；`Evidence` 里仍能把
+   每条断言标成 `voided:state=...`，所以"这次为什么没算"查得到，不是静默丢数据。
+   所以 `build_series()` 对"只有作废提交"的用户给 `p is None`（决策 7 的同一个形状），
+   `mastery_snapshots` 因此没有行——**不许写成 0.0**。
+
+   **`disqualified`（没交产物/没跑完）仍然照记**，即 B-07b 的 **A** 口径不动
+   （依据 data-model §5.1「门禁只管分数，不管观测」）。两者必须分开：作废是"这次不算数"，
+   不合格是"这次算数但没做好"，把它们并成一格会让版本错位写成冤案。A 口径有个不利后果，已被实测固定：
    **一份"没交产物"的提交会让该技能的 `c = 1.0`**，而初值播种使**首次观测直接等于 1.0** ——
    即"交白卷一次"与"真做对一次"在 P 上不可区分（`test_one_white_paper_looks_like_a_perfect_run`）。
    但**改不改是产品口径**，本模块不擅自改；它做的是把切换成本降下来：
@@ -117,8 +125,9 @@ class Evidence:
     counted_weight: float
     ignored: tuple[Ignored, ...] = ()
     # 这份提交当时的门禁状态：`ok` / `disqualified` / `voided`。
-    # **只留痕、不参与计算**（现行口径仍是 A：证据照记）。留它的唯一目的是让
-    # 「A → C（降权）→ B（排除）」成为计入层的一条过滤，而不是回头改已积累的历史。
+    # `voided` ⇒ 整份不计入（本类的 `counts` 直接是 False，理由见 `skill_evidence`）；
+    # `disqualified` ⇒ 仍照记（B-07b 的 A 口径），留它是为了将来切 C（降权）/ B（排除）
+    # 只需在计入层加一条过滤，而不必回头改已积累的历史。
     gate_status: str = "ok"
 
     @property
@@ -166,6 +175,10 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
     计入规则全部来自报告自带的 `attribution_policy`，本函数不内置任何状态白名单——
     否则口径会分叉成"代码说 pass/fail 算"与"任务 YAML 说 counts_toward_mastery"
     两套，将来改 YAML 时报告变了而 P 不变。
+
+    **唯一的整份级例外是 `score.voided`**：作废的提交一条都不计入（2026-11-16 人拍板）。
+    它来自报告的门禁层而不是 `attribution_policy`，因为"这次不算数"是提交级的判定，
+    不是某种断言状态的性质——写成 per-state 规则就得给每个状态都复制一遍。
     """
     if not isinstance(report, dict):
         raise MasteryError(f"report 应是 dict，收到 {type(report).__name__}")
@@ -181,17 +194,23 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
     if not isinstance(policy, dict) or not policy:
         raise MasteryError(f"{submission_id} 缺 attribution_policy，无法判断哪些状态计入掌握度")
 
-    # 门禁状态只如实记录，不改任何判定（现行口径＝A）。缺字段就报错而不是默认 `ok`：
+    # 门禁状态：`voided` 整份排除（2026-11-16 人拍板甲，见设计决定 5），
+    # `disqualified` 照记（B-07b 的 A 口径）。缺字段就报错而不是默认 `ok`：
     # 默认成 `ok` 会把"整份不合格"记成"合格"，正好抹掉将来切 B/C 唯一需要的那个信号。
     score = report.get("score")
     if not isinstance(score, dict) or "disqualified" not in score or "voided" not in score:
         raise MasteryError(f"{submission_id} 缺 score.disqualified / score.voided，无法记录门禁状态")
-    if score["disqualified"]:
-        gate_status = "disqualified"
-    elif score["voided"]:
+    # **顺序有意义**：`voided` 先判。两者可以同时为真（交了一份空白的旧版提交），
+    # 若先判 `disqualified` 就会把它当"不合格但算数"计入 P —— 作废被降级成不合格，
+    # 版本错位照样刷高掌握度。作废是更强的判定（这次根本不算数），必须压过不合格。
+    if score["voided"]:
         gate_status = "voided"
+    elif score["disqualified"]:
+        gate_status = "disqualified"
     else:
         gate_status = "ok"
+    # 作废 = 这次不算数（版本对不上），不是"不会"，也不该抬高任何技能的状态量。
+    exclude_voided = gate_status == "voided"
 
     passed = counted = 0.0
     ignored: list[Ignored] = []
@@ -207,6 +226,10 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
         weight = a.get("weight", 0)
         if isinstance(weight, bool) or not isinstance(weight, (int, float)):
             raise MasteryError(f"{submission_id} 的断言 {a.get('id')} 权重非数值：{weight!r}")
+        if exclude_voided:
+            # 校验照做（口径/权重非法仍要炸），但一条都不计入：P 不能被作废的提交推动。
+            ignored.append(Ignored(str(a.get("id")), f"voided:state={state}"))
+            continue
         if not rule["counts_toward_mastery"]:
             ignored.append(Ignored(str(a.get("id")), f"not_counted:state={state}"))
             continue

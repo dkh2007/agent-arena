@@ -35,14 +35,14 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_b04.py` | 工具客户端（超时/重试/参数校验） | round 早 |
 | `mutate_client.py` | 同上，补充分支 | round 早 |
 | `mutate_judge.py` | 裁判口径（四态、门禁） | round 早 |
-| `mutate_mastery.py` | 掌握度 EMA 与证据收敛 | round-80 |
+| `mutate_mastery.py` | 掌握度 EMA 与证据收敛；round-89 补 2 组：作废也计入 / 作废被不合格压过（17 组） | round-80 / round-89 |
 | `mutate_scheduler.py` | FSRS 调度与 ReviewItem 生成 | round-84 / B-08 |
 | `mutate_advisor.py` | 四因子排程（缺数据均值顶、平手格、改序审计） | round-85 / B-09 |
 | `mutate_locate.py` | 第二套骨架（定位题）与按路径回放 | round-86 / B-05b |
 | `mutate_decay.py` | P 的衰减（缺卡不衰减、锚点取更晚、时间不倒流、R 只算一处） | round-87 / B-08b |
 | `mutate_snapshot.py` | 掌握度快照（重放唯一权威、P_raw 不存 P_eff、参数同存、没证据不写 0、v1→v2 迁移）；round-88 外审回件后补 3 组：词表拼错 / 迁移版本号超前 / 名次字段偷长（21 组） | round-88 / B-07c + 外审回件 |
 
-## 两条踩过的坑（写进脚本注释了，这里再记一次）
+## 踩过的坑（写进脚本注释了，这里再记一次）
 
 1. **每条变异必须换一个新的 `PYTEST_DEBUG_TEMPROOT`。** 复用同一个目录时，pytest 开场会清理
    旧编号目录，沙箱的 bulk-delete 守卫拦掉删除 ⇒ 整场 INTERNALERROR，输出里既没有 `failed`
@@ -57,3 +57,8 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
    reason 字面量改成从词表解包的常量，M5 / M6 两条锚点立刻失效 → `INVALID`。
    锚点是「源码里的一串字」，不是「语义」，重构会悄悄把它变成假抓住；
    所以每次改 `src/` 后要把对应变异脚本完整跑一遍，确认仍是全 `DETECTED`。
+5. **测试改名会让变异"假抓住"，而旧判定看不出来。** round-89 把
+   `test_gate_status_is_recorded_but_does_not_change_p` 改名后，M14 指向的节点不存在，
+   pytest 退出码是 **4**（不是 5），旧脚本没拦，把 `no tests ran` 当成 `DETECTED` 打印出来。
+   现在判定收紧成：**只有 `returncode == 1` 才算抓住**，2/3/4/5 一律 `INVALID`。
+   改测试名的同一次提交里必须顺手改对应变异条目的节点。

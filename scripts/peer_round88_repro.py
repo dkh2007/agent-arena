@@ -61,14 +61,20 @@ def _banner(title: str) -> None:
 
 
 def main() -> int:
-    # R1 —— voided 是否计入 P（回件 F1；本地核证把定性改为「两份口径互斥」）
-    _banner("R1 voided 提交计入 P")
+    # R1 —— voided 是否计入 P（回件 F1；2026-11-16 人拍板「甲」：不计入、提交照留）
+    _banner("R1 作废提交：不计 P，但保留提交记录")
     conn = _fresh()
+    store.save_submission(conn, _report("raw-perfect", "n1"), user_id="alice", created_at=AT)
+    p_ok = m.build_series(conn, "alice", MSP).p
     v = _report("raw-perfect", "v1", version="2020-01-01.1")
     print(f"  score.voided={v['score']['voided']}  "
           f"report_attribution={v['report_attribution']}")
-    store.save_submission(conn, v, user_id="alice", created_at=AT)
-    print(f"  build_series().p = {m.build_series(conn, 'alice', MSP).p}")
+    store.save_submission(conn, v, user_id="alice", created_at="2026-11-02T00:00:00Z")
+    print(f"  正常提交 p = {p_ok} → 再交一份作废的 p = {m.build_series(conn, 'alice', MSP).p}"
+          "（甲：不许被推动）")
+    print(f"  作废那份的理由 = {m.skill_evidence(v, MSP).ignored_reasons()}")
+    print(f"  submissions 行数 = "
+          f"{conn.execute('SELECT COUNT(*) FROM submissions').fetchone()[0]}（作废的记录也在）")
     row = store.load_mastery_snapshot(conn, "alice", MSP)
     print(f"  快照行 = {None if row is None else {'p': row['mastery_p'], 'n': row['evidence_count'], 'last': row['last_submission_id']}}")
     conn.close()

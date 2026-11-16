@@ -646,13 +646,34 @@ def test_td038_missing_version_is_not_compared():
 
 
 def test_td038_voided_never_counts_toward_mastery():
-    """「不记能力短板」必须有执行者，不能只写在 notes 文案里。"""
+    """「不记能力短板」必须有执行者，不能只写在 notes 文案里。
+
+    **2026-11-16 补强**：原版只验了报告上的 `report_attribution` 开关（报告级承诺），
+    没验计入层真的照办——而 round-88 外审回件正是从这里指出「名字写着永不计入，
+    断言只查了一个布尔值」。现在直接问掌握度：一份作废的满分提交必须给不出证据。
+    """
+    from arena import mastery as m
+
     voided = _build_with_version("raw-fake-retry", "1999-01-01.1")
     assert voided["report_attribution"] == {
         "counts_toward_mastery": False, "emit_error_patterns": False
     }
     normal = _build("raw-fake-retry")
     assert normal["report_attribution"]["counts_toward_mastery"] is True, "非作废不是恒 false"
+
+    # 把三份夹具的版本都改成不一致：作废后**任何**技能都取不到计入证据。
+    for name in NAMES:
+        rep = _build_with_version(name, "1999-01-01.1")
+        assert rep["score"]["voided"] is True, name
+        for skill in ("multi_step_planning", "failure_retry", "tool_param_validation"):
+            ev = m.skill_evidence(rep, skill)
+            assert not ev.counts, f"{name} 作废后 {skill} 仍有计入证据"
+            assert ev.gate_status == "voided"
+        # 反面对照：同一份夹具不动作废时，至少有一个技能能给出证据——防止上面的循环恒真。
+        assert any(
+            m.skill_evidence(_build(name), s).counts
+            for s in ("multi_step_planning", "failure_retry", "tool_param_validation")
+        ), f"{name} 不动作废也没有任何证据，这条测试就没在测作废"
 
 
 def test_td038_report_attribution_is_derived():

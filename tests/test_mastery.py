@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from arena import mastery as m  # noqa: E402
+from arena import diagnosis_report as dr  # noqa: E402
 from arena import store  # noqa: E402
 from arena.trace_pipeline import run_fixture  # noqa: E402
 
@@ -43,6 +44,23 @@ def _report(name: str, *, submission_id: str | None = None,
         report["submission"]["submission_id"] = submission_id
     if at is not None:
         report["submission"]["evaluated_at"] = at
+    return report
+
+
+def _voided_report(name: str, *, submission_id: str, at: str) -> dict:
+    """真流水线造一份作废报告：版本对不上 ⇒ `voided`（不是手改 `score.voided`）。
+
+    手改字段只能测"我这个函数读不读这个布尔值"，测不出"报告真的会变成 voided"
+    ——那样口径改回 A 时测试仍绿。这里走 `build_report` 的同一条路。
+    """
+    task = dr.load_task(TASK_YAML)
+    raw = json.loads((ROOT / "fixtures" / f"{name}.json").read_text(encoding="utf-8"))
+    raw["submission"]["submission_id"] = submission_id
+    raw["submission"]["evaluated_at"] = at
+    raw["submission"]["task_version"] = "1999-01-01.1"
+    report = dr.build_report(task, raw, dr.load_vocabulary())
+    assert report["score"]["voided"] is True and report["score"]["voided"] is not False
+    assert report["score"]["void_reason"] == "task_version_mismatch"
     return report
 
 
@@ -209,12 +227,13 @@ def test_one_white_paper_looks_like_a_perfect_run():
     assert p_white == p_perfect == 1.0
 
 
-def test_gate_status_is_recorded_but_does_not_change_p():
-    """A2 护栏（round-81）：门禁状态**留痕但不参与计算**，切换成本才是低的。
+def test_disqualified_still_counts_under_policy_a_and_is_recorded():
+    """`disqualified` 仍按 A 口径照记（2026-11-15 人拍板），且逐层留痕。
 
-    现行口径是 A（证据照记）。若将来切 C（降权）或 B（排除），只需在计入层按
-    `gate_status` 过滤——但前提是历史每一步都记了它，否则只能追溯改历史。
-    这里同时锁住：记录不影响 P（口径没变），且拼错的状态名会报错而不是静默溜过。
+    **注意别再把它读成"所有门禁状态都不参与计算"**：`voided` 自 2026-11-16 起被排除
+    （见下一条），两者刻意分开——作废是"这次不算数"，不合格是"这次算数但没做好"。
+    这里锁住三件事：A 口径没被顺手改掉、`gate_status` 逐层留痕（切 C/B 才不用改历史）、
+    拼错的状态名会报错而不是静默溜过。
     """
     white = _report("raw-no-file", submission_id="fp-1", at="2026-11-01T00:00:00+00:00")
     ev = m.skill_evidence(white, FR)
@@ -231,6 +250,60 @@ def test_gate_status_is_recorded_but_does_not_change_p():
     typo = m.Evidence("s1", MSP, "2026-11-01T00:00:00+00:00", 1.0, 1.0, gate_status="白卷")
     with pytest.raises(m.MasteryError, match="gate_status"):
         m.replay([typo], user_id=USER, skill_id=MSP)
+
+
+def test_voided_evidence_is_excluded_not_scored_as_zero():
+    """人拍板「甲」（2026-11-16）：作废**不计**掌握度，是排除不是记 0 分。
+
+    三分之二要分开锁：
+    ① 作废那份一条都不计入（不是 c=0——c=0 会把它变成"这个技能完全不会"）；
+    ② 只有作废提交时 `P is None`（决策 7 的同一个形状），不是 0.0；
+    ③ 它夹在正常提交之间时**不推动** P，但会作为 `skipped` 留痕。
+    """
+    voided = _voided_report("raw-perfect", submission_id="voided-1",
+                            at="2026-11-02T00:00:00+00:00")
+    ev = m.skill_evidence(voided, FR)
+    assert ev.gate_status == "voided"
+    assert not ev.counts and ev.counted_weight == 0.0 and ev.passed_weight == 0.0
+    assert set(ev.ignored_reasons()) == {"voided"}, "每条断言都要留「为什么没算」"
+    with pytest.raises(m.MasteryError, match="不构成证据"):
+        _ = ev.c
+
+    only = m.replay([ev], user_id=USER, skill_id=FR)
+    assert only.p is None, "只有作废提交 ⇒ 没有掌握度，不是 0 分"
+    assert len(only.steps) == 0 and len(only.skipped) == 1
+
+    normal = m.skill_evidence(
+        _report("raw-fake-retry", submission_id="ok-1", at="2026-11-01T00:00:00+00:00"), FR
+    )
+    mixed = m.replay([normal, ev], user_id=USER, skill_id=FR)
+    assert mixed.p == m.replay([normal], user_id=USER, skill_id=FR).p, "作废那条不许推动 P"
+    assert len(mixed.steps) == 1 and len(mixed.skipped) == 1
+
+
+def test_voided_submission_stays_in_history_but_never_lifts_p(db):
+    """「保留练习提交记录」那半句也要有测试：提交行照留、快照不跟着动。
+
+    人拍板原话是「作废不计成绩/不计掌握度，但保留练习提交记录」。
+    只测 P 会漏掉一半——若有人为了"不计"去删提交行，历史就丢了。
+    """
+    good = _report("raw-perfect", submission_id="s-good", at="2026-11-01T00:00:00+00:00")
+    store.save_submission(db, good, user_id=USER, refresh_mastery=True)
+    p_good = m.build_series(db, USER, FR).p
+    assert p_good == 1.0
+
+    voided = _voided_report("raw-perfect", submission_id="s-voided",
+                            at="2026-11-02T00:00:00+00:00")
+    store.save_submission(db, voided, user_id=USER, refresh_mastery=True)
+
+    rows = db.execute("SELECT submission_id FROM submissions ORDER BY created_at").fetchall()
+    assert [r[0] for r in rows] == ["s-good", "s-voided"], "作废的提交必须留在历史里"
+
+    assert m.build_series(db, USER, FR).p == p_good, "作废提交不许抬高掌握度"
+    snap = store.load_mastery_snapshot(db, USER, FR)
+    assert snap is not None and snap["mastery_p"] == p_good
+    assert snap["evidence_count"] == 1, "快照只数计入的那一条"
+    assert snap["last_submission_id"] == "s-good", "最后一条**计入**证据仍是 s-good"
 
 
 def test_missing_score_is_loud_not_defaulted_to_ok():
@@ -570,25 +643,3 @@ def test_scorecard_shows_p_and_never_rank():
     for word in ("第 1 名", "第1名", "排名第", "名次"):
         assert word not in out, f"排名未开，输出里不该出现 {word!r}"
 
-
-# --- 展示层（round-82）：给自己看的成绩单，只有两条硬规矩 -------------------------
-
-def test_scorecard_shows_p_and_never_rank():
-    """成绩单可以显示掌握度，但**不许先长出名次**。
-
-    这是产品口径的机械表达（2026-11-15 人拍板）：成绩先给自己看，排名是后继的、有条件的。
-    界面一旦先有"第几名"，口径会被界面倒逼着改（排名要求有后果 ⇒ 必须切口径 A→C）。
-    所以这里直接跑脚本，断言输出里出现数字、且不出现名次类字样。
-    """
-    import subprocess
-
-    proc = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "mastery_scorecard.py")],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    assert proc.returncode == 0, proc.stderr
-    out = proc.stdout
-    assert "0.79" in out, "成绩单要给出可复核的掌握度数字（来自 build_series，不是手填）"
-    assert "不参与任何排名" in out
-    for word in ("第 1 名", "第1名", "排名第", "名次"):
-        assert word not in out, f"排名未开，输出里不该出现 {word!r}"

@@ -201,9 +201,22 @@
 >   ⇒ "刷几十次才涨一点"的乐观假设不成立。要不要给门禁开例外属产品口径（A 现状 / B 排除 / C 降权），
 >   登记 `docs/BACKLOG.md` B-07b，**在拍板前不改代码**。
 > - **门禁状态逐条留痕（A2，round-81）**：每条证据与每一步递推都记 `gate_status`
->   （`ok` / `disqualified` / `voided`），但**不参与计算**。目的是把 A→C→B 的切换降成
+>   （`ok` / `disqualified` / `voided`）。`disqualified` **不参与计算**（B-07b 的 A 口径）；
+>   `voided` 自 round-89 起**整份排除**（见下一条）。留痕的目的是把 A→C→B 的切换降成
 >   计入层的一条过滤/乘子，而不是回头改已积累的历史。**切换时禁止**把报告里的 credit 断言改标
 >   `blocked`（那会用评分逻辑吞掉诊断数据，见 `diagnosis-report-schema.md` §1 第 4 条）。
+> - **作废提交不计入 P（round-89 / 2026-11-16 人拍板「甲」，已落地）**：
+>   人原话「作废不计成绩/不计掌握度，但保留练习提交记录」。落地分两层：
+>   ① `submissions` 行与报告**照留**——它是一次练习记录，可回看、可重放；
+>   ② `mastery.skill_evidence()` 对 `score.voided` 的提交返回 `counted_weight=0`，
+>   每条断言标 `voided:state=...`，于是 `build_series()` 不被推动；只有作废提交时
+>   `p is None`，`mastery_snapshots` **没有行**（决策 7：缺数据不是 0 分）。
+>   **`voided` 优先于 `disqualified`**：既不合格又作废的提交（交了空白旧版）按作废算，
+>   否则版本错位照样能刷高 P——这条顺序 round-89 实现时踩到过，已由测试钉住。
+>   **这不等于切 B**：`disqualified`（没交产物/没跑完）仍是 A 口径、证据照记。
+>   口径改动会让旧快照的 `mastery_p` 与重放不符 ⇒ 旧库上线后必须跑
+>   `mastery_snapshot.recompute_all()`；`verify_all()` 会把不一致报成 `stale_value`，
+>   不会静默混进读路径。
 > - **P 不落库这件事不影响"给自己看"（2026-11-15 口径，仍成立）**：产品定位是
 >   「成绩先给自己看、用于督促」，而"看进步曲线"不需要快照——每份报告都在 `submissions` 里，
 >   `mastery.build_series()` 随时重放（`scripts/mastery_scorecard.py` 就是这一形态，

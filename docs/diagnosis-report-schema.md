@@ -134,6 +134,12 @@ ratio = suppressed ? 0 : counterfactual_credit / 4
 
 三个压制条件分开记，因为它们的**含义不同**：`disqualified` 是没交东西/没跑完（学生侧），`voided` 是版本对不上这次不算数（round-70 / TD-038），`process_fact.missing` 是题目要求过程却没交（round-70 / P2）。三者都不改断言状态。
 
+> **计入层的执行情况（round-89 / 2026-11-16 订正）**：本节写的「作废 ⇒ 不计掌握度」此前只有
+> `report_attribution` 这个派生的布尔开关在表达，计入层仍按 A 口径把证据照记——口径与实现
+> 曾不一致（round-88 外审回件 F1 指出）。人已拍板「甲」，`mastery.skill_evidence()` 现在对
+> `score.voided` 的提交**整份排除**（提交行与报告照留），细节见 `data-model.md` §5.2。
+> `disqualified` **不受影响**，仍是 A 口径：报告压制分数，但不压制观测。
+
 ### 3.2 四条硬规则
 
 - `disqualified = any(gate.state == "fail")`。**门禁 `unscored` 不拦**（`on_unscored: do_not_disqualify`）：无法证明不合格就不判不合格。这不会放水——同一份提交的 credit 层 R3/R4 也因 trace 缺失而 `unscored`，分数上不去。

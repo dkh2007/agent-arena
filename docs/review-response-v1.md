@@ -8389,3 +8389,101 @@ P1 与 P2 已在本轮回复里翻成大白话（两个选项 + 各自代价 + �
    若 voided 从不产生 pass 断言 ⇒ 两个选项等价，P1 自动消失。
 ⑤ 若「技能被删」在现实中不存在（skills 只增不删）⇒ P2 选项①的顾虑消失，明显更便宜。
 ⑥ 若回件里出现一条**本地十分钟可复现的红灯**而本节没处置 ⇒ 本节登记不成立，插队重开。
+
+---
+
+## 89. B-07d ①② 结案：作废不计掌握度（甲）+ 孤儿行只发现不改数据（乙）（2026-11-16，round-89）
+
+### 89.1 人的两条指令（原话）
+
+> 「第一件：作废不计成绩/不计掌握度，但保留练习提交记录」
+> 「第二件：按照乙操作」
+
+对应 §88.5 给出的选项：**① 甲**（按「作废不算」改过来）、**② 乙**（只保证能发现，
+清理留人工）。两条都不涉及排名：**B-25 仍未开**，A→C 硬触发一字未动。
+
+### 89.2 第一件怎么落的（甲）
+
+`src/arena/mastery.py::skill_evidence()`：`score.voided` 为真时**整份不计入**——
+`counted_weight=0`、每条断言进 `ignored` 标 `voided:state=...`、`Evidence.counts` 为假。
+两半都要落地，缺一半就是偷工：
+
+- **不计掌握度**：`build_series()` 不被推动；只有作废提交时 `p is None`、
+  `mastery_snapshots` 没有行（决策 7：缺数据不是 0 分，**不许写 0.0**）。
+- **保留练习提交记录**：`submissions` 行与报告一个字不删，仍可回看、可重放、
+  可从 `ignored` 里查到"这次为什么没算"。
+
+**与 B-07b 的 A 口径的关系必须说清**：A 口径讲的是 `disqualified`（没交产物/没跑完），
+这条**没改**、证据照记（`test_disqualified_still_counts_under_policy_a_and_is_recorded`）。
+作废与不合格是两件事，合并会把版本错位写成冤案（`diagnosis-report-schema.md` §3.1 原话）。
+
+### 89.3 实现时自己踩到的一处，值得单列
+
+第一版按 `disqualified → voided → ok` 的顺序判门禁状态，于是**既不合格又作废**的提交
+（例如交了空白的旧版）被记成 `disqualified`，仍按 A 计入 P —— 作废被降级成不合格，
+**版本错位照样能刷高掌握度**。这是新写的测试（逐夹具 × 逐技能问计入层）当场抓出来的，
+不是靠读代码看出来的。改法：**`voided` 先判**（作废是更强的判定：这次根本不算数）。
+
+⇒ 记一条方法结论：**「排除某一类提交」这种改动，必须用"两类状态同时为真"的输入去打**，
+只测单类状态永远打不到优先级问题。
+
+### 89.4 第二件怎么落的（乙）
+
+`verify_all()` 已能报出两类孤儿行（用户未注册 / 技能未注册）——
+`recompute_all()` **仍不删**它们，维持"发现但不改数据"，登记为人工处理。
+理由照旧：删之前要先答"技能被删 ⇒ 快照留不留"，那是产品口径；未定前删可能毁掉唯一历史证据。
+现状锁测试保留（把洞钉住），不反转。
+
+### 89.5 判据补强（对外审 T8 ① 的正面回应）
+
+`test_td038_voided_never_counts_toward_mastery` 原来只断言 `report_attribution` 那个布尔开关
+——**名字是承诺、断言是摆设**（回件原话）。现在改成：
+
+1. 对五份夹具逐份把版本改成不一致（`build_report()` 真算出的 `voided`，不手改字段）；
+2. 逐技能问 `skill_evidence()`，断言一律 `not counts` 且 `gate_status == "voided"`；
+3. **加反面对照**：同一份夹具不动作废时至少有一个技能能给出证据——
+   否则这个循环可能恒真（全部取不到证据也能过）。
+
+新增两条测试同理走真流水线（`_voided_report()` 用 `build_report()` 造作废报告），
+其中 `test_voided_submission_stays_in_history_but_never_lifts_p` 直接落库验证
+"提交行留着 + P 不动 + 快照 `n=1 / last=正常那条`"。
+
+### 89.6 变异与另一处假绿
+
+`tools/mutations/mutate_mastery.py` 从 15 组扩到 **17 组**：
+
+- **M16 作废也计入**（`exclude_voided = False`）⇒ 撞红 `test_voided_evidence_is_excluded_not_scored_as_zero`
+- **M17 作废被不合格压过**（顺序回退）⇒ 撞红 `test_td038_voided_never_counts_toward_mastery`
+
+**顺带修掉变异脚本一个真缺陷**：测试改名后 M14 指向的节点不存在，pytest 退出码是 **4**
+（不是 5），旧判定没拦，把 `no tests ran` 打印成 `DETECTED` —— **假抓住**。
+现在只有 `returncode == 1` 才算抓住，2/3/4/5 一律 `INVALID`。
+这条写进 `tools/mutations/README.md` 第 5 坑：改测试名必须同一次改变异节点。
+
+### 89.7 本轮裁判（全部实跑）
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/ -q` | **1194 收集**（1193 passed / 1 failed——唯一红灯是评审包自指计数，重生成后消） |
+| `mutate_mastery.py` | **17 组全 DETECTED**，无 INVALID / MISSED |
+| `peer_round88_repro.py` | R1 换成新口径：正常提交 p=1.0 → 再交作废的仍 1.0、提交行数 2、快照 `n=1 / last=n1` |
+| 口径相关专项 | `test_mastery` / `test_diagnosis_report` / `test_mastery_snapshot` / `test_store` / `test_submission_api` 共 **176 passed** |
+
+### 89.8 边界（别把这一节读成"掌握度口径已完备"）
+
+① λ=0.3 与初值「首次观测播种」仍是**假设**，未标定（B-07b）；
+② `disqualified` 的 A 口径**没动**——白卷仍能让 `c=1.0`（B-07b ③ 未拍）；
+③ 旧库升级后**必须**跑 `mastery_snapshot.recompute_all()`，否则 `verify_all()` 会一直报
+   `stale_value`；本轮没有自动重算的迁移（口径不是 schema 版本，故意不塞进 `migrate()`）；
+④ 孤儿行仍不自动清理（乙）；⑤ T6 半状态（提交与刷新不同事务）仍未修，现状锁还在；
+⑥ 排名未开，`list_ranked()` 仍不产名次、不校验新鲜度（B-25 开工前置）。
+
+### 89.9 反证条件
+
+① 若作废提交落库后 `build_series().p` 仍被推动 ⇒ 甲没落地（`test_voided_evidence_*` 应已红）。
+② 若把 `voided` 判断挪到 `disqualified` 之后而测试仍全绿 ⇒ 89.3 的优先级锁失效。
+③ 若 `test_td038_voided_never_counts_toward_mastery` 在"取不到证据"恒真的情形下仍绿
+   ⇒ 89.5 的第 3 步反面对照没生效。
+④ 若变异脚本再次出现 `no tests ran` 却判 `DETECTED` ⇒ 89.6 的退出码收紧被回退。
+⑤ 若真实数据里作废占比显著（≥10%）⇒ 这批提交被完全排除后，P 的时间轴会稀疏，
+   需重新评估"作废是否该退化成降权（C）"。

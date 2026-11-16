@@ -103,7 +103,7 @@ MUTATIONS = [
 
     ("M14 门禁状态一律记 ok（留痕失效）",
      M, '        gate_status = "disqualified"', '        gate_status = "ok"',
-     f"{T}::test_gate_status_is_recorded_but_does_not_change_p"),
+     f"{T}::test_disqualified_still_counts_under_policy_a_and_is_recorded"),
 
     ("M15 缺 score 时默认 ok（静默吞掉信号）",
      M,
@@ -111,6 +111,24 @@ MUTATIONS = [
      "        raise MasteryError(f\"{submission_id} 缺 score.disqualified / score.voided，无法记录门禁状态\")",
      "    if not isinstance(score, dict):\n        score = {}",
      f"{T}::test_missing_score_is_loud_not_defaulted_to_ok"),
+
+    ("M16 作废也计入（人拍板甲被推翻）",
+     M,
+     '    exclude_voided = gate_status == "voided"',
+     "    exclude_voided = False",
+     f"{T}::test_voided_evidence_is_excluded_not_scored_as_zero"),
+
+    ("M17 作废被不合格压过（顺序回退，空白旧版照样刷高 P）",
+     M,
+     '    if score["voided"]:\n'
+     '        gate_status = "voided"\n'
+     '    elif score["disqualified"]:\n'
+     '        gate_status = "disqualified"',
+     '    if score["disqualified"]:\n'
+     '        gate_status = "disqualified"\n'
+     '    elif score["voided"]:\n'
+     '        gate_status = "voided"',
+     "tests/test_diagnosis_report.py::test_td038_voided_never_counts_toward_mastery"),
 ]
 
 
@@ -134,8 +152,12 @@ def main() -> int:
                 if r.returncode == 0:
                     status, detail = "MISSED", "测试仍绿——这条测试没在管这事"
                     break
-                if r.returncode == 5:
-                    status, detail = "INVALID", "测试节点不存在"
+                # pytest 退出码只有 1 代表"有用例失败"。4=用法错误、5=没收集到用例、
+                # 2/3=中断或内部错——这些是**变异脚本自己**坏了，必须记 INVALID。
+                # round-89 踩到过：测试改名后节点不存在，旧判定把 "no tests ran" 当成
+                # DETECTED，看着像"抓住了"。（`INVALID` 不算抓住。）
+                if r.returncode != 1:
+                    status, detail = "INVALID", f"pytest 退出码 {r.returncode}（不是 1）"
                     break
                 lines = [ln for ln in r.stdout.strip().splitlines() if ln.strip()]
                 tail = lines[-1] if lines else ""
