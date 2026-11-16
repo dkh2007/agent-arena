@@ -1,10 +1,14 @@
 """生成 B-07c 外部审核委托包（自包含、逐字内联、可自检）。
 
-    python tools/gen_peer_brief_b07c.py            # 生成
-    python tools/gen_peer_brief_b07c.py --check    # 自检：包内块 vs 磁盘 + 匿名
+    python tools/gen_peer_brief_b07c.py            # 重新生成（历史快照）
+    python tools/gen_peer_brief_b07c.py --check    # 自检：包内块 vs 锚点提交 + 匿名
+    python tools/gen_peer_brief_b07c.py --self-test
 
-内联块从磁盘现读，不手抄；`--check` 把包内每个块抽出来与磁盘字节比对，
-防止「包里印的和仓库里跑的不是同一份」（本项目踩过）。
+**round-88 回件已收到并据此改了源码**，所以本包冻结为 `ANCHOR` 那个提交的快照：
+内联块从 `git show ANCHOR:<file>` 读，不再从当前工作区读。
+否则源码一改 `--check` 就永久假红，而回件引用的行号/源码又只对得上旧版本。
+
+自检仍非恒真：`--self-test` 证明改一个块内字节、插一条本机路径都会报红。
 匿名规则复用 scripts/push_gate.py，不另立词表。
 """
 
@@ -12,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +25,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import push_gate  # noqa: E402
 
 OUT = ROOT / "docs" / "peer-brief-b07c.md"
+# 委托包外发时的仓库 HEAD；回件 review-round88-b07c.md 核的就是这份内容。
+ANCHOR = "7e614fe756d526028cb38a95b35a0def6df817e7"
 
 FILES = (
     ("src/arena/mastery_snapshot.py", "本轮新增：快照的算、写、校验、排序"),
@@ -29,10 +36,14 @@ FILES = (
     ("scripts/independent_audit.py", "独立对拍器（裁判本身也要被审）"),
 )
 
-HEAD = """<!-- status=ACTIVE unpublished generated-by=tools/gen_peer_brief_b07c.py -->
+HEAD = """<!-- status=SUPERSEDED anchor=7e614fe756d526028cb38a95b35a0def6df817e7 generated-by=tools/gen_peer_brief_b07c.py -->
 # 外部审核委托包 —— B-07c 掌握度快照（round-88）
 
-> 本包**尚未发送给任何外部 AI**。发起权在维护者手里；AI 只备包、不外发。
+> **本包已冻结为历史快照**（对应提交 `7e614fe`）。回件 `review-round88-b07c.md`
+> 已收到并逐条核证，见 `docs/review-response-v1.md` §88；部分源码已按回件修改，
+> 所以 §3 的内联块**不再代表当前磁盘**。`--check` 改为与本包生成时那个提交逐字比对
+> （`git show ANCHOR:<file>`），既能防包被悄悄改，又不会因后续修复永久假红。
+> 若要复审当前源码，另起一个新版本委托包，不要改这一份。
 
 ## 0 任务书（请按这里交付）
 
@@ -74,8 +85,8 @@ HEAD = """<!-- status=ACTIVE unpublished generated-by=tools/gen_peer_brief_b07c.
 
 ## 3 逐字内联源码
 
-> 每块与磁盘文件的 sha256 见 §6；`python tools/gen_peer_brief_b07c.py --check`
-> 会把包内块抽出来与磁盘重新比对。**块内不改动一个字节**，包括注释。
+> 每块在锚点提交里的 sha256 见 §6；`python tools/gen_peer_brief_b07c.py --check`
+> 会把包内块抽出来与 `git show ANCHOR:<file>` 重新比对。**块内不改动一个字节**，包括注释。
 """
 
 TAIL_HEAD = """
@@ -118,11 +129,13 @@ TAIL_FOOT = """
 python tools/gen_peer_brief_b07c.py --check
 ```
 
-输出应含 `BLOCKS_MATCH=True` 与 `ANON=CLEAN`。
+输出应含 `BLOCKS_MATCH=True` 与 `ANON=CLEAN`（比对对象是锚点提交，不是当前工作区）。
 
 ## 7 边界
 
-- 本包**不外发**：是否发给外部 AI、发给谁、何时发，由维护者决定。
+- 本包**已由维护者转发给外部 AI**，回件 `review-round88-b07c.md` 已收到并登记在
+  `docs/review-response-v1.md` §88。本文件从此不再更新，保留为当时那份证据；
+  要复审当前源码另起新版本包，不回改这一份。
 - 若维护者愿意另外开放仓库只读权限，路径清单为 §6 表中五个文件加
   `docs/data-model.md` / `docs/BACKLOG.md` / `docs/review-response-v1.md` §87；
   均为仓库相对路径。不给整个仓库目录、不给内部处置记录、不给已过期评审包。
@@ -137,23 +150,32 @@ BLOCK_RE = re.compile(
 
 
 def _blocks() -> list[tuple[str, str, int, str]]:
+    """从**锚点提交**读五个文件，不碰当前工作区。
+
+    `git show` 返回 LF（与 `read_text` 的 universal-newline 结果一致），
+    所以包内块、指纹表、`--check` 三处用的是同一份文本。
+    """
     out = []
     for rel, _ in FILES:
-        text = (ROOT / rel).read_text(encoding="utf-8")
+        p = subprocess.run(["git", "show", f"{ANCHOR}:{rel}"], cwd=ROOT,
+                           capture_output=True, check=True)
+        text = p.stdout.decode("utf-8").replace("\r\n", "\n")
         out.append((rel, text, len(text.splitlines()),
                     hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]))
     return out
 
 
 def _body() -> str:
+    blocks = _blocks()
+    by_rel = {rel: text for rel, text, _, _ in blocks}
     parts = [HEAD]
-    for rel, note in FILES:
-        text = (ROOT / rel).read_text(encoding="utf-8")
-        parts.append(f"\n### 3.{FILES.index((rel, note)) + 1} `{rel}` — {note}\n\n"
+    for i, (rel, note) in enumerate(FILES, start=1):
+        text = by_rel[rel]
+        parts.append(f"\n### 3.{i} `{rel}` — {note}\n\n"
                      f"<!-- BEGIN_FILE {rel} -->\n```python\n{text.rstrip()}\n```\n"
                      f"<!-- END_FILE {rel} -->\n")
     parts.append(TAIL_HEAD)
-    for rel, text, lines, digest in _blocks():
+    for rel, _, lines, digest in blocks:
         parts.append(f"| `{rel}` | {lines} | `{digest}` |\n")
     parts.append(TAIL_FOOT)
     return "".join(parts)
@@ -177,6 +199,7 @@ def _check() -> int:
         print("FAIL: 委托包尚未生成")
         return 1
     ok, tags = _inspect(OUT.read_text(encoding="utf-8"))
+    print(f"COMPARE_AGAINST=git show {ANCHOR[:7]}:<file>（历史快照，非当前工作区）")
     print(f"BLOCKS_MATCH={ok}")
     print(f"ANON={'CLEAN' if not tags else tags}")
     return 0 if ok and not tags else 1

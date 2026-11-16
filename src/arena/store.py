@@ -198,11 +198,19 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
        逐用户逐技能重放，把结果写进快照表；原 `submissions` 一个字节不动。
     3. **不许降级**：`PRAGMA user_version > target` 直接抛错。看见看不懂的新版本还继续写，
        比停下来更危险。
+    4. **不许超前**（round-88 外审 F4）：`target > SCHEMA_VERSION` 同样抛错。
+       以前只拦下界，允许写出 `user_version=5` 而库里其实只有 v1+v2 的结构——
+       「不许降级」的同一条理由，反方向也成立。
 
-    `target` 只接受正整数；它是内部常量，不来自用户输入。
+    `target` 只接受 `1..SCHEMA_VERSION` 的整数；它是内部常量，不来自用户输入。
     """
     if isinstance(target, bool) or not isinstance(target, int) or target < 1:
         raise StoreError("migrate 的 target 必须是正整数")
+    if target > SCHEMA_VERSION:
+        raise StoreError(
+            f"migrate 的 target={target} 高于本代码认识的 SCHEMA_VERSION={SCHEMA_VERSION}"
+            "——拒绝写出自己看不懂的版本号"
+        )
     current = schema_version(conn)
     if current > target:
         raise StoreError(

@@ -55,15 +55,15 @@ MUTATIONS = [
     # ⑤ 缺快照时假装一致 ⇒ 写路径漏了也看不出来
     ("M5 缺快照报 consistent=True",
      N, '        return SnapshotCheck(user_id, skill_id, None, replayed_p,\n'
-        '                             "missing_snapshot", False)',
+        '                             REASON_MISSING, False)',
      '        return SnapshotCheck(user_id, skill_id, None, replayed_p,\n'
-     '                             "missing_snapshot", True)',
+     '                             REASON_MISSING, True)',
      f"{T}::test_missing_snapshot_is_reported_not_silently_fixed"),
 
     # ⑥ 孤儿行不被识别 ⇒ 幽灵快照一直挂在榜上
     ("M6 重放无证据时把有行也说成 ok",
-     N, '        reason = "ok" if stored is None else "orphan_snapshot"',
-     '        reason = "ok"',
+     N, '        reason = REASON_OK if stored is None else REASON_ORPHAN',
+     '        reason = REASON_OK',
      f"{T}::test_orphan_snapshot_is_cleaned_by_refresh"),
 
     # ⑦ 孤儿行不删 ⇒ 修完还留着陈旧值
@@ -143,6 +143,23 @@ MUTATIONS = [
      N, '        "evidence_count": len(series.steps),',
      '        "evidence_count": 0,',
      f"{T}::test_snapshot_metadata_records_what_was_replayed"),
+
+    # ⑲～㉑ round-88 外审回件新增的三条锁：修之前实测 MISSED / 无对应测试
+    ("M19 词表取值拼错（外审 F3：改之前 REASONS 零引用，拼错无人察觉）",
+     N, '    "stale_params",       # P 碰巧对，但 λ / p0 / 证据数 / 最后一条提交对不上',
+     '    "stale_parmas",       # P 碰巧对，但 λ / p0 / 证据数 / 最后一条提交对不上',
+     f"{T}::test_reasons_vocabulary_is_enforced"),
+
+    ("M20 migrate 允许写出超前版本号（外审 F4）",
+     S, '    if target > SCHEMA_VERSION:\n        raise StoreError(',
+     '    if False and target > SCHEMA_VERSION:\n        raise StoreError(',
+     f"{T}::test_migrate_rejects_a_future_target"),
+
+    ("M21 名次字段偷偷长出来（外审 F8；修复前实测 27 条全绿 MISSED）",
+     N, '        rows = rows[:limit]\n    return rows',
+     '        rows = rows[:limit]\n'
+     '    return [{**r, "rank_no": i + 1} for i, r in enumerate(rows)]',
+     f"{T}::test_ranked_is_sorted_stable_and_has_no_rank_field"),
 ]
 
 

@@ -174,6 +174,15 @@ def test_migrate_rejects_a_bogus_target(db):
             store.migrate(db, target=bad)
 
 
+def test_migrate_rejects_a_future_target(db):
+    """round-88 外审 F4：以前 `target=5` 会写出 `user_version=5`，
+    而库里其实只有 v1+v2 的 8 张表。版本号不能比本代码认识的结构还新。
+    """
+    with pytest.raises(store.StoreError, match="看不懂"):
+        store.migrate(db, target=store.SCHEMA_VERSION + 1)
+    assert store.schema_version(db) == store.SCHEMA_VERSION == 2
+
+
 def test_init_db_on_a_v1_file_does_not_leave_a_half_migrated_state(tmp_path):
     """老库被 `init_db()` 重新打开时，不能出现"表有了、PRAGMA 还是 1"。"""
     path = tmp_path / "reopen.db"
@@ -372,6 +381,13 @@ def test_ranked_is_sorted_stable_and_has_no_rank_field(db):
     assert rows[0]["mastery_p"] == rows[1]["mastery_p"] == 1.0
     assert rows[2]["mastery_p"] == m.build_series(db, "c", MSP).p
     assert rows[2]["mastery_p"] < 1.0
+    # round-88 外审 F8：原来只锁 "rank" 这个字面键名，返回里塞个 "rank_no"
+    # 照样全绿（本地实跑变异：27 passed）。改成锁整个键集合，悄悄加列也会红。
+    expected_cols = {
+        "user_id", "skill_id", "mastery_p", "lam", "p0",
+        "evidence_count", "last_submission_id", "updated_at",
+    }
+    assert all(set(r) == expected_cols for r in rows)
     assert all("rank" not in r for r in rows)
     assert [r["user_id"] for r in ms.list_ranked(db, MSP, limit=2)] == ["a", "b"]
     assert ms.list_ranked(db, MSP, limit=0) == []
@@ -443,3 +459,61 @@ def test_v1_ddl_really_lacks_the_snapshot_table():
     assert "mastery_snapshots" not in store.SCHEMA_SQL_V1
     assert "mastery_snapshots" in store.SCHEMA_SQL_V2
     assert store.SCHEMA_SQL == store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2
+
+
+# --- round-88 外部回件：三条新锁 ----------------------------------------------
+
+def test_reasons_vocabulary_is_enforced(db):
+    """外审 F3：改之前 `REASONS` 在 src/ 与 tests/ 里除定义处零引用，
+    注释还写「六种」而实际 5 种。现在 `verify_one()` 全部从词表解包取值：
+    把任一取值拼错，下面第一条集合断言就会红，词表不再是摆设。
+    """
+    assert len(ms.REASONS) == 5
+    assert set(ms.REASONS) == {
+        "ok", "missing_snapshot", "stale_value", "stale_params", "orphan_snapshot"
+    }
+    _seed(db, pairs=(("raw-perfect", "s1", AT1),))
+    assert {c.reason for c in ms.verify_all(db)} <= set(ms.REASONS)
+    with db:
+        db.execute("UPDATE mastery_snapshots SET mastery_p = 0.0")
+    assert ms.verify_one(db, "u", MSP).reason == ms.REASON_STALE_VALUE
+    assert ms.verify_one(db, "u", MSP).reason in ms.REASONS
+
+
+def test_orphan_rows_outside_registered_scope_are_detected_but_not_repaired(db):
+    """外审 F2 的**现状锁**（已知缺陷，B-07d 修复时把最后一句反转）。
+
+    `verify_all()` 报得出范围外孤儿行，`recompute_all()` 却只扫
+    已注册用户 × 已注册技能。本地复现比回件多造了一类：
+    「用户未注册」与「技能未注册」两类都修不掉（回件只写了后者）。
+    """
+    db.execute("PRAGMA foreign_keys = OFF")
+    with db:
+        db.execute("INSERT INTO mastery_snapshots VALUES (?,?,?,?,?,?,?,?)",
+                   ("u", "phantom_skill", 0.9, 0.3, None, 1, "gone", AT1))
+        db.execute("INSERT INTO mastery_snapshots VALUES (?,?,?,?,?,?,?,?)",
+                   ("ghost_user", MSP, 0.9, 0.3, None, 1, "gone", AT1))
+    db.execute("PRAGMA foreign_keys = ON")
+    assert "orphan_snapshot" in {c.reason for c in ms.verify_all(db)}
+    before = {tuple(r) for r in db.execute("SELECT user_id, skill_id FROM mastery_snapshots")}
+    ms.recompute_all(db)
+    after = {tuple(r) for r in db.execute("SELECT user_id, skill_id FROM mastery_snapshots")}
+    assert before == after, "现状：范围外孤儿行修不掉；B-07d 修复后把本断言反转"
+
+
+def test_refresh_failure_leaves_the_submission_committed_without_snapshot(db, monkeypatch):
+    """外审 T6 的**现状锁**（已知缺陷，B-07d 修复时反转本测试）。
+
+    `save_submission()` 的 INSERT 与快照刷新不在同一事务：刷新抛异常时，
+    提交已落库、快照为空。真修要把两者放进同一事务，注意 `refresh_*`
+    内部各自还有 `with conn:`，得先拆掉嵌套提交，不能只在外层再套一个。
+    """
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟刷新失败")
+
+    monkeypatch.setattr(ms, "refresh_user", boom)
+    with pytest.raises(RuntimeError, match="模拟刷新失败"):
+        store.save_submission(db, _report("raw-perfect", submission_id="half", at=AT1),
+                              user_id="u", created_at=AT1)
+    assert db.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM mastery_snapshots").fetchone()[0] == 0

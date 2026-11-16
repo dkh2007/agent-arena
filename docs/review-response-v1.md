@@ -8211,3 +8211,181 @@ py-fsrs 6.x 的 `R(t,S)` 是重尾的，实测（`S=1` 天那张卡，逐点跑�
 ④ 若某技能的 P 是 0 而它其实一份计入证据都没有 ⇒ 决策 7 被破，
    "没做过"被排成"完全不会"。
 ⑤ 若有人凭本轮说"排名可以上了" ⇒ 87.3 的例外被误读，B-25 与 A→C 硬触发均未按。
+
+---
+
+## 88. 外部审核回件处置：B-07c 掌握度快照（2026-11-15，round-88 下半场）
+
+### 88.1 回件来源与效力边界
+
+人按上一轮给出的 **A 步骤**（现在发）把 `docs/peer-brief-b07c.md` 转给另一个 AI，
+回件落在维护者本机 `review-round88-b07c.md`，本轮按
+「**核证 → 登记 → 处置 → 落仓 → 人拍板**」处理。
+
+**回件自己划的边界（照录，不替它夸大）**：它跑了委托包自检
+（`BLOCKS_MATCH=True / ANON=CLEAN`）、只读了口径文件、自建两个不依赖 yaml/pytest 的
+最小复现脚本；**没能跑起仓库官方 pytest**（本机三个解释器都没同时装齐 yaml 与 pytest），
+所以「27 条测试 + 18 组变异全绿」它**没有独立复核**，凡涉及"某条测试是否恒真"
+只给可复现变异方式，明确请维护者实跑定夺。它也没改仓库任何文件、没替人拍板 P1–P3。
+
+⇒ **本节的证据分两层**：回件的实测由我们用仓库解释器重做一遍（88.4），
+它没跑的 T8② 由我们实跑（88.3 ③）。**外评建议本身不当证据**。
+
+### 88.2 T1–T9 核证总表（本地复核后）
+
+| # | 回件判定 | 本地核证 | 结论 |
+|---|---|---|---|
+| T1 | 成立：`verify_all()` 扫到孤儿行 | `pairs` = 用户×技能 + 全表快照行，代码直读确认 | **接受** |
+| T2 | 成立但不完整：未注册技能孤儿行删不掉 | 实测更宽，见 88.3 ② | **接受并扩大** |
+| T3 | 成立：迁移增量/幂等/不降级/旧报告不变 | 复核 `store.migrate()` 代码 + 前轮实测 | **接受**（另见 F4） |
+| T4 | 成立：元数据四项全比 | 实测 `lam=0.5` ⇒ `stale_params` 且 P 同为 1.0 | **接受** |
+| T5 | 成立但不完整：并列稳定但口径已落地 | `ORDER BY mastery_p DESC, user_id ASC` 确认 | **接受**（F5） |
+| T6 | **不成立**：提交与刷新不在同一事务 | 实测 `submissions=1 / snapshots=0` + 调用方收异常 | **接受** |
+| T7 | 成立：`verify_*` / `compute_row` 纯读 | 全文无 INSERT/UPDATE/DELETE | **接受** |
+| T8 | **不成立**：至少两条有洞 | ① `test_td038_voided_never_counts_toward_mastery` 名字大于断言覆盖（只查 `report_attribution`）；② 名次断言只锁字面键名——**本地实跑证实 MISSED**；③ 两侧共用 `skill_evidence` ⇒ 共同误解全绿 | **接受**（②由推测升为事实） |
+| T9 | **不成立**：三处文档/实现不符 | 注释「六种」vs 5 种、`recompute_all` docstring 假话、`data-model.md`「没有跨用户比较口径」 | **接受** |
+| §2 A | 有条件成立：豁免站得住，但没免掉「推论」 | `list_ranked` 全仓**无生产调用方**，表目前只写不读；收益要等 B-25 | **接受并登记** |
+| §2 B | 基本成立，但「没产出跨用户比较口径」不成立 | SQL 已写死比较 + 并列兜底 | **接受** |
+| §2 C | 不成立：全绿能证明的范围小得多 | T8② 实跑证实；共同误解属结构性、非本轮独有 | **接受** |
+| §2 D | 成立：没有任何路径把时间点钉进库 | 七列无 `as_of`/`p_eff`，`compute_row` 只写 `float(series.p)` | **接受** |
+
+### 88.3 三处必须与回件「批判性接受」地分开说
+
+**① F1 重新定性：不是「实现违背已拍板口径」，是「两份人都拍过板的口径互斥」。**
+
+回件原文写「与已落地的 TD-038 人拍板相反」「代码取了 data-model 那一处」。
+事实部分成立（`voided=True` 的报告 `p=1.0` 且落快照行，本地实测），
+但**定性要打折**：代码是在**严格执行 round-81 人拍板的 A 口径**——
+
+- `docs/BACKLOG.md` B-07b ③ 写的是「**整份不合格的提交**，其 credit 证据该不该进入长期状态量」，
+  A 现状＝「证据照记」；A2 护栏逐条留痕的 `gate_status` 明确列了 `ok/disqualified/voided` 三种；
+- `src/arena/diagnosis_report.py::suppression_reasons` 注释写得更直白：
+  「**不等于** `report_attribution.counts_toward_mastery`……按现行 A 口径，
+  一份门禁不合格的提交仍然是 `True`（白卷能抬高 P 就是这条推出来的）」；
+- `src/arena/mastery.py::skill_evidence` 注释：「门禁状态只如实记录，不改任何判定（现行口径＝A）」，
+  且明写这是为「将来切 B/C 时不必回头改已积累的历史」预留的计入层切换口。
+
+⇒ **实现层不许擅自选边**：改 `skill_evidence` 等于同时推翻 round-81 的 A 拍板与 A2 设计。
+这一项归**产品口径**，等人拍（88.8 P1）。
+
+**但回件有一条完全成立、且是本轮最该记住的**：
+`test_td038_voided_never_counts_toward_mastery` 的**名字承诺「never counts toward mastery」，
+断言只查 `report_attribution`**——而 `report_attribution` 是报告级派生开关，
+与 `build_series()` 读的 per-state `attribution_policy` 不是同一个东西。
+**名字是承诺，断言才是保证**；这条测试名恰好掩盖了 F1。必须补断言覆盖（列入 B-07d 判据）。
+
+**② F2 影响面比回件写的更宽。**
+
+回件写「未注册**技能**的孤儿行永远删不掉」，对照组写「技能已注册、用户无证据的能被删」。
+本地复现多造一类：把「**用户未注册**」的孤儿行也放进去 ⇒
+重算前 3 条 `orphan_snapshot`，`recompute_all()` 写 0 行，
+残留 `('alice','phantom_skill')` 与 `('ghost_user','multi_step_planning')` 两行，
+重算后仍报 2 条；只有「用户已注册 + 技能已注册 + 无证据」那一类被清掉。
+根因是 `recompute_all()` 的扫描范围 = `list_user_ids() × list_skill_ids()`，
+**笛卡尔积之外的任何行都碰不到**。B-07d 的现状锁测试把这三类一起钉住。
+
+**③ 回件推测 5 由本地实跑证实（这是本次外评最值钱的一条）。**
+
+回件给的可复现变异：让 `list_ranked()` 返回时附加 `rank_no` 字段，预测 27 条仍全绿，
+并自标「**推演，未能实跑，若维护者实跑后发现某条会红，请以实跑为准**」。
+我们用仓库解释器实跑同一变异：
+
+| 时点 | `pytest tests/test_mastery_snapshot.py -q` | 判定 | 独立对拍器 |
+|---|---|---|---|
+| 修复前 | **27 passed** | `MISSED` | `RC=0`，查不出（它只比 P/λ/证据数，不查行里的键） |
+| 修复后 | **1 failed, 30 passed**（精确落在名次那条） | `DETECTED` | 仍 `RC=0` |
+
+⇒ 回件预测正确；「不给名次字段」此前只被一条字符串断言保护。
+**同一脚本、同一变异、只改测试**，是十分钟内可复核的对照，不是自评。
+
+### 88.4 本地复现实测（回件 §4 的重做）
+
+复现脚本已落仓 **`scripts/peer_round88_repro.py`**（仓根自定位，任意目录用绝对路径调用均可）。
+回件自带的 `repro_b07c.py` / `repro_b07c_2.py` 在评审方工作区、维护者手里没有，
+所以这份是可复核的等价物：从仓库 `src/` 直接 import，用 `build_report()` 生成
+**真 voided 报告**（`task_version` 不匹配），不是手改字段。
+
+**修复前**核证回件时的实测（下表 R5 是旧行为，现已修）：
+
+```
+R1  score.voided=True  report_attribution={'counts_toward_mastery': False, ...}
+    build_series().p = 1.0   快照行 = {'p': 1.0, 'n': 1, 'last': 'v1'}
+R2  重算前 3 条 orphan_snapshot → recompute_all 写 0 行
+    → 残留 2 行（未注册技能 / 未注册用户）→ 仍报 2 条；对照组被清掉
+R4  RuntimeError: 模拟刷新失败 → submissions=1  snapshots=0
+R5  migrate(target=5) → {'from':2,'to':5,...}  PRAGMA user_version=5  表数=8
+R6  len(REASONS) = 5
+R7  写入 bob,alice 且同分 → 读回 ['alice','bob']（并列由 user_id ASC 决定）
+T5  把 alice 的 P 改坏成 0.01 → list_ranked 照读照排；verify_all 另路报 2 条 stale_value
+T4  lam=0.5 → reason=stale_params，stored_p=1.0 / replayed_p=1.0（P 恰好相同）
+```
+
+**修复后**同一脚本现在的 R5 段输出：
+`抛错 = migrate 的 target=3 高于本代码认识的 SCHEMA_VERSION=2` 且 `user_version = 2`；
+其余各段不变（R1/R2/R4/R7/T5/T4/R6 都是**故意保留**的已知边界或口径事实，不是待修红灯）。
+`tools/mutations/mutate_snapshot.py` 补齐 M19–M21 后 **21 组全 `DETECTED`**；
+M5/M6 锚点因 F3 把字面量改成常量而失效，已同步更新（README 第 4 条坑）。
+
+回件自标的推测 6（**回填失败后「表在、版本未升、部分行已写」的半状态**）
+我们**没有构造出实际失败**，仍按推测登记，不升格为事实。
+
+### 88.5 处置：不需拍板的同轮落仓
+
+| 编号 | 改了什么 | 十分钟验证 |
+|---|---|---|
+| F3 | `mastery_snapshot.py` 注释「六种」→「五种」；`verify_one()` 五种 reason 全部改为从 `REASONS` 解包取值，新增 `test_reasons_vocabulary_is_enforced` 集合断言 | 把词表里任一项拼错，该测试立刻红（此前零引用，拼错无任何反应） |
+| F4 | `store.migrate()` 增加 `target > SCHEMA_VERSION` 上界，docstring 补第 4 条硬规矩；新增 `test_migrate_rejects_a_future_target` | `migrate(target=3)` 抛「看不懂」且 `user_version` 仍 2 |
+| F8 | `test_ranked_is_sorted_stable_and_has_no_rank_field` 改锁整个键集合（8 列） | 88.3 ③ 的变异 `MISSED → DETECTED` |
+| F5 | `docs/data-model.md` 删掉「没有跨用户比较口径」，写明 SQL 已落地比较与并列兜底、B-25 前须重拍并列规则并核 `user_id` 是否含账号 | 直读 `store.list_mastery_snapshots` 的 ORDER BY |
+| F7 | `docs/data-model.md` 补「换 λ 的正确顺序」：改默认值 → `recompute_all()` → `verify_all()`；点明 `stale_params` 是口径漂移不是数据损坏 | 改 λ 后先 verify 会全库红，按序重算后全绿 |
+| F2 | `recompute_all()` 假 docstring 改成已知边界；`docs/data-model.md` 契约① 追加订正；新增现状锁测试 | 见 88.4 R2 |
+| T6 | 新增现状锁测试（**缺陷未修**，见 88.6） | 刷新抛异常 ⇒ `submissions=1 / snapshots=0` |
+| 委托包 | 冻结为 `7e614fe` 历史快照；生成器改为与 `git show ANCHOR:<file>` 比对 | `--check` 五个指纹与外发时逐字相同；`--self-test` 四项全 True |
+
+**没有动的东西**：产品代码里 `skill_evidence` / `build_series` 的口径一行未改；
+`list_ranked` 的 SQL 一行未改；B-25 排名、A→C 硬触发、B-07b 参数标定全部不动。
+
+### 88.6 未修的缺陷与待拍板项（登记，不假装闭环）
+
+- **T6 事务原子性（纯技术，待修）**：真修要把 INSERT 与刷新放进同一事务，
+  但 `refresh_one` → `save_mastery_snapshot` / `delete_mastery_snapshot` 内部各有 `with conn:`，
+  **只在外层再套一个是假原子**（嵌套会中途 commit）。本轮不假装修了，
+  用现状锁测试把半状态钉住，列入 B-07d ③，修复时反转测试。
+- **P1 voided 计不计入 P（产品口径，需人拍）**：两份已拍板口径互斥，见 88.3 ①。
+- **P2 孤儿行清理范围（产品口径，需人拍）**：扩成全表清理前要先答
+  「技能被删 ⇒ 快照是否保留」，否则可能销毁唯一历史痕迹。
+- **P3 读榜前的新鲜度保证 / F5 并列规则（B-25 开工前置，现在零风险）**：
+  `list_ranked` 全仓无生产调用方、排名未开、包未对外发布 ⇒ 此刻不需要人拍；
+  写进 B-25 开工条件即可。
+- **共同误解全绿（结构性）**：27 条锁的是「快照 == 重放」，两侧共用
+  `skill_evidence` / `attribution_policy` / 播种规则；独立对拍器文件头自己承认
+  口径仍是共用输入。**这不是本轮能补的洞**，要补得靠真实数据回测或下一次外评。
+
+### 88.7 委托包为何冻结而不是重生成
+
+包内 §3 逐字内联了 5 个文件，本轮改了其中 3 个。若照旧与当前磁盘比对，
+`--check` 会**永久假红**；若重新生成，回件引用的行号/源码又对不上。
+按「历史记录只追加不回改」：`docs/peer-brief-b07c.md` 头部改为
+`status=SUPERSEDED anchor=7e614fe756d526028cb38a95b35a0def6df817e7`，
+生成器 `_blocks()` 改从 `git show ANCHOR:<file>` 读，`--check` 比的是**外发当时那一份**。
+实跑：五个指纹仍是 `ade8d6f3… / dd43c7c8… / 78587c88… / 927a2533… / a1648f7d…`
+（与回件 §0 核到的完全一致），`BLOCKS_MATCH=True / ANON=CLEAN`，
+`--self-test` 的 `MUTATION_DETECTED=True / PATH_DETECTED=True / RESTORED=True`。
+**若将来要复审当前源码，另起新版本包，不回改这一份。**
+
+### 88.8 交给人拍的只有两件（不拍也能继续）
+
+按房规：技术实现、验证、落仓、提交、闸门由我小步做完；只有**产品口径的价值判断**找人。
+P1 与 P2 已在本轮回复里翻成大白话（两个选项 + 各自代价 + 一句倾向 + 反证条件），
+**不回 = 维持现状 = 零改动**，我继续推进不卡住。
+开榜前 P1 必须解决；P2 的代价是核验信号长期带红、慢慢没人看它。
+
+### 88.9 反证条件
+
+① 若把词表拼错后 `test_reasons_vocabulary_is_enforced` 仍绿 ⇒ F3 的"强制力"是假的。
+② 若 `migrate(target=SCHEMA_VERSION+1)` 仍写出更高 `user_version` ⇒ F4 修漏。
+③ 若再加一个 `rank_no` 字段而 31 条快照测试仍全绿 ⇒ F8 修漏。
+④ 若在真实提交数据里 `voided` 占比显著（如 ≥10%）⇒ P1 不能再拖；
+   若 voided 从不产生 pass 断言 ⇒ 两个选项等价，P1 自动消失。
+⑤ 若「技能被删」在现实中不存在（skills 只增不删）⇒ P2 选项①的顾虑消失，明显更便宜。
+⑥ 若回件里出现一条**本地十分钟可复现的红灯**而本节没处置 ⇒ 本节登记不成立，插队重开。

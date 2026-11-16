@@ -1,7 +1,11 @@
-<!-- status=ACTIVE unpublished generated-by=tools/gen_peer_brief_b07c.py -->
+<!-- status=SUPERSEDED anchor=7e614fe756d526028cb38a95b35a0def6df817e7 generated-by=tools/gen_peer_brief_b07c.py -->
 # 外部审核委托包 —— B-07c 掌握度快照（round-88）
 
-> 本包**尚未发送给任何外部 AI**。发起权在维护者手里；AI 只备包、不外发。
+> **本包已冻结为历史快照**（对应提交 `7e614fe`）。回件 `review-round88-b07c.md`
+> 已收到并逐条核证，见 `docs/review-response-v1.md` §88；部分源码已按回件修改，
+> 所以 §3 的内联块**不再代表当前磁盘**。`--check` 改为与本包生成时那个提交逐字比对
+> （`git show ANCHOR:<file>`），既能防包被悄悄改，又不会因后续修复永久假红。
+> 若要复审当前源码，另起一个新版本委托包，不要改这一份。
 
 ## 0 任务书（请按这里交付）
 
@@ -43,8 +47,8 @@
 
 ## 3 逐字内联源码
 
-> 每块与磁盘文件的 sha256 见 §6；`python tools/gen_peer_brief_b07c.py --check`
-> 会把包内块抽出来与磁盘重新比对。**块内不改动一个字节**，包括注释。
+> 每块在锚点提交里的 sha256 见 §6；`python tools/gen_peer_brief_b07c.py --check`
+> 会把包内块抽出来与 `git show ANCHOR:<file>` 重新比对。**块内不改动一个字节**，包括注释。
 
 ### 3.1 `src/arena/mastery_snapshot.py` — 本轮新增：快照的算、写、校验、排序
 
@@ -2448,11 +2452,13 @@ if __name__ == "__main__":
 python tools/gen_peer_brief_b07c.py --check
 ```
 
-输出应含 `BLOCKS_MATCH=True` 与 `ANON=CLEAN`。
+输出应含 `BLOCKS_MATCH=True` 与 `ANON=CLEAN`（比对对象是锚点提交，不是当前工作区）。
 
 ## 7 边界
 
-- 本包**不外发**：是否发给外部 AI、发给谁、何时发，由维护者决定。
+- 本包**已由维护者转发给外部 AI**，回件 `review-round88-b07c.md` 已收到并登记在
+  `docs/review-response-v1.md` §88。本文件从此不再更新，保留为当时那份证据；
+  要复审当前源码另起新版本包，不回改这一份。
 - 若维护者愿意另外开放仓库只读权限，路径清单为 §6 表中五个文件加
   `docs/data-model.md` / `docs/BACKLOG.md` / `docs/review-response-v1.md` §87；
   均为仓库相对路径。不给整个仓库目录、不给内部处置记录、不给已过期评审包。

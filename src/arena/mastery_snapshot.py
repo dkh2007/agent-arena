@@ -51,7 +51,8 @@ from typing import Any
 from . import mastery
 from . import store
 
-# 不一致的原因词表。只这六种，写错拼法会在测试里被单独抓住。
+# 不一致的原因词表。**只这五种**；`verify_one()` 全部从本元组解包取值，
+# 词表与实现之间有强制关系，拼错会被 `test_reasons_vocabulary_is_enforced` 抓住。
 REASONS = (
     "ok",                 # 一致
     "missing_snapshot",   # 重放有值、库里没行（写路径没刷新 / 行被删了）
@@ -59,6 +60,12 @@ REASONS = (
     "stale_params",       # P 碰巧对，但 λ / p0 / 证据数 / 最后一条提交对不上
     "orphan_snapshot",    # 库里有行、重放却无证据（不该有快照）
 )
+
+# 解包而不是散写字面量：词表一旦被改错，下面所有 reason 跟着变，
+# `tests/test_mastery_snapshot.py::test_reasons_vocabulary_is_enforced` 立刻报红。
+# 对照 round-88 外审 F3：改之前 REASONS 在 src/ 与 tests/ 里除定义处零引用。
+(REASON_OK, REASON_MISSING, REASON_STALE_VALUE, REASON_STALE_PARAMS,
+ REASON_ORPHAN) = REASONS
 
 
 class SnapshotError(ValueError):
@@ -174,8 +181,13 @@ def recompute_all(
 ) -> int:
     """全库重算入口（迁移回填、"故意改错后修回来"都走这里）。返回写入行数。
 
-    注意它**不删**"库里有、重放无证据"的行——那是 `refresh_one()` 逐条删的，
-    而 `recompute_all()` 正是靠逐条调它实现的，所以孤儿行照样会被清掉。
+    扫描范围 = 已注册用户 × 已注册技能。对每一对调 `refresh_one()`，
+    重放无证据就删行，所以**范围内的**孤儿行会被清掉。
+
+    **已知边界（round-88 外审 F2，本地实测复核）**：范围之外的孤儿行——
+    「技能未注册」或「用户未注册」的快照行——`verify_all()` 报得出 `orphan_snapshot`，
+    但本函数碰不到、也修不掉。要不要扩成全表清理属产品口径
+    （技能被删时，快照可能是它唯一的历史痕迹），登记 BACKLOG B-07d，拍板前不改。
     """
     written = 0
     skills = store.list_skill_ids(conn)
@@ -206,16 +218,16 @@ def verify_one(
     replayed_p = None if row is None else row["mastery_p"]
 
     if row is None:
-        reason = "ok" if stored is None else "orphan_snapshot"
+        reason = REASON_OK if stored is None else REASON_ORPHAN
         return SnapshotCheck(user_id, skill_id, stored_p, None, reason,
                              stored is None)
     if stored is None:
         return SnapshotCheck(user_id, skill_id, None, replayed_p,
-                             "missing_snapshot", False)
+                             REASON_MISSING, False)
 
     if stored_p != replayed_p:
         return SnapshotCheck(user_id, skill_id, stored_p, replayed_p,
-                             "stale_value", False)
+                             REASON_STALE_VALUE, False)
 
     same_params = (
         stored["lam"] == row["lam"]
@@ -225,8 +237,8 @@ def verify_one(
     )
     if not same_params:
         return SnapshotCheck(user_id, skill_id, stored_p, replayed_p,
-                             "stale_params", False)
-    return SnapshotCheck(user_id, skill_id, stored_p, replayed_p, "ok", True)
+                             REASON_STALE_PARAMS, False)
+    return SnapshotCheck(user_id, skill_id, stored_p, replayed_p, REASON_OK, True)
 
 
 def verify_all(

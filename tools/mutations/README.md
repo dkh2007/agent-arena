@@ -40,7 +40,7 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_advisor.py` | 四因子排程（缺数据均值顶、平手格、改序审计） | round-85 / B-09 |
 | `mutate_locate.py` | 第二套骨架（定位题）与按路径回放 | round-86 / B-05b |
 | `mutate_decay.py` | P 的衰减（缺卡不衰减、锚点取更晚、时间不倒流、R 只算一处） | round-87 / B-08b |
-| `mutate_snapshot.py` | 掌握度快照（重放唯一权威、P_raw 不存 P_eff、参数同存、没证据不写 0、v1→v2 迁移） | round-88 / B-07c |
+| `mutate_snapshot.py` | 掌握度快照（重放唯一权威、P_raw 不存 P_eff、参数同存、没证据不写 0、v1→v2 迁移）；round-88 外审回件后补 3 组：词表拼错 / 迁移版本号超前 / 名次字段偷长（21 组） | round-88 / B-07c + 外审回件 |
 
 ## 两条踩过的坑（写进脚本注释了，这里再记一次）
 
@@ -53,3 +53,7 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
    `pytest tests/ -q`，默认临时根下攒了 140 个旧编号目录，pytest 收尾的 `atexit` 清理
    撞上沙箱 bulk-delete 守卫 ⇒ 抛 `SystemExit(1)`、正常输出被 `tail` 挤掉、看起来像挂了
    6 分钟。这不是测试变红也不是死循环，换一个空临时根即可（与第 1 条同源，只是发生在收尾）。
+4. **改过被测源码就必须重跑变异脚本。** round-88 外审处置把 `verify_one()` 里的
+   reason 字面量改成从词表解包的常量，M5 / M6 两条锚点立刻失效 → `INVALID`。
+   锚点是「源码里的一串字」，不是「语义」，重构会悄悄把它变成假抓住；
+   所以每次改 `src/` 后要把对应变异脚本完整跑一遍，确认仍是全 `DETECTED`。
