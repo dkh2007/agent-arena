@@ -17,6 +17,12 @@
 >    只有作废提交时 `p is None`、快照无行。**`disqualified`（没交产物/没跑完）不受影响，
 >    仍是 A 口径、证据照记**——两者不是一回事，别合并。旧库升级后需跑
 >    `mastery_snapshot.recompute_all()`，否则 `verify_all()` 会一直报 `stale_value`。
+> ⑥ **round-90（2026-11-16）B-04b 关闭：judge 双评已接进提交管线**（`judge_pipeline.py` +
+>    `SCHEMA_VERSION` 2→3 的第九张表 `arbitration_queue`）。**默认关闭**，要开必须同时给
+>    `judge` 与 `arbitration_threshold`（阈值无默认值，标定仍是 B-04c）；开了也只多两个只读字段
+>    与一条待办，**分数/断言/归因/掌握度/排期一律不变**。
+>    一处口径需人确认（B-04d）：低一致率的提交**只排队、照常算**，不冻结——理由与代价见
+>    `docs/BACKLOG.md` B-04b。表数 8 → 9。
 > 单文件交接请以 `docs/BACKLOG.md` 顶部更新块 + `docs/ROADMAP.md` 五层表为现役状态，
 > 下方 §2「当前状态（截至 2026-11-07）」是**历史快照**，勿据此判断现行状态。
 

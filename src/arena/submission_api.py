@@ -58,6 +58,17 @@ POST 请求体（只有前四个必填）：
 3. **`submission_id` 缺省由平台生成**，也允许外部带入（重放与对拍需要）。
    带入且重复时 409 且**不覆盖**——诊断记录要能回溯到「当时那份」。
 
+## judge 双评（B-04b）：默认关闭，只能从 Python 层显式打开
+
+HTTP 端点**不跑 judge**：它花钱、依赖网络，而且模型不可用会把提交挡在门外——
+给学习者一个 503 只因为复核员掉线，是把平台成本转嫁成对方的失败。
+需要双评的调用方走 `submit(..., judge=..., arbitration_threshold=...)`，
+两个参数必须同时给（阈值没有默认值，见 `llm_judge.needs_arbitration`）。
+
+开起来之后发生三件事，且只有这三件：报告多两个只读字段（`judge_scores` /
+`judge_agreement`）、`submissions` 的两个同名派生列被填、一致率低于阈值时
+`arbitration_queue` 多一条人工待办。**分数、断言、归因、错误模式一个字都不变。**
+
 ## 已知边界（是登记过的决定，不是遗漏）
 
 - **无鉴权**，默认只绑 `127.0.0.1`。上公网前必须加，见 BACKLOG。
@@ -91,12 +102,16 @@ from urllib.parse import urlsplit
 try:  # 作为包被 import
     from . import assertion_evaluator as ae
     from . import diagnosis_report as dr
+    from . import judge_pipeline as jp
+    from . import llm_judge as lj
     from . import store
     from . import trace_pipeline as tp
 except ImportError:  # 作为独立脚本运行
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import assertion_evaluator as ae  # type: ignore[no-redef]
     import diagnosis_report as dr  # type: ignore[no-redef]
+    import judge_pipeline as jp  # type: ignore[no-redef]
+    import llm_judge as lj  # type: ignore[no-redef]
     import store  # type: ignore[no-redef]
     import trace_pipeline as tp  # type: ignore[no-redef]
 
@@ -364,12 +379,18 @@ def unreachable_report(prep: Prepared, detail: str) -> dict:
 
 # ── 评测（不落库） ────────────────────────────────────────────────────────────
 
-def evaluate(prep: Prepared) -> dict:
-    """走内部主链路出报告。**纯函数**（不写盘、不发网络包），便于单测对拍。"""
+def _evaluate_with_raw(prep: Prepared) -> tuple[dict, dict | None]:
+    """内部主链路，顺带交出交给 judge 的 `raw`。**纯函数**（不写盘、不发网络包）。
+
+    分成这个私有函数是为了让 B-04b 的双评拿到 trace 与产物原文：
+    只拿报告喂 judge 等于把 `expected`（标准答案）递过去，那样的"一致"证明不了任何事
+    （见 `llm_judge.build_judge_context` 的白名单说明）。公开的 `evaluate()` 只返回报告，
+    签名不变——现有调用方与测试一条都不用改。
+    """
     if prep.endpoint_url is not None:
         reachable, detail = probe_endpoint(prep.endpoint_url)
         if not reachable:
-            return unreachable_report(prep, detail)
+            return unreachable_report(prep, detail), None
         if prep.trace is None and not prep.artifacts:
             # 端点活着，但本服务还没有主动采集能力（B-03）。如实说，不假装评过。
             raise SubmissionError(
@@ -390,18 +411,55 @@ def evaluate(prep: Prepared) -> dict:
     except (tp.PipelineError, dr.ReportError, ae.EvaluatorError) as exc:
         # 输入能解析但评不了（trace 结构非法、rubric 对不上等）——422，不是 500
         raise SubmissionError("unevaluable", str(exc), status=422) from exc
-    return report
+    return report, raw
 
 
-def submit(payload: Any, *, registry: TaskRegistry, conn_factory, now: str | None = None) -> dict:
-    """校验 -> 评测 -> 落库。返回报告。
+def evaluate(prep: Prepared) -> dict:
+    """走内部主链路出报告（不跑 judge）。"""
+    return _evaluate_with_raw(prep)[0]
+
+
+def submit(payload: Any, *, registry: TaskRegistry, conn_factory, now: str | None = None,
+           judge: lj.JudgeFn | None = None,
+           arbitration_threshold: float | None = None,
+           judge_runs: int = lj.DEFAULT_RUNS) -> dict:
+    """校验 -> 评测 ->（可选）双评 -> 落库 ->（可能）入仲裁队列。返回报告。
 
     `conn_factory` 是「产出连接的可调用对象」而不是连接本身：`ThreadingHTTPServer`
     每请求一个线程，而 sqlite3 连接默认不允许跨线程使用。每请求新建连接最省心，
     本地文件打开成本是微秒级，不值得为它引入连接池与锁。
+
+    **judge 默认不跑**（`judge=None`）：它花钱、要网络，且模型不可用时会挡住提交。
+    要开启必须同时给出 `judge` 与 `arbitration_threshold`——只给一个属于部署配置错误，
+    返回 500 而不是拿一个默认阈值顶上（`llm_judge` 拒绝给默认值的同一条理由）。
     """
+    if (judge is None) != (arbitration_threshold is None):
+        raise SubmissionError(
+            "judge_config_incomplete",
+            "judge 与 arbitration_threshold 必须同时给或同时不给；"
+            "单独给一个，运行时就只能替你拍一个阈值",
+            status=500,
+        )
+
     prep = prepare(payload, registry, now=now)
-    report = evaluate(prep)
+    report, raw = _evaluate_with_raw(prep)
+
+    outcome = None
+    if judge is not None and raw is not None:
+        # raw 为 None = 平台没拿到任何证据（端点不可达）。没材料就没有可复核的东西，
+        # 硬跑双评只会让模型对着一份空壳打分，把"平台没采到"记成"考生不行"。
+        try:
+            outcome = jp.run_judge(
+                report, raw, prep.task, judge,
+                threshold=arbitration_threshold, runs=judge_runs,
+                vocab=dr.load_vocabulary(),
+            )
+        except lj.JudgeError as exc:
+            # 模型/接口不可用是平台侧故障，不是这份提交的错：503，且**不落库**。
+            # 落了库就等于存了一份"评过但没评完"的证据，后续无法区分。
+            raise SubmissionError("judge_unavailable", str(exc), status=503) from exc
+        report = outcome.report
+        dr.validate_report(report)
 
     conn = conn_factory()
     try:
@@ -409,7 +467,12 @@ def submit(payload: Any, *, registry: TaskRegistry, conn_factory, now: str | Non
         store.save_submission(
             conn, report, user_id=prep.user_id,
             trace=prep.trace, agent_endpoint_url=prep.endpoint_url,
+            judge_scores=report.get("judge_scores"),
+            judge_agreement=report.get("judge_agreement"),
         )
+        if outcome is not None:
+            # 必须在落库之后：队列外键指向 submissions，先入队会指向不存在的证据。
+            jp.record_arbitration(conn, outcome)
     except store.StoreError as exc:
         # 重复 submission_id 走这里：409 + 不覆盖，诊断记录要能回溯到「当时那份」
         raise SubmissionError("store_rejected", str(exc), status=409) from exc

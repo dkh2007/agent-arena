@@ -1,7 +1,9 @@
 # 数据模型 v0.1（M-1 第 2 步）
 
-> 状态：**v0.2（2026-11-15 / round-88：B-07c 升 `SCHEMA_VERSION` 1→2，新增第八张表
-> `mastery_snapshots` 作为 P 的缓存，见 §5.3；旧七张表一个字段没动）**。
+> 状态：**v0.3（2026-11-16 / round-90：B-04b 升 `SCHEMA_VERSION` 2→3，新增第九张表
+> `arbitration_queue` 承接 judge 双评不一致的人工待办，见 §5.4；同轮报告 DTO 增两个可选字段
+> `judge_scores` / `judge_agreement`（不加则无、不加不报错）；旧表一个字段没动）**。
+> 上一版：**v0.2（2026-11-15 / round-88：B-07c 升 1→2，新增 `mastery_snapshots`）**。
 > 上一版：**v0.1（2026-11-06 维护者拍板扩编至 7 实体；同日按外部评审第 7 条增补
 > Task.yaml_path 与资产边界，见开放决策 4）**。此后任何字段变更视为破坏性变更，走单独一步并更新本文件。
 > 约定：字段名 snake_case（Python/SQLite）；实体名 PascalCase；字段变更视为破坏性变更，走单独一步并更新本文件。
@@ -144,6 +146,15 @@
 > judge 存在的意义只有一个：**换一个观察者重看同一份提交，能不能得出同样的结论**。
 > `judge_agreement` 低说明的是「判据表述有歧义」，不是「模型不行」也不是「考生答错」——
 > 处置是进人工仲裁，不是调分。
+
+> **2026-11-16 / round-90（B-04b）补订**：上面这三个字段此前只存在于类型与表结构里，
+> 报告本身不带、也没有任何调用方。现在报告可选地带上它们（`diagnosis-report.schema.json`
+> 已登记，缺省即无），落库时写进 `submissions` 的两个同名派生列，低一致率进 §5.4 的队列。
+> ③ 的可机械判定的形式就是：`schedule_submission()` 与 `mastery.build_series()` 对
+> 「带 judge 字段的报告」与「不带的同一份报告」输出逐项相同——
+> `tests/test_judge_pipeline.py::test_queue_membership_does_not_change_mastery_or_scheduling`
+> 就是这条，它是**可以红**的（改判读法 B 时会红）。
+> 另：`disqualified` 的 A 口径与 `voided` 的排除（round-89 甲）都不受影响。
 
 ### 5.2 UserSkillState（用户×技能的 FSRS 卡片宿主）
 
@@ -321,6 +332,43 @@
 要"改不了"需要服务端 append-only + 身份认证，等 B-10 有前端之后再定表。
 **禁止**在对外材料里说"四因子排程已实现"——准确说法是「四因子框架、三因子已接入数据、
 截止因子留接口并会显式弃权」。
+
+### 5.4 ArbitrationEntry（v3 / B-04b：judge 双评不一致时的人工待办）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| submission_id | TEXT PK, FK→Submission | **主键就是提交**：一份提交最多一条待办，重复入队幂等 |
+| user_id | TEXT, FK→User | 从 `submissions` 现读，不由调用方传（少一个会对不上的副本） |
+| task_id | TEXT, FK→Task | 同上 |
+| judge_agreement | REAL [0,1] | 入队时的一致率（两两比较中 `rating` 相同的比例） |
+| threshold | REAL (0,1] | 入队时用的阈值。**记下来是因为它会被标定改变**：不记就无法复核"当时按多少判的" |
+| reason | TEXT | 目前只有 `judge_disagreement`；留列是为了将来别的入队原因不至于改表 |
+| status | TEXT | `pending` / `resolved` / `dismissed` |
+| opened_at | DATETIME | 入队时刻 |
+| resolved_at | DATETIME, 可空 | 裁决时刻 |
+| resolution_note | TEXT, 可空 | 裁决理由 |
+
+> **它是什么**：`judge_agreement < threshold` 时的一份**待办**——提示"判据表述可能有歧义，
+> 需要人看一眼"。`judge` 与 `threshold` 的算法仍只在 `llm_judge.py` 一处。
+
+> **它不是什么（本轮最关键的一条）**：**不是闸门**。队列里的提交照常计入 P、照常排复习。
+> 理由：低一致率说明的是**判据表述**有歧义（系统侧），把它冻结成"这份成绩不算"等于把自己的
+> 缺陷记在学习者账上（决策 7「数据缺失 ≠ 能力不足」的同一条推论）。
+> `llm_judge` 模块文档早就写了「它不是『模型不好』，也不是『考生答错了』」。
+> **代价**：人工判定"判据要改"之后，历史成绩需要重算（`mastery_snapshot.recompute_all()` 现成）。
+> ⇒ 另一个读法（低一致率先冻结、裁决后再放行）**已登记待人拍**；要切只需让计入层/调度层读队列
+> 状态，**不必改本表结构**。见 `review-response-v1.md` §90。
+
+> **与 `submissions.judge_agreement` 的关系**：那一列是"这份提交评出的一致率"，
+> 本表是"因为低到阈值以下而开出的待办"。两件事方向不同：前者可能有多份、
+> 后者只有一条，且带自己的时间轴与结论。**没有把待办状态抄回 `submissions`**——
+> 抄一份就变成第二真相源。
+
+> **迁移**：`store.migrate()` 把 `PRAGMA user_version` 2→3，只补本表与索引；
+> 从 v1 直接升会逐级跑 v2、v3 两段。旧表一个字段不动、不许降级、重复调用幂等。
+
+> **没有的东西**：没有自动清理（裁决后保留，作为"判据改过几次"的历史）、
+> 没有分配仲裁人（无鉴权，见 B-10 前的边界）、没有 SLA / 提醒。
 
 ## 3. 关系一览
 

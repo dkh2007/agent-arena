@@ -41,6 +41,13 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_locate.py` | 第二套骨架（定位题）与按路径回放 | round-86 / B-05b |
 | `mutate_decay.py` | P 的衰减（缺卡不衰减、锚点取更晚、时间不倒流、R 只算一处） | round-87 / B-08b |
 | `mutate_snapshot.py` | 掌握度快照（重放唯一权威、P_raw 不存 P_eff、参数同存、没证据不写 0、v1→v2 迁移）；round-88 外审回件后补 3 组：词表拼错 / 迁移版本号超前 / 名次字段偷长（21 组） | round-88 / B-07c + 外审回件 |
+| `mutate_b04b.py` | judge 接线层 + 仲裁队列（阈值边界 `<=`、永不入队、attach 改分、就地改原对象、配置检查、崩溃吞掉、派生列不填、重复入队覆盖阈值、裁决无理由、改判已裁决）（13 组） | round-90 / B-04b |
+
+> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` 与 `mutate_b04b.py` 是
+> 「`rc == 1` 才算抓住」。其余 7 个仍是旧规则（`rc == 5` 判 `INVALID`、含 `error` 判 `INVALID`），
+> round-89 已实测过旧规则会把节点不存在的 `no tests ran`（rc=4）判成 `DETECTED`。
+> 它们各自的全 `DETECTED` **目前仍可信**（节点都在，跑出来是 `1 failed`），
+> 但**改过测试名之后**必须人工核对一次，别只看脚本结论。统一判定登记在 BACKLOG（工具债）。
 
 ## 踩过的坑（写进脚本注释了，这里再记一次）
 

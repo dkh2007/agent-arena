@@ -38,7 +38,15 @@ assertions[]         逐条断言：layer / weight / state / skill_id / error_pa
 skill_gaps[]         技能缺口聚合（fail 且能归到技能的断言）
 unattributed_patterns[]  有错误模式但两条归因路都走不通的失败——不进 skill_gaps，但不许丢
 notes[]              可选。报告出现"未覆盖情况"时必须在这里说明，不许静默
+judge_scores[]       可选（B-04b）。跑了 judge 才有：每次评价的 {rating 1–4, suspected_patterns, rationale, model, latency_ms}
+judge_agreement      可选（B-04b）。跑了 judge 才有：两两比较中 rating 相同的比例，[0,1]
 ```
+
+> **两个 judge 字段"缺省即无"，不是 `null`**：缺字段 = 这份提交没跑双评；`null` 会让
+> "没评"与"评了但没拿到值"混成一件事。两者都不参与 `score` / `assertions` /
+> `report_attribution` / `detected_patterns`（`judge_pipeline.attach_judgement()` 机械核对），
+> 低一致率只影响「进不进人工仲裁队列」（`arbitration_queue`，v3），不改这份成绩。
+> 详见 `docs/data-model.md` §5.1 末段与 §5.4。
 
 > **`report_attribution` 不是第二真相源**：它可由 `attribution_policy` + `score.by_state` + `score.voided` + `process_fact.missing` 重算（`tests/test_diagnosis_report.py::test_td038_report_attribution_is_derived` 锁住）。存在的唯一理由是：作废/缺过程时「不记能力短板」这句话必须有**执行者**，只写在 `notes` 文案里等于没有校验。
 >

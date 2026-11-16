@@ -337,9 +337,36 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "报告不自洽或有未覆盖情况时的显式说明（例如『两态同时成立』不允许静默）"
+    },
+    "judge_scores": {
+      "type": "array",
+      "description": "B-04b：双评的逐次原始记录。**只有跑了 judge 才出现**；字段缺失表示『未评价』，不表示『评了 0 次』。judge 是软分侧证：它不参与 score / assertions / report_attribution / detected_patterns 的任何计算。",
+      "items": { "$ref": "#/$defs/judgeScore" }
+    },
+    "judge_agreement": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "B-04b：双评一致率（两两比较中 rating 相同的比例，口径见 src/arena/llm_judge.py 模块文档）。低值说明判据表述有歧义，不等于考生答错；低于调用方给的阈值时进 arbitration_queue。"
     }
   },
   "$defs": {
+    "judgeScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rating", "suspected_patterns"],
+      "properties": {
+        "rating": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "suspected_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "键名必须带『怀疑』语义：judge 报的不是检出，词表里每条模式的检出者由 detection_rule.assertion_id 唯一确定"
+        },
+        "rationale": { "type": "string" },
+        "model": { "type": "string" },
+        "latency_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
     "attribution": {
       "type": "object",
       "additionalProperties": false,

@@ -4,7 +4,22 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
-> 更新：2026-11-16（round-89：**B-07d ①② 关闭——作废提交不计掌握度（人拍板「甲」）；孤儿行按「乙」只发现不改数据**。
+> 更新：2026-11-16（round-90：**B-04b 关闭——judge 双评接进提交管线 + 人工仲裁队列**。
+> ① 新模块 `src/arena/judge_pipeline.py`：报告可选带 `judge_scores`/`judge_agreement`
+>    （schema 已登记，缺省即无），落库写进 `submissions` 两列，`judge_agreement < threshold`
+>    进新表 `arbitration_queue`（`SCHEMA_VERSION` 2→3，第九张表，纯增量）。
+> ② **默认关闭**：`submit(judge=None)` 与 round-89 逐字相同；要开必须同时给 `judge` 与
+>    `arbitration_threshold`，只给一个返回 500 `judge_config_incomplete`。
+>    **阈值无默认值**——标定仍是 B-04c（缺 ≥2 任务 × ≥5 提交的分布）。
+> ③ 一处口径摆到明面：判据原文「队列条目不参与 fsrs_rating 更新」有两种读法。
+>    本轮按 **A（只排队、照常算 P 与排期）** 实现，理由是低一致率说明**判据**有歧义、
+>    属系统侧缺陷，冻结成学习者的成绩缺失等于把系统缺陷记在对方账上（决策 7）。
+>    该口径**待人拍**，登记 B-04d；改判读法 B 时 `test_queue_membership_*` 会红，不会悄悄变。
+> ④ 判据可机械判定：带 judge 字段与不带的同一份报告，`schedule_submission()` /
+>    `build_series()` 输出逐项相同（`tests/test_judge_pipeline.py` 24 条）。
+> ⑤ 变异 `tools/mutations/mutate_b04b.py` 13 组全 `DETECTED`（只有 `rc == 1` 算抓住）。
+>
+> 上一版：2026-11-16（round-89：**B-07d ①② 关闭——作废提交不计掌握度（人拍板「甲」）；孤儿行按「乙」只发现不改数据**。
 > ① 作废（`voided`）：`skill_evidence()` 整份排除，`submissions` 行与报告**照留**；只有作废提交时
 >    `p is None`、快照无行（决策 7，不是 0 分）。**`voided` 优先于 `disqualified`** —— 既不合格
 >    又作废的提交（交了空白旧版）必须按作废算，否则版本错位照样刷高 P（先写反了，被新测试抓住）。
@@ -218,22 +233,44 @@
     这个分布不足以定线（见 `docs/judge-agreement-distribution.json` 的 observations 第 5 条）。
 - **为什么没顺手接进报告**：接进去会改 `build_report` 的输出与五夹具期望，而 judge
   按口径**不参与判定**，接进去只是多两个字段。它该和「仲裁队列」一起做，才有闭环。
+- **2026-11-16 订正（round-90）**：上面「没做的那一半」的 ① ② 已由 B-04b 兑现
+  （报告带字段、队列落地、`submission_api` 可选接入）；**仍缺的只有 ③ 阈值标定**，
+  单列为 B-04c。B-04 因此还挂 `[~]`，但剩下的不是"没接线"而是"没数据"。
 - **做完判据**：报告里出现 `judge_scores`/`judge_agreement`；`needs_arbitration` 为真时
   该提交进得了队列；阈值有依据（≥2 个任务、每个 ≥5 个提交的分布）。
 - **验证**：`grep -rn "judge" src/arena/diagnosis_report.py` 有命中；一份故意含糊的提交
   能被排进队列 → 见下条 B-04b。
 - **谁推**：我（M1 剩余，与 B-05 有依赖：阈值标定要多个任务）。
 
-### [ ] B-04b judge 接入管线 + 人工仲裁队列
+### [x] B-04b judge 接入管线 + 人工仲裁队列 — 2026-11-16 关闭（round-90）
 
 - **是什么**：B-04 没做的那一半，单独立项以免「机制有了就算完成」的自我安慰。
-- **为什么现在不做**：优先级低于 B-05（多任务库）——没有多任务，接了也标不出阈值。
-- **做完判据**：`submission_api.py` 收到提交后能可选地跑双评并把两个字段落库；
-  `judge_agreement < threshold` 的提交进一张 `arbitration_queue` 表（或等价物），
-  且队列里的条目不参与 `fsrs_rating` 更新（判据不明时不能污染掌握度）。
-- **验证**：造一份 judge 两次给不同档的提交 → 落库后队列里能查到它；
-  `pytest tests/test_judge_pipeline.py`
-- **谁推**：我（M1/M2 交界）。
+- **落地形态**：`src/arena/judge_pipeline.py`（新）+ `store.py` v3 + `submission_api.submit()` 可选参数。
+  - 报告可选地带上 `judge_scores` / `judge_agreement`（schema 已登记，**缺省即无**）；
+    落库写进 `submissions` 的两个同名派生列；`judge_agreement < threshold` ⇒
+    `arbitration_queue` 多一条待办（新第九张表，`SCHEMA_VERSION` 2→3）。
+  - **默认不跑**：`submit(judge=None)` 行为与 round-89 逐字相同。要开必须同时给
+    `judge` 与 `arbitration_threshold`——只给一个返回 500 `judge_config_incomplete`，
+    不拿默认阈值顶上（`llm_judge` 拒绝默认值的同一条理由）。
+  - **阈值没有默认值**，标定仍是 B-04c。
+- **做完判据逐条达成**：① 报告出现两个字段 ✅；② 低一致率进得了队列 ✅；
+  ③ 「队列条目不参与 `fsrs_rating` 更新」——**按下面这条口径的解释达成**。
+- **一处必须摆到明面：对判据 ③ 的解释（原写「队列条目不参与 fsrs_rating」）**
+  原文可以读成两种：A 只排队、不影响任何计算；B 排队并冻结这份提交（不计 P、不排复习）。
+  **本轮实现 A**，理由：低一致率说明**判据表述**有歧义（系统侧缺陷），冻结成学习者的成绩
+  缺失等于把自己的缺陷记在对方账上（决策 7 的反面），也与 `llm_judge`「不是考生答错」矛盾。
+  ③ 的字面目的（judge 不得驱动 `fsrs_rating`）**已满足且可机械判定**：
+  带 judge 字段的报告与不带的同一份，`schedule_submission()` / `build_series()` 输出逐项相同
+  （`test_queue_membership_does_not_change_mastery_or_scheduling`，改判读法 B 时会红）。
+  **代价**：人工判定「判据要改」后，历史成绩需 `mastery_snapshot.recompute_all()` 重算。
+  ⇒ 这条属口径判断，**已登记待人拍**（B-04d）；要切 B 只需让计入层/调度层读队列状态，
+  不必改表结构。
+- **验证**：`pytest tests/test_judge_pipeline.py`（24 条）；
+  `tools/mutations/mutate_b04b.py`（13 组，全 `DETECTED`）；
+  造一份 judge 两次给不同档的提交 → `list_arbitration()` 能查到，`submissions` 两列已填。
+- **边界**：① 重复 `submission_id` 会先花掉两次 judge 调用再 409（查重在落库那步；
+  生产化时改先查重再评）；② 裁决不回流——`resolve_arbitration()` 只落状态与理由，
+  不改判据也不改成绩；③ 队列无自动清理、无仲裁人分配；④ HTTP 层不跑 judge。
 
 ### [ ] B-04c 一致率阈值标定（依赖 B-05）
 
@@ -243,6 +280,15 @@
   一句「阈值定在 X，理由是 Y 处的漂移率出现台阶」。
 - **验证**：`python scripts/judge_agreement_experiment.py --all --runs 2 --purpose "阈值标定"`
 - **谁推**：我（M2）。
+
+### [ ] B-04d 待拍板：低一致率的提交是「只排队」还是「先冻结」
+
+- **是什么**：B-04b 的判据 ③ 有两种读法，本轮按 A（只排队）实现，需人拍确认。
+- **选项**：A 照算（现状，零改动）；B 冻结这份提交（不计 P、不排复习，裁决后放行）。
+- **代价**：A 的代价 = 判据改动后要重算历史；B 的代价 = 学习者因系统歧义丢一次成绩，
+  且需要"裁决后放行"的补算路径（新代码）。
+- **不拍也能继续**：维持 A，本轮测试已把这条口径钉住（改 B 时该测试会红，不会悄悄变）。
+- **谁推**：人拍；落地我。
 
 ### [x] B-05 任务库 1 → 10 + 变体模板 — 2026-11-15 关闭
 
@@ -757,6 +803,18 @@
   `test_td036_check_fails_on_policy_drift` 同一手法（那次也是读默认包导致的互锁）。
 - **验证**：改完连跑两次生成，第一次就 RC=0；再手工把包里的数改错 → 该测试变红
 - **谁推**：我（下一批）。
+
+### [ ] C-04 变异脚本判定规则统一（工具债，2026-11-16 round-90 记录）
+
+- **是什么**：`tools/mutations/` 下 9 个脚本里，只有 `mutate_mastery.py` 与 `mutate_b04b.py`
+  用「`rc == 1` 才算抓住」；另外 7 个仍是旧规则（`rc == 5` 判 `INVALID`、输出含 `error` 判 `INVALID`）。
+- **为什么现在不做**：旧规则在本轮所有脚本上都还能给出正确结论（节点都在、跑出 `1 failed`），
+  不挡当前判据；但它**已知会把 rc=4 的 `no tests ran` 判成 `DETECTED`**（round-89 M14 实测），
+  一旦有人改测试名，这 7 个脚本就可能给出假绿。改它们是纯机械替换，但不新增判据价值。
+- **做完判据**：9 个脚本的判定分支完全同构（只认 `rc == 1`）；`tools/mutations/README.md`
+  里「判定规则尚未统一」那段可以删掉。
+- **验证**：随便挑一个脚本，把对应测试节点名改错 → 必须打印 `INVALID`，不许出现 `DETECTED`。
+- **谁推**：我（随时可做，不需要人拍）。
 
 ---
 

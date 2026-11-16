@@ -46,20 +46,22 @@ def db(tmp_path):
 
 # --- 地基：建表、外键、真的落了盘 -------------------------------------------------
 
-def test_init_db_is_idempotent_and_creates_eight_tables(tmp_path):
-    """建表两次不报错、表齐八张、结构版本可读。
+def test_init_db_is_idempotent_and_creates_nine_tables(tmp_path):
+    """建表两次不报错、表齐九张、结构版本可读。
 
-    **round-88 / B-07c 反转的现状锁**：原文断言 `schema_version == 1` 且
-    「迁移将来另开函数，不塞进初始化」。v2 落地后两半都不成立——
-    迁移是 `store.migrate()`，`init_db()` 会调它，所以版本必须是 2。
+    **现状锁，改一次反转一次**：round-88（B-07c）把 v1 的 7 张改成 8 张，
+    round-90（B-04b）再加 `arbitration_queue` 成 9 张。
+    锁的**不是数字本身**，而是「`init_db()` 会顺带把版本抬到 `SCHEMA_VERSION`」——
+    表建了而版本没抬，才是真故障（半迁移）。
     """
     conn = store.connect(tmp_path / "a.db")
     store.init_db(conn)
     store.init_db(conn)
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"users", "skills", "tasks", "error_patterns", "submissions",
-            "user_skill_states", "review_items", "mastery_snapshots"} <= names
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 2
+            "user_skill_states", "review_items", "mastery_snapshots",
+            "arbitration_queue"} <= names
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 3
     conn.close()
 
 

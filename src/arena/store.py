@@ -8,8 +8,8 @@
 四条设计决定，都不是"顺手这么写"：
 
 1. **不用 ORM**。`requirements.txt` 已 pin 死，`tests/test_dependencies.py` 会离线比对已安装版本；
-   引 sqlalchemy 是为一件事加一整层依赖。8 张表（v1 七张 + v2 的 `mastery_snapshots`）
-   的 DDL 手写比 ORM 映射更短，
+   引 sqlalchemy 是为一件事加一整层依赖。9 张表（v1 七张 + v2 的 `mastery_snapshots`
+   + v3 的 `arbitration_queue`）的 DDL 手写比 ORM 映射更短，
    将来换 PostgreSQL 时重写一遍 DDL，比为抽象层打补丁便宜。
 2. **`user_id` 必须由调用方显式给**，不从 `agent_id` 推。fixture 里只有 `agent_id`（学习者部署的服务名），
    而「谁交的」和「哪个 agent 交的」是两个概念——一个学习者可以有多个 agent。
@@ -42,10 +42,15 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # 结构版本：任何字段增删改都要 +1，并在 docs/data-model.md 留痕。
 # v2（B-07c）：新增 `mastery_snapshots`（P 的**缓存**）。旧表一个字段没动——
 # 迁移因此是纯增量（加一张表 + 回填），不需要重建 `user_skill_states`。
-SCHEMA_VERSION = 2
+# v3（B-04b）：新增 `arbitration_queue`（judge 双评不一致时的人工待办）。
+# 同样纯增量：**旧表一个字段不动**，尤其没有给 `submissions` 加"是否待仲裁"的列——
+# 状态属于队列自己，抄一份到 submissions 就变成第二真相源。
+SCHEMA_VERSION = 3
 
-# 必须按依赖顺序建（被引用的先建）：users / skills → tasks → submissions → user_skill_states / review_items。
-# **拆成 v1/v2 两段**：迁移测试需要一个"真的 v1 老库"来证明 from=1，
+# 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
+# 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
+# 必须按依赖顺序建（被引用的先建）：users / skills → tasks → submissions → 其余。
+# **拆成 v1/v2/v3 三段**：迁移测试需要一个"真的 v1 老库"来证明 from=1，
 # 而不是拿当前建好的库改个 PRAGMA 假装——那测不出"旧表缺新表"的情形。
 SCHEMA_SQL_V1 = """
 CREATE TABLE IF NOT EXISTS users (
@@ -148,7 +153,43 @@ CREATE TABLE IF NOT EXISTS mastery_snapshots (
 CREATE INDEX IF NOT EXISTS idx_mastery_snapshots_rank ON mastery_snapshots(skill_id, mastery_p DESC);
 """
 
-SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2
+SCHEMA_SQL_V3 = """
+-- v3 / B-04b：judge 双评不一致时的人工待办。**它不是闸门，也不是分数的一部分**：
+--   一条记录只回答"这份提交的两次评价给了不同档位，需要人看一眼判据表述"。
+--   为什么是独立表而不是 submissions 上的一列：同一份提交可能被重新评价（改 prompt、
+--   换模型），队列状态有它自己的时间轴（opened_at / resolved_at）；抄一列进 submissions
+--   会让"提交"与"待仲裁"两件事互相覆盖。
+CREATE TABLE IF NOT EXISTS arbitration_queue (
+    submission_id   TEXT PRIMARY KEY REFERENCES submissions(submission_id),
+    user_id         TEXT NOT NULL REFERENCES users(user_id),
+    task_id         TEXT NOT NULL REFERENCES tasks(task_id),
+    judge_agreement REAL NOT NULL CHECK (judge_agreement >= 0 AND judge_agreement <= 1),
+    threshold       REAL NOT NULL CHECK (threshold > 0 AND threshold <= 1),
+    reason          TEXT NOT NULL DEFAULT 'judge_disagreement',
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'resolved', 'dismissed')),
+    opened_at       TEXT NOT NULL,
+    resolved_at     TEXT,
+    resolution_note TEXT,
+    -- 收尾与留痕绑死：pending 不许带裁决痕迹，非 pending 必须同时有时间和理由。
+    -- 这条 CHECK 是把"裁决要写理由"变成机械约束，而不是靠代码自觉。
+    CHECK (
+        (status = 'pending'  AND resolved_at IS NULL     AND resolution_note IS NULL)
+     OR (status <> 'pending' AND resolved_at IS NOT NULL AND resolution_note IS NOT NULL)
+    )
+);
+
+-- 待办按"最早开的先看"排；status 在前是因为查询永远先筛 pending。
+CREATE INDEX IF NOT EXISTS idx_arbitration_pending ON arbitration_queue(status, opened_at);
+"""
+
+SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3
+
+# 版本号 → 该版本要补的 DDL / 新建的表名。`migrate()` 只读这张表，不再写 if 分支。
+MIGRATION_STEPS: dict[int, tuple[str, tuple[str, ...]]] = {
+    2: (SCHEMA_SQL_V2, ("mastery_snapshots",)),
+    3: (SCHEMA_SQL_V3, ("arbitration_queue",)),
+}
 
 # 需要 JSON 编解码的列：写库前 dumps，读库后 loads（NULL 保持 NULL，不转成空数组）。
 JSON_COLUMNS = {
@@ -191,9 +232,9 @@ def schema_version(conn: sqlite3.Connection) -> int:
 def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
     """把库升到 `target`，返回本次动作（幂等、不降级、不删旧数据）。
 
-    三条硬规矩：
-    1. **只做增量**：v1→v2 只补 `mastery_snapshots` 表与索引，`ALTER` 一个字段都不改。
-       所以任何一步失败，旧库仍是可用的一堆旧表，不会变砖。
+    四条硬规矩：
+    1. **只做增量**：v1→v2 只补 `mastery_snapshots`，v2→v3 只补 `arbitration_queue`，
+       `ALTER` 一个字段都不改。所以任何一步失败，旧库仍是可用的一堆旧表，不会变砖。
     2. **回填是"重算"，不是"猜"**：v1 库里已经有提交时，按 `mastery.build_series()`
        逐用户逐技能重放，把结果写进快照表；原 `submissions` 一个字节不动。
     3. **不许降级**：`PRAGMA user_version > target` 直接抛错。看见看不懂的新版本还继续写，
@@ -201,6 +242,9 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
     4. **不许超前**（round-88 外审 F4）：`target > SCHEMA_VERSION` 同样抛错。
        以前只拦下界，允许写出 `user_version=5` 而库里其实只有 v1+v2 的结构——
        「不许降级」的同一条理由，反方向也成立。
+
+    **逐级升而不是一步到位**：v1 库升到 v3 会依次执行 v2、v3 两段 DDL。
+    一步到位的写法（"只跑最新那段"）在加 v4 时必然写错——那时 v1 库会缺 v3 的表。
 
     `target` 只接受 `1..SCHEMA_VERSION` 的整数；它是内部常量，不来自用户输入。
     """
@@ -219,16 +263,20 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
     if current == target:
         return {"from": current, "to": target, "added_tables": [], "backfilled": 0}
 
+    applied: list[int] = []
     with conn:
         if current == 0:
-            # 全新库：一次建齐（v2 的表有外键指向 users/skills，不能只建它）。
+            # 全新库：一次建齐（各版本的表之间有外键，不能只建最新那段）。
             conn.executescript(SCHEMA_SQL)
+            applied = [v for v in sorted(MIGRATION_STEPS) if v <= target]
         else:
-            # 已有 v1 库：只补 v2 新增的部分，旧七张表一个字段都不碰。
-            conn.executescript(SCHEMA_SQL_V2)
+            for step in sorted(MIGRATION_STEPS):
+                if current < step <= target:
+                    conn.executescript(MIGRATION_STEPS[step][0])
+                    applied.append(step)
 
     backfilled = 0
-    if current < 2 and target >= 2:
+    if current < 2 <= target:
         from . import mastery_snapshot  # 局部导入：mastery 会反向引用 store
 
         backfilled = mastery_snapshot.recompute_all(conn)
@@ -238,7 +286,7 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> dict:
     return {
         "from": current,
         "to": target,
-        "added_tables": ["mastery_snapshots"] if current < 2 <= target else [],
+        "added_tables": [t for step in applied for t in MIGRATION_STEPS[step][1]],
         "backfilled": backfilled,
     }
 
@@ -661,6 +709,129 @@ def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
         (user_id,),
     ).fetchall()
     return [_row_to_dict(r, "submissions") for r in rows]
+
+
+# ── 仲裁队列的落库（v3 / B-04b）───────────────────────────────────────────────
+# judge 双评不一致时的**人工待办**。判定与入队条件在 `judge_pipeline.py`，这里只存取。
+#
+# 三条设计决定：
+# 1. **主键就是 `submission_id`**：一份提交最多一条待办。重复入队幂等——已经在了就原样
+#    返回，**不改它记下的 threshold**。改掉等于把"当时按多少判的"抹了，事后无法复核。
+# 2. **本表任何函数都不碰 `submissions.fsrs_rating`**（也不碰 `user_skill_states`）。
+#    队列回答的是"判据表述要不要人看一眼"，不是"这份提交不算数"。混起来会把系统的
+#    口径问题算成学习者的能力问题（决策 7），那正是这一层最该避免的错。
+# 3. **收尾必须带时间与理由**：表级 CHECK 强制，代码层再挡一次只为给出可读错误。
+
+ARBITRATION_STATUSES = ("pending", "resolved", "dismissed")
+
+
+def save_arbitration_entry(
+    conn: sqlite3.Connection,
+    submission_id: str,
+    *,
+    judge_agreement: float,
+    threshold: float,
+    reason: str = "judge_disagreement",
+    opened_at: str | None = None,
+) -> dict:
+    """把一份提交排进仲裁队列（幂等）。返回该行现状。
+
+    `user_id` / `task_id` **从 `submissions` 现读**，不接受调用方传入：让队列跟着提交走，
+    少一个可能与提交对不上的副本。
+    """
+    if not isinstance(submission_id, str) or not submission_id.strip():
+        raise StoreError("仲裁入队缺 submission_id")
+    for name, value, ok in (
+        ("judge_agreement", judge_agreement, 0.0),
+        ("threshold", threshold, 0.0),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not (ok <= float(value) <= 1.0):
+            raise StoreError(f"{name} 必须是 [0,1] 内的数值（收到 {value!r}）")
+    if float(threshold) <= 0.0:
+        raise StoreError(
+            "threshold 必须 > 0：阈值 0 等于『永不仲裁』，那不该靠入队函数来表达"
+        )
+    if not isinstance(reason, str) or not reason.strip():
+        raise StoreError("reason 必须是非空字符串——队列条目要能说明为什么进来")
+
+    row = conn.execute(
+        "SELECT user_id, task_id FROM submissions WHERE submission_id = ?", (submission_id,)
+    ).fetchone()
+    if row is None:
+        raise StoreError(
+            f"提交 {submission_id} 还没落库——先 save_submission() 再入队；"
+            "先入队会让外键指向一条不存在的证据"
+        )
+
+    existing = load_arbitration(conn, submission_id)
+    if existing is not None:
+        return existing
+
+    with conn:
+        conn.execute(
+            "INSERT INTO arbitration_queue (submission_id, user_id, task_id, judge_agreement, "
+            "threshold, reason, status, opened_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+            (
+                submission_id, row["user_id"], row["task_id"], float(judge_agreement),
+                float(threshold), reason.strip(), opened_at or _now(),
+            ),
+        )
+    return load_arbitration(conn, submission_id)  # type: ignore[return-value]
+
+
+def load_arbitration(conn: sqlite3.Connection, submission_id: str) -> dict | None:
+    """读一条队列记录；没有就返回 `None`（"没进队"是正常状态，不是错误）。"""
+    row = conn.execute(
+        "SELECT * FROM arbitration_queue WHERE submission_id = ?", (submission_id,)
+    ).fetchone()
+    return None if row is None else _row_to_dict(row, "arbitration_queue")
+
+
+def list_arbitration(conn: sqlite3.Connection, *, status: str | None = "pending",
+                     limit: int = 50) -> list[dict]:
+    """列队列。默认只列 `pending`——`status=None` 才是全量，避免"顺手把所有历史拉出来"。"""
+    if status is not None and status not in ARBITRATION_STATUSES:
+        raise StoreError(f"未知的队列状态 {status!r}，合法值 {ARBITRATION_STATUSES}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise StoreError(f"limit 必须是正整数（收到 {limit!r}）")
+    sql = "SELECT * FROM arbitration_queue"
+    params: tuple = ()
+    if status is not None:
+        sql += " WHERE status = ?"
+        params = (status,)
+    sql += " ORDER BY opened_at ASC, submission_id ASC LIMIT ?"
+    return [_row_to_dict(r, "arbitration_queue") for r in conn.execute(sql, (*params, limit))]
+
+
+def resolve_arbitration(conn: sqlite3.Connection, submission_id: str, *,
+                        status: str = "resolved", note: str, at: str | None = None) -> dict:
+    """人工裁决一条待办。**必须写理由**，且**不许改判已裁决的条目**。
+
+    改判要留痕就得另起一条记录；覆盖会让"谁在什么时候为什么这么判"消失，
+    这与 `submissions` 不覆盖是同一个理由。
+    """
+    if status not in ("resolved", "dismissed"):
+        raise StoreError(
+            f"裁决状态只能是 'resolved' 或 'dismissed'（收到 {status!r}）；"
+            "'pending' 不是裁决结果"
+        )
+    if not isinstance(note, str) or not note.strip():
+        raise StoreError("裁决必须写 note：没有理由的收尾等于把待办悄悄删掉")
+    current = load_arbitration(conn, submission_id)
+    if current is None:
+        raise StoreError(f"队列里没有 {submission_id}")
+    if current["status"] != "pending":
+        raise StoreError(
+            f"{submission_id} 已经裁决过（{current['status']}）——不覆盖；"
+            "要改结论请另存一条说明或走新的提交"
+        )
+    with conn:
+        conn.execute(
+            "UPDATE arbitration_queue SET status = ?, resolved_at = ?, resolution_note = ? "
+            "WHERE submission_id = ? AND status = 'pending'",
+            (status, at or _now(), note.strip(), submission_id),
+        )
+    return load_arbitration(conn, submission_id)  # type: ignore[return-value]
 
 
 # ── 复习层的落库（B-08）──────────────────────────────────────────────────────

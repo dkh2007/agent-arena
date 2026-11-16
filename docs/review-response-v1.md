@@ -8487,3 +8487,103 @@ P1 与 P2 已在本轮回复里翻成大白话（两个选项 + 各自代价 + �
 ④ 若变异脚本再次出现 `no tests ran` 却判 `DETECTED` ⇒ 89.6 的退出码收紧被回退。
 ⑤ 若真实数据里作废占比显著（≥10%）⇒ 这批提交被完全排除后，P 的时间轴会稀疏，
    需重新评估"作废是否该退化成降权（C）"。
+
+---
+
+## 90. B-04b 关闭：judge 双评接进提交管线 + 仲裁队列（2026-11-16，round-90）
+
+### 90.1 人给的指令
+
+> 「如果你需要由我拍板的东西，请用简洁直观的语言向我叙述。如果这一轮没有，那你直接进入B-04b」
+
+⇒ 本轮按「不需要拍板就继续推进」处理，直接做 B-04b；把唯一一处口径判断留成 **B-04d**
+（见 90.4），并在回复里用大白话摆出来。
+
+### 90.2 落地形态（三处代码 + 一处 schema）
+
+`src/arena/judge_pipeline.py`（新）：
+
+- `run_judge(report, raw, task, judge, *, threshold, runs, vocab)`——用 **raw**（trace + 产物）
+  构造上下文，而不是拿报告喂 judge。报告里带 `expected`（标准答案），拿它喂等于把答案递过去，
+  那样的"双评一致"只证明模型会抄（round-79 已定）。
+- `attach_judgement(report, result)`——返回副本，只新增 `judge_scores` / `judge_agreement`；
+  当场逐项核对 `score` / `assertions` / `report_attribution` 等 `FROZEN_KEYS` **一个都没变**，
+  变了就抛错。**不给"judge 顺手改分"留缝**，且这条缝是机械检查不是注释声明。
+- `record_arbitration(conn, outcome)`——`needs_arbitration` 为真才入队；返回 `None` 是正常路径。
+
+`src/arena/store.py`：`SCHEMA_VERSION` 2→3，新增第九张表 `arbitration_queue`
+（`submission_id` 主键、`judge_agreement`/`threshold`/`reason`/`status`/`opened_at`/
+`resolved_at`/`resolution_note`）。**纯增量**：旧表一个字段不动，`submissions` 也没加
+"是否待仲裁"的列——抄一份状态过去就是第二真相源。
+
+`src/arena/submission_api.py`：`submit(..., judge=None, arbitration_threshold=None, judge_runs=2)`。
+**默认不跑**；只给 judge 不给阈值（或反之）返回 500 `judge_config_incomplete`，
+judge 崩了返回 503 且**不落库**（落一条"评过但没评完"的记录，事后无法与"根本没评"区分）。
+
+`docs/diagnosis-report.schema.json`：新增两个**可选**字段（`additionalProperties: false`，
+所以必须显式登记）。缺省即无——"没评"与"评了 0 次"必须能区分。
+
+### 90.3 迁移：从 if 分支改成步骤表
+
+原 `migrate()` 是 `if current == 0: 全量 else: SCHEMA_SQL_V2`。加 v3 时这种写法必然写错：
+v1 库走 else 分支只会补 v2，v3 的表永远建不出来。改成 `MIGRATION_STEPS = {2: …, 3: …}`，
+**逐级升级**；`added_tables` 由实际执行的步骤汇总。测试从真 v1 库起跑，
+断言 `added_tables == ["mastery_snapshots", "arbitration_queue"]` 且回填仍是 3。
+
+### 90.4 一处口径判断，摆到明面（B-04d）
+
+B-04b 的判据原文：「队列里的条目不参与 `fsrs_rating` 更新（判据不明时不能污染掌握度）」。
+
+这句话有两种读法：
+
+- **A（本轮实现）**：只排队，不影响任何计算。提交照常计 P、照常排复习。
+- **B**：排队并冻结这份提交（不计 P、不排复习），人工裁决后再放行。
+
+**选 A 的理由**：`judge_agreement` 低说明**判据表述**有歧义，是系统侧缺陷。
+把它冻结成学习者的成绩缺失，等于把自己的缺陷记在对方账上——这与决策 7
+（数据缺失 ≠ 能力不足）和 `llm_judge` 模块文档「它不是『模型不好』，也不是『考生答错了』」
+是同一条推论。③ 的字面目的（judge 不得驱动 `fsrs_rating`）已满足，且**可机械判定**：
+
+`test_queue_membership_does_not_change_mastery_or_scheduling` 用两份库（带 judge 入队 / 不带）
+对撞 `mastery_snapshots`、`schedule_submission()` 的 items/decisions、`user_skill_states`
+——逐项相同。**改判读法 B 时这条会红**，不会悄悄变。
+
+**代价照认**：A 之下，人工判定"判据要改"后历史成绩需要 `recompute_all()` 重算。
+B 的代价是学习者因系统歧义丢一次成绩 + 需要"裁决后放行"的补算路径。
+⇒ 登记 **B-04d 待人拍**；不拍则维持 A（零改动）。
+
+### 90.5 本轮裁判（全部实跑）
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests/test_judge_pipeline.py` | **24 passed** |
+| `pytest tests/ -q` | 见 §90.6（含评审包自指计数的处置） |
+| `tools/mutations/mutate_b04b.py` | **13 组全 DETECTED**，无 `MISSED` / `INVALID` |
+| `store` / 快照专项 | 47 passed（v3 建库、真 v1 库逐级升级、拒绝降级/超前） |
+| 报告 schema | 带 judge 字段过校验；`rating=9` 被 schema 拦（路径 `judge_scores/...`） |
+
+### 90.6 边界（别把这一节读成"judge 已经能用了"）
+
+① **阈值没有标定**（B-04c）：默认关闭正是因为这个。任何现在开 judge 的部署都在用一个
+   未标定的数字，`arbitration_queue` 里进多少条完全取决于那个数。
+② **HTTP 层不跑 judge**：只有 Python 调用方显式传参才会跑。要给前端开，需要先定
+   "每份提交要不要花两次模型调用"——那是成本决策，不是技术决策。
+③ **端点不可达时不跑 judge**：没证据就没有可复核的材料；硬跑只会让模型对着空壳打分。
+④ **队列没有自动清理、没有分配仲裁人**（无鉴权，B-10 前不碰）。
+⑤ **裁决结果不回流**：`resolve_arbitration()` 只落状态与理由，不会自动改判据、不会改成绩。
+   改判据仍是人在 YAML 里改 + 重算，这一步没有自动化。
+⑥ **`disqualified` 的 A 口径与 `voided` 的排除（round-89 甲）都不受影响**。
+⑦ **重复 `submission_id` 会先花掉两次 judge 调用再 409**：`submit()` 的顺序是
+   评测 → 双评 → 落库，查重发生在落库那一步。客户端重试同一 id 时，两道 judge 调用已经发出去了。
+   演示期可接受；若 judge 接进生产（有成本），应先查重再评。登记在 BACKLOG B-04b 边界，
+   本轮不改，因为改顺序会让"评测不落库"的纯函数边界变模糊。
+
+### 90.7 反证条件
+
+① 若带 judge 字段的报告让 `build_series()` 的 P 或 `schedule_submission()` 的输出发生变化
+   ⇒ 90.4 的 A 口径没落地（`test_queue_membership_*` 应已红）。
+② 若 `attach_judgement()` 在报告缺 `score` 时仍返回成功 ⇒ FROZEN_KEYS 检查失效。
+③ 若 judge 抛异常后 `submissions` 里多了一行 ⇒ 90.2 的"不落库"被回退。
+④ 若同一 `submission_id` 重复入队把 `threshold` 改成新值 ⇒ 复核依据丢失。
+⑤ 若真实分布里一致率集中在阈值附近（例如 0.6–0.8 之间密集）⇒ 阈值不是台阶而是斜坡，
+   那时需要的是**分级处置**（高中低三档）而不是单一阈值，B-04c 的判据也要跟着改。

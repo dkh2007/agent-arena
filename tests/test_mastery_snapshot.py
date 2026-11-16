@@ -145,12 +145,16 @@ def test_criterion_migrate_from_real_v1_keeps_data_and_backfills(tmp_path):
     before = store.count_submissions(conn)
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "mastery_snapshots" not in names
+    assert "arbitration_queue" not in names
     assert store.schema_version(conn) == 1
 
     result = store.migrate(conn)
-    assert result == {"from": 1, "to": 2, "added_tables": ["mastery_snapshots"],
-                      "backfilled": 3}
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 2
+    # v1 → 最新版本要**逐级**跑：v2 建快照表 + 回填，v3 建仲裁队列表。
+    # 一次跳到最新那段是错的写法——这里锁住"每一级的表都在"。
+    assert result["from"] == 1 and result["to"] == store.SCHEMA_VERSION
+    assert result["added_tables"] == ["mastery_snapshots", "arbitration_queue"]
+    assert result["backfilled"] == 3
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 3
     assert store.count_submissions(conn) == before
     assert store.load_report(conn, "old-1") == report          # 旧报告一个字节没动
     assert len(store.list_mastery_snapshots(conn)) == 3        # 回填了三个技能
@@ -159,8 +163,10 @@ def test_criterion_migrate_from_real_v1_keeps_data_and_backfills(tmp_path):
 
 
 def test_migrate_is_idempotent_and_never_downgrades(db):
-    assert store.migrate(db) == {"from": 2, "to": 2, "added_tables": [], "backfilled": 0}
-    assert store.schema_version(db) == 2
+    # db 夹具建的是当前版本的库，所以这里就是"到了目标就什么都不做"。
+    assert store.migrate(db) == {"from": store.SCHEMA_VERSION, "to": store.SCHEMA_VERSION,
+                                 "added_tables": [], "backfilled": 0}
+    assert store.schema_version(db) == store.SCHEMA_VERSION
     with db:
         db.execute("PRAGMA user_version = 99")
     with pytest.raises(store.StoreError, match="拒绝降级"):
@@ -180,7 +186,7 @@ def test_migrate_rejects_a_future_target(db):
     """
     with pytest.raises(store.StoreError, match="看不懂"):
         store.migrate(db, target=store.SCHEMA_VERSION + 1)
-    assert store.schema_version(db) == store.SCHEMA_VERSION == 2
+    assert store.schema_version(db) == store.SCHEMA_VERSION
 
 
 def test_init_db_on_a_v1_file_does_not_leave_a_half_migrated_state(tmp_path):
@@ -190,10 +196,9 @@ def test_init_db_on_a_v1_file_does_not_leave_a_half_migrated_state(tmp_path):
     conn.close()
     again = store.connect(path)
     _setup(again)
-    assert store.schema_version(again) == 2
-    assert "mastery_snapshots" in {
-        r[0] for r in again.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
+    assert store.schema_version(again) == store.SCHEMA_VERSION
+    names = {r[0] for r in again.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"mastery_snapshots", "arbitration_queue"} <= names
     again.close()
 
 
@@ -455,10 +460,17 @@ def test_snapshot_never_touches_the_fsrs_card_table(db):
 
 
 def test_v1_ddl_really_lacks_the_snapshot_table():
-    """防止有人把 v2 的表偷偷加回 `SCHEMA_SQL_V1`，让迁移测试变成假测试。"""
+    """防止有人把新版本的表偷偷加回 `SCHEMA_SQL_V1`，让迁移测试变成假测试。
+
+    v3 之后这条要同时守两张表：`mastery_snapshots`（v2）与 `arbitration_queue`（v3）。
+    只守一张的话，下一次加表时"v1 库里居然已经有了"这种错会悄悄过关。
+    """
     assert "mastery_snapshots" not in store.SCHEMA_SQL_V1
     assert "mastery_snapshots" in store.SCHEMA_SQL_V2
-    assert store.SCHEMA_SQL == store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2
+    assert "arbitration_queue" not in store.SCHEMA_SQL_V1
+    assert "arbitration_queue" not in store.SCHEMA_SQL_V2
+    assert "arbitration_queue" in store.SCHEMA_SQL_V3
+    assert store.SCHEMA_SQL == store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2 + store.SCHEMA_SQL_V3
 
 
 # --- round-88 外部回件：三条新锁 ----------------------------------------------
