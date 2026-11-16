@@ -19,7 +19,9 @@
 - M8 打"没有理由的重评"；
 - M9 打"演练也落库"（预判变成既成事实）；
 - M10 打"只报成功的"（把不会数的人蒙过去）；
-- M11 打"批量不筛任务"（顺手把别的任务也重评了）。
+- M11 打"批量不筛任务"（顺手把别的任务也重评了）；
+- M12/M13/M14 打"读数口径退回旧件"（round-93：默认视图仍给冻结报告、
+  `view` 写错静默回落、子资源把"不存在"和"没重评过"混成一样）。
 
 每条变异用一个**全新的** `PYTEST_DEBUG_TEMPROOT`：默认临时根攒满旧目录后，
 pytest 收尾清理会撞沙箱批量删除守卫并抛 `SystemExit(1)`，让退出码失去意义。
@@ -38,7 +40,9 @@ os.chdir(_ROOT)
 
 RAP = Path("src/arena/reappraisal.py")
 ST = Path("src/arena/store.py")
+API = Path("src/arena/submission_api.py")
 T = "tests/test_reappraisal.py"
+TA = "tests/test_submission_api.py"
 PYEXE = sys.executable
 
 MUTATIONS = [
@@ -129,6 +133,36 @@ MUTATIONS = [
      '        if row["task_id"] == task["task_id"]',
      "        if True",
      f"{T}::test_batch_reappraisal_only_touches_the_given_task"),
+
+    # ── 读数口径（round-93）──────────────────────────────────────────────────
+    ("M12 读接口退回旧件（默认视图给冻结报告，学习者看不到新结论）",
+     API,
+     "            report = (store.load_report(conn, submission_id) if view == \"original\"\n"
+     "                      else store.effective_report(conn, submission_id))",
+     "            report = store.load_report(conn, submission_id)  # 变异：无视 view",
+     f"{TA}::test_get_by_default_returns_the_effective_report_not_the_frozen_one"),
+
+    ("M13 view 写错静默回落成默认值（看错了也没有任何信号）",
+     API,
+     "    if got[0] not in _VIEWS:\n"
+     "        raise SubmissionError(\"bad_request\",\n"
+     "                              f\"view 只接受 {'/'.join(_VIEWS)}（收到 {got[0]!r}）\")",
+     "    if got[0] not in _VIEWS:\n"
+     "        return \"effective\"  # 变异：回落",
+     f"{TA}::test_a_typo_in_view_is_a_400_not_a_silent_fallback"),
+
+    ("M14 重评链把「提交不存在」当成「没重评过」（返回空数组）",
+     API,
+     "        conn = self.ctx[\"conn_factory\"]()\n"
+     "        try:\n"
+     "            store.load_report(conn, submission_id)          # 兼做存在性检查",
+     "        self._send(200, {\"submission_id\": submission_id, \"reappraisals\": [],\n"
+     "                         \"effective_ratio\": 0.0, \"original_ratio\": 0.0})\n"
+     "        return  # 变异：跳过存在性检查\n"
+     "        conn = self.ctx[\"conn_factory\"]()\n"
+     "        try:\n"
+     "            store.load_report(conn, submission_id)",
+     f"{TA}::test_reappraisal_chain_distinguishes_missing_from_never_reappraised"),
 ]
 
 

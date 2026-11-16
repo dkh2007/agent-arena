@@ -352,3 +352,110 @@ def test_default_binding_is_localhost_only():
     import inspect
     sig = inspect.signature(api.make_server)
     assert sig.parameters["host"].default == "127.0.0.1"
+
+
+# ── 6. 读数口径：生效版 vs 当时那份（round-93）──────────────────────────────
+#
+# round-92 把重评接上了，但**只改了数据层，没改读接口**：库里、P 里、复习排期里
+# 都是新结论，而学习者从 `GET /submissions/{id}` 拉到的还是旧的那份。
+# 这组测试锁的就是"三个端点各自只表示一件事"，且默认方向是"给人看的当前结论"。
+
+def _reappraise(live, submission_id: str, *, reason: str = "rubric: R2 标准答案改了") -> str:
+    """在 live 服务的同一个库上真跑一次重评，返回用的理由。"""
+    import copy
+
+    from arena import reappraisal as rap
+
+    task = copy.deepcopy(dr.load_task(TASK_PATH))
+    hit = False
+    for spec in task["rubric_credit"]:
+        if spec["id"] == "R2_report_correct":
+            spec["expected"]["total_amount"] += 1.0
+            hit = True
+    assert hit, "夹具变了：R2_report_correct 不在 rubric 里，本测试失去意义"
+
+    c = store.connect(live.db)
+    try:
+        out = rap.reappraise(c, submission_id, task, reason=reason,
+                             created_at="2026-11-16T09:00:00Z")
+        assert out.state == "reappraised", out.state
+    finally:
+        c.close()
+    return reason
+
+
+def test_get_by_default_returns_the_effective_report_not_the_frozen_one(live):
+    """重评之后，学习者拉到的必须是**当前生效**的分数。
+
+    这是 round-92 遗留的一致性缺陷。判据不能写成"接口没报错"——旧实现同样不报错，
+    它只是把 1.00 当成 0.50 之后还回 1.00。所以这条只认数字：
+    默认视图的 ratio 必须等于重评后的值，而 `?view=original` 仍是 1.00。
+    """
+    raw = _fixture("raw-perfect")
+    _, posted = live.call("POST", "/submissions", _payload(raw))
+    sid = posted["submission"]["submission_id"]
+    assert posted["score"]["ratio"] == 1.0
+
+    _reappraise(live, sid)
+
+    status, body = live.call("GET", f"/submissions/{sid}")
+    assert status == 200
+    assert body["score"]["ratio"] == 0.5, "默认视图还是旧结论 ⇒ 读接口没跟着改口"
+    dr.validate_report(body)                       # 换了一份也仍须过 schema
+
+    status, frozen = live.call("GET", f"/submissions/{sid}?view=original")
+    assert status == 200
+    assert frozen["score"]["ratio"] == 1.0, " `view=original` 必须给当时那份"
+    assert frozen == posted, "当时那份被改动了 ⇒ 历史证据不再逐字节可比"
+
+    # 生效分与"当时算出的分"是两个数，库里必须同时留得住。
+    c = store.connect(live.db)
+    try:
+        assert store.load_submission(c, sid)["assert_score"] == 1.0
+        assert store.effective_ratio(c, sid) == 0.5
+    finally:
+        c.close()
+
+
+def test_a_typo_in_view_is_a_400_not_a_silent_fallback(live):
+    """`?view=raw` 不许当成默认值。
+
+    两份报告都能过同一份 schema、长得几乎一样，静默回落会让人把新结论
+    当"当时那份"拿去对账，而且没有任何信号。
+    """
+    _, posted = live.call("POST", "/submissions", _payload(_fixture("raw-perfect")))
+    sid = posted["submission"]["submission_id"]
+
+    status, body = live.call("GET", f"/submissions/{sid}?view=raw")
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+    assert "view" in body["error"]["message"]
+
+    # 重复给值也不算"取第一个"——两种意图同时出现时没有正确答案。
+    assert live.call("GET", f"/submissions/{sid}?view=original&view=effective")[0] == 400
+
+
+def test_reappraisal_chain_distinguishes_missing_from_never_reappraised(live):
+    """链为空 = 「交过、没人改过分」；404 = 「这份根本不存在」。
+
+    混成一样（都返回空数组），"我拼错了 id"会显示成"这份没被改过"——
+    而这两件事的处置完全不同。
+    """
+    _, posted = live.call("POST", "/submissions", _payload(_fixture("raw-perfect")))
+    sid = posted["submission"]["submission_id"]
+
+    status, body = live.call("GET", f"/submissions/{sid}/reappraisals")
+    assert status == 200
+    assert body["reappraisals"] == []
+    assert body["effective_ratio"] == body["original_ratio"] == 1.0
+
+    assert live.call("GET", "/submissions/no-such-id/reappraisals")[0] == 404
+
+    reason = _reappraise(live, sid)
+    status, body = live.call("GET", f"/submissions/{sid}/reappraisals")
+    assert status == 200
+    assert len(body["reappraisals"]) == 1
+    rec = body["reappraisals"][0]
+    assert rec["revision"] == 1 and rec["reason"] == reason
+    assert body["original_ratio"] == 1.0 and body["effective_ratio"] == 0.5
+    dr.validate_report(rec["report"])

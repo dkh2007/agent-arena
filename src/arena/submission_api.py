@@ -20,8 +20,21 @@
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | POST | `/submissions` | 提交一份结果，返回诊断报告（DTO v2） |
-| GET | `/submissions/{id}` | 读回已落库的报告 |
+| GET | `/submissions/{id}` | 读回**当前生效**的报告（被重评过就是最新那次） |
+| GET | `/submissions/{id}?view=original` | 读回**当时按原判据判的**那份，逐字节同落库时 |
+| GET | `/submissions/{id}/reappraisals` | 重评链（空数组 = 从没重评过；提交不存在则是 404） |
 | GET | `/healthz` | 存活探针 + 已注册任务清单 |
+
+**为什么默认给生效版**：这个端点的使用者是学习者与前端，"我现在得多少分"是它们要的答案。
+库里已经有了重评结论、P 与复习排期都按新结论算了，接口还回旧的那份，就是"改了数据层、
+忘了读接口"——round-92 遗留的一致性缺陷，本轮修掉。
+
+**为什么 `view=original` 不是可选键**：报告体必须能原样过 `diagnosis-report.schema.json`
+（`additionalProperties: false`）。把重评信息塞进报告体，schema 就再也验不过；
+因此"当时那份"用查询参数选，重评元信息用独立子资源给，三个端点的返回值**各自只表示一件事**。
+
+**`view` 只认 `effective` / `original`，写错就 400**：静默回落到默认值会让
+"参数名记错了"变成本以为拿到原件、实际拿到新件，而两份都能过 schema、长得几乎一样。
 
 POST 请求体（只有前四个必填）：
 
@@ -97,7 +110,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 try:  # 作为包被 import
     from . import assertion_evaluator as ae
@@ -142,6 +155,29 @@ class SubmissionError(Exception):
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+_VIEWS = ("effective", "original")
+
+
+def _parse_view(query: str) -> str:
+    """解析 `?view=`。缺省 `effective`；**写了不认识的取值直接 400，不回落**。
+
+    回落的代价不对等：默认值和 `original` 返回的报告**都能过同一份 schema**，
+    长得几乎一样，只有几个数字不同。参数名记错（`?v=original`、`?view=raw`）
+    若静默给默认值，人会把"新结论"当"当时那份"拿去对账，且没有任何信号提示他看错了。
+    """
+    if not query:
+        return "effective"
+    got = parse_qs(query, keep_blank_values=True).get("view")
+    if got is None:
+        return "effective"
+    if len(got) > 1:
+        raise SubmissionError("bad_request", f"view 只能给一个（收到 {got!r}）")
+    if got[0] not in _VIEWS:
+        raise SubmissionError("bad_request",
+                              f"view 只接受 {'/'.join(_VIEWS)}（收到 {got[0]!r}）")
+    return got[0]
 
 
 def repo_head() -> str:
@@ -552,7 +588,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         def run() -> None:
-            path = self.path.split("?", 1)[0]
+            parts = urlsplit(self.path)
+            path = parts.path
             if path == "/healthz":
                 self._send(200, {
                     "ok": True,
@@ -561,20 +598,56 @@ class _Handler(BaseHTTPRequestHandler):
                 })
                 return
             if path.startswith("/submissions/"):
-                submission_id = path[len("/submissions/"):].strip("/")
-                if not submission_id:
+                rest = path[len("/submissions/"):].strip("/")
+                if not rest:
                     raise SubmissionError("bad_request", "缺 submission_id", status=400)
-                conn = self.ctx["conn_factory"]()
-                try:
-                    self._send(200, store.load_report(conn, submission_id))
-                except store.StoreError as exc:
-                    raise SubmissionError("not_found", str(exc), status=404) from exc
-                finally:
-                    conn.close()
+
+                # 子资源先判：否则 `/submissions/x/reappraisals` 会被当成 id 为
+                # "x/reappraisals" 的单份提交，然后 404 得像是"这份不存在"。
+                if rest.endswith("/reappraisals"):
+                    self._send_reappraisals(rest[: -len("/reappraisals")].strip("/"))
+                    return
+
+                self._send_report(rest, _parse_view(parts.query))
                 return
             raise SubmissionError("not_found", f"没有这个路径：{path}", status=404)
 
         self._guard(run)
+
+    def _send_report(self, submission_id: str, view: str) -> None:
+        """`view=effective` 给生效报告，`view=original` 给当时那份。"""
+        if not submission_id:
+            raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        conn = self.ctx["conn_factory"]()
+        try:
+            report = (store.load_report(conn, submission_id) if view == "original"
+                      else store.effective_report(conn, submission_id))
+            self._send(200, report)
+        except store.StoreError as exc:
+            raise SubmissionError("not_found", str(exc), status=404) from exc
+        finally:
+            conn.close()
+
+    def _send_reappraisals(self, submission_id: str) -> None:
+        """重评链（按 revision 升序）。
+
+        **提交不存在时 404，不返回空数组**：空数组的语义是"这份交过、没重评过"。
+        两者混成一样，"我拼错了 id"会显示成"这份没人改过分"。
+        """
+        if not submission_id:
+            raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        conn = self.ctx["conn_factory"]()
+        try:
+            store.load_report(conn, submission_id)          # 兼做存在性检查
+            self._send(200, {"submission_id": submission_id,
+                             "effective_ratio": store.effective_ratio(conn, submission_id),
+                             "original_ratio": float(
+                                 store.load_submission(conn, submission_id)["assert_score"]),
+                             "reappraisals": store.list_reappraisals(conn, submission_id)})
+        except store.StoreError as exc:
+            raise SubmissionError("not_found", str(exc), status=404) from exc
+        finally:
+            conn.close()
 
 
 def bootstrap(db_path: str | Path, registry: TaskRegistry) -> None:
