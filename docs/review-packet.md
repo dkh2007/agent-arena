@@ -1,4 +1,4 @@
-<!-- packet-sha256=ceeb6fb4b5ba521f snapshot-sha=a2e73da generated=2026-11-17T19:15:17+08:00 -->
+<!-- packet-sha256=2f5f79bc7313cd96 snapshot-sha=6d60047 generated=2026-11-17T20:41:57+08:00 -->
 # 外部评审包 —— 请审查并回答问题
 
 > **元指令（给外部 AI）**
@@ -82,20 +82,20 @@ Agent 开发学习领域的**自适应诊断与训练闭环**：学习者提交�
 > 2 优先于 1：一个带失败记录的包若先被报成"陈旧"，会把人引去「重新生成」——
 > 而重新生成出来的仍是带失败的包。判序在代码里锁了（`test_block_precedes_stale`）。
 
-- 生成锚点：`a2e73da`（本节提交列表固定在该提交，不随后续提交变化）
-- 单元测试：**1297 个用例被收集**（`pytest tests/ --collect-only` 计数）
-- 单元测试实测：当前工作区本地实测 **1297 passed / 1297 total**（`pytest tests/ -q`；本地 HEAD `a2e73da`，生成锚点 `a2e73da`；测试跑的是当前工作区而非锚点提交，仅陈述本次本地结果，不宣称普适正确）
+- 生成锚点：`6d60047`（本节提交列表固定在该提交，不随后续提交变化）
+- 单元测试：**1310 个用例被收集**（`pytest tests/ --collect-only` 计数）
+- 单元测试实测：当前工作区本地实测 **1310 passed / 1310 total**（`pytest tests/ -q`；本地 HEAD `6d60047`，生成锚点 `6d60047`；测试跑的是当前工作区而非锚点提交，仅陈述本次本地结果，不宣称普适正确）
 
 **锚点处最近 8 条提交**
 
+- `6d60047` feat(exposure): 逐条规则的判据指纹 + 「谁真的用到了那条改过的规则」(B-04g 取数第二段)（2026-11-17）
+- `d36fedb` docs(packet): 重生成评审包（锚点 a2e73da，1297 collected，sha ceeb6fb4b5ba521f 两次一致；改过用例数后首次即全绿）（2026-11-17）
+- `d5461be` fix(packet): 生成器比错了参照物——「首次全绿」悬案结案（2026-11-17）
 - `a2e73da` docs(packet): 重生成评审包（锚点 a573db2，1294 collected，sha 7fcaef31fc186b0c 两次一致）（2026-11-17）
 - `a573db2` feat(baseline): 「补不上」那批分档 tier_split()——B-04g 先数规模再谈政策（2026-11-17）
 - `21d161c` docs(packet): 重生成评审包（锚点 c8e9529，1289 collected，sha cb682e8bed5b01fa）（2026-11-17）
 - `c8e9529` feat(baseline): 全库基线 run_baseline()——B-04f 落地（2026-11-17）
 - `93ba149` docs(packet): 重生成评审包（锚点 3884882，1279 collected，sha 84034450b49406ae 两次收敛）（2026-11-17）
-- `3884882` feat(reappraisal): 受影响范围 scope_for_task()——B-04e 收口（2026-11-17）
-- `7155910` docs(packet): 重生成评审包（锚点 8dd97dd，1273 collected，sha 3a5ce3325597092d）（2026-11-17）
-- `8dd97dd` feat(report): 指纹进报告——schema 可选键 + build_report 无条件写入（B-04e 接线）（2026-11-17）
 
 ### 4.1 评分口径的实测分数（同一任务，五份假提交）
 
