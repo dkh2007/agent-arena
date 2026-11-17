@@ -936,6 +936,60 @@ def task_effective_fingerprints(conn: sqlite3.Connection, task_id: str) -> list[
     return out
 
 
+def blocked_submissions(conn: sqlite3.Connection) -> list[dict]:
+    """全库 `artifacts IS NULL` 的提交（"补不上"那一批）及其**生效报告**。
+
+    返回每行 `{submission_id, user_id, task_id, created_at, ratio, report, source}`，
+    按 `created_at`、`submission_id` 升序（要能逐条对照，顺序必须可复现）。
+
+    三个刻意的选择：
+
+    1. **取生效报告与生效分**。学生看到的是生效分；报告里写"当年多少分"而接口给另一个数，
+       就是同一件事两套口径。补不上的那份按定义没有重评记录（`rebuild_report` 直接拒），
+       所以两者通常相同——**但"通常"不能当保证**：手工插过 `reappraisals` 行的库照样是合法库。
+    2. **读不出来就抛，不降级成"0 分"**。`diagnosis` 坏了、`score.ratio` 缺了，都直接报错并指名
+       `submission_id`。降级成 0 会让这份提交从"当年给过分、需要交代"掉进"本来就没分"，
+       而两档的处置完全相反——静默降级等于替当事人把问题抹掉。
+    3. **只回答"哪批补不上、它们各是什么样"**，不回答"该怎么向学生交代"。
+       分档与处置在 `baseline.tier_split()`，因为那是"怎么解释"的问题。
+    """
+    rows = conn.execute(
+        "SELECT s.submission_id, s.user_id, s.task_id, s.created_at, s.diagnosis, "
+        "       r.report AS latest_report "
+        "FROM submissions s "
+        "LEFT JOIN reappraisals r ON r.submission_id = s.submission_id "
+        "     AND r.revision = (SELECT MAX(revision) FROM reappraisals "
+        "                      WHERE submission_id = s.submission_id) "
+        "WHERE s.artifacts IS NULL ORDER BY s.created_at ASC, s.submission_id ASC"
+    ).fetchall()
+
+    out = []
+    for row in rows:
+        from_reappraisal = row["latest_report"] is not None
+        raw = row["latest_report"] if from_reappraisal else row["diagnosis"]
+        try:
+            report = _load(raw)
+        except ValueError as exc:
+            raise StoreError(
+                f"{row['submission_id']} 的{'重评' if from_reappraisal else ''}报告不是合法 JSON"
+                f"（{exc}）——坏数据不该被当成「当年没分」算进「不需要交代」那一档"
+            ) from exc
+        if not isinstance(report, dict):
+            raise StoreError(
+                f"{row['submission_id']} 的报告不是对象（{type(report).__name__}）——无法判断它当年有没有分"
+            )
+        out.append({
+            "submission_id": row["submission_id"],
+            "user_id": row["user_id"],
+            "task_id": row["task_id"],
+            "created_at": row["created_at"],
+            "ratio": float(_require(report, "score", "ratio")),
+            "report": report,
+            "source": "reappraisal" if from_reappraisal else "original",
+        })
+    return out
+
+
 # ── 仲裁队列的落库（v3 / B-04b）───────────────────────────────────────────────
 # judge 双评不一致时的**人工待办**。判定与入队条件在 `judge_pipeline.py`，这里只存取。
 #

@@ -369,3 +369,160 @@ def test_baseline_names_who_lost_points(env):
         assert ms.build_series(c, USER, SKILL).p == 0.0
     finally:
         c.close()
+
+
+# ── 4. 「补不上」那批的分档（B-04g 的取数层）────────────────────────────────
+# 前三条性质都只说"补不上的是哪些"。但这一批里混着两种完全不同的处境：
+# 当年判过给过分的（现在判不了 ⇒ 必须交代），和当年本来就没分的（没什么可解释）。
+# 拿一个总数去设计政策，等于为一个还没被数过的规模拍板。
+
+def _seed_lost_artifacts(env, fixture: str, submission_id: str, *, user_id: str = USER) -> None:
+    """当年的作答**存不下产物**：报告照常判（可能有分），`artifacts` 列却是空的。
+
+    这就是历史的真实形态——`artifacts` 列 v4 才加，之前的提交根本没有这一格，
+    而它们的报告是**看着产物**判出来的，所以可以带着 1.0 分。
+    """
+    _submit(env, _payload(submission_id=submission_id, user_id=user_id, fixture=fixture))
+    c = env["conn"]()
+    try:
+        c.execute("UPDATE submissions SET artifacts = NULL WHERE submission_id = ?",
+                  (submission_id,))
+        c.commit()
+    finally:
+        c.close()
+
+
+def _seed_no_artifacts(env, fixture: str, submission_id: str, *, user_id: str = USER) -> None:
+    """当年**学生就没交产物**：判的时候就没有，于是门禁不过、分数 0。
+
+    与上一个的函数分开是有意的：两条路的分数档位完全不同（这条基本只能落在 0 分），
+    混成一个 helper 之后，"需要交代的那一档"会永远是 0 人——
+    而那个结论是被测试的构造方式制造出来的，不是库里的真实情况。
+    """
+    payload = _payload(submission_id=submission_id, user_id=user_id, fixture=fixture)
+    payload["artifacts"] = None
+    _submit(env, payload)
+
+
+def test_only_the_people_who_had_a_score_need_an_explanation(env):
+    """T1 单独一档，且**只有它**进交代名单。
+
+    `raw-perfect` 当年 1.0 分（判过、给过分，只是产物没存下来）；另两份都是 0 分。
+    把后两者也塞进交代名单，等于让"本来就没分"的人替我们的数据缺失背一次解释。
+    """
+    _seed_lost_artifacts(env, "raw-perfect", "s-scored")
+    _seed_no_artifacts(env, "raw-no-file", "s-zero-ok")
+    _seed_no_artifacts(env, "raw-empty", "s-zero-none")
+    _submit(env, _payload(submission_id="s-fine"))      # 有产物 ⇒ 不在这批里
+
+    c = env["conn"]()
+    try:
+        split = bl.tier_split(c)
+        assert split.counted() == {"total": 4, "blocked": 3, "T1": 1, "T2": 1, "T3": 1}
+        assert [i.submission_id for i in split.needs_explanation()] == ["s-scored"]
+        assert split.needs_explanation()[0].ratio == 1.0
+        assert split.users("T1") == (USER,)
+    finally:
+        c.close()
+
+
+def test_zero_score_with_evidence_and_zero_score_without_are_different_buckets(env):
+    """都是 0 分，但一个有过程证据、一个没有 —— 必须分开放。
+
+    `raw-no-file`：门禁没过（没交文件）但 credit 层有通过项 ⇒ 分数 0，技能证据照样进了 P。
+    这批人正是 B-07b（门禁口径 A/B/C）在吵的那批；`raw-empty` 什么都没留下 ⇒ 无从解释。
+    合成一档的后果：要么去跟 T2 解释一件不存在的事，要么把 T3 漏掉——
+    而 T3 的分数是 0、掌握度却被抬过，漏掉就等于"改标准时没人看这条线"。
+    """
+    _seed_no_artifacts(env, "raw-no-file", "s-zero-ok")
+    _seed_no_artifacts(env, "raw-empty", "s-zero-none")
+
+    c = env["conn"]()
+    try:
+        split = bl.tier_split(c)
+        t3 = split.tier("T3")
+        t2 = split.tier("T2")
+        assert [i.submission_id for i in t3] == ["s-zero-ok"]
+        assert t3[0].ratio == 0.0
+        assert t3[0].positive_skills == ("failure_retry", "tool_param_validation"), \
+            "T3 的判据是「某技能 passed_weight > 0」，这里锁住它确实读到了证据"
+        assert [i.submission_id for i in t2] == ["s-zero-none"]
+        assert t2[0].positive_skills == ()
+    finally:
+        c.close()
+
+
+def test_tier_split_reads_the_effective_report_not_the_frozen_one(env):
+    """分档看的必须是**生效报告**（学生现在看到的那个分）。
+
+    读 `submissions.assert_score` 或落库时那份 `diagnosis` 也能跑通、也不会报错，
+    但报出来的数会和接口上的分不一样——同一件事两套口径，对账时没人说得清哪个是真的。
+    """
+    _seed_no_artifacts(env, "raw-empty", "s-x")
+    c = env["conn"]()
+    try:
+        assert bl.tier_split(c).blocked[0].tier == "T2"
+
+        report = copy.deepcopy(store.load_report(c, "s-x"))
+        report["score"]["ratio"] = 0.4
+        store.save_reappraisal(c, "s-x", report, reason="合成的重评记录（只为验证取数口径）",
+                               created_at=AT)
+
+        item = bl.tier_split(c).blocked[0]
+        assert item.ratio == 0.4, "读的是原始分 ⇒ 与接口给的数不一致"
+        assert item.tier == "T1"
+    finally:
+        c.close()
+
+
+def test_corrupt_history_is_loud_instead_of_looking_like_zero_points(env):
+    """报告读不出来 ⇒ 抛，且指名是哪一条。**不许当成"当年 0 分"归进 T2。**
+
+    这是本层最容易犯的静默降级：坏 JSON 解不出来，顺手 `or {}` 一下，
+    这份提交就从"可能给过分、需要交代"掉进"本来就没分、不用管"。
+    两档处置正好相反，而报告会显得一切正常。
+    """
+    _seed_lost_artifacts(env, "raw-perfect", "s-bad")
+    c = env["conn"]()
+    try:
+        c.execute("UPDATE submissions SET diagnosis = ? WHERE submission_id = ?",
+                  ("{不是 JSON", "s-bad"))
+        c.commit()
+        with pytest.raises(store.StoreError) as err:
+            bl.tier_split(c)
+        assert "s-bad" in str(err.value), "报错要指名是哪一条，否则等于没报"
+
+        c.execute("UPDATE submissions SET diagnosis = ? WHERE submission_id = ?",
+                  (json.dumps({"report_version": "v2"}, ensure_ascii=False), "s-bad"))
+        c.commit()
+        with pytest.raises(store.StoreError) as err2:
+            bl.tier_split(c)
+        assert "score.ratio" in str(err2.value), "缺分数不许默认成 0"
+    finally:
+        c.close()
+
+
+def test_tier_split_is_read_only_and_its_total_covers_the_whole_library(env):
+    """两件事一起锁：
+
+    1. **只读**：分档是给人做决定用的，它自己要是一个会改库的动作，
+       "先看一眼再决定"就变成了"已经动过手了"。
+    2. **`total` 是全库提交数**，不是"补不上的那些"。用 `len(blocked)` 顶替，
+       报出来的占比会永远接近 100%，人会以为自己面对一个巨大的历史包袱。
+    """
+    _seed_lost_artifacts(env, "raw-perfect", "s-a")
+    _submit(env, _payload(submission_id="s-b"))
+    _submit(env, _payload(submission_id="s-c"))
+
+    c = env["conn"]()
+    try:
+        before = (store.count_submissions(c), len(store.list_reappraisals(c, "s-a")))
+        first = bl.tier_split(c)
+        second = bl.tier_split(c)
+
+        assert first.to_dict() == second.to_dict(), "两次结果必须逐字段相同"
+        assert first.counted()["total"] == 3, "total 必须是全库，不是补不上的那些"
+        assert first.counted()["blocked"] == 1
+        assert (store.count_submissions(c), len(store.list_reappraisals(c, "s-a"))) == before
+    finally:
+        c.close()

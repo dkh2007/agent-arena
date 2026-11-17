@@ -82,6 +82,21 @@
 >    裁判：`pytest tests/test_baseline.py` 10 passed；`mutate_baseline.py` 8 组全 DETECTED；
 >    `scripts/baseline_probe.py` 打出 `BACKFILLED=True IDEMPOTENT=True REPORTED=True`。
 >    剩下的不是代码问题：「补不上」的那批怎么交代 ⇒ **B-04g，需人拍口径**。
+> ⑫ **round-97（2026-11-17）B-04g 取数层：「补不上」那批先数出规模**。
+>    外审回件指出的不是"选哪条路"，而是"现在还没到能拍的时候"：`blocked()` 把一个数
+>    报给人，但那一类里混着两种处境——当年判过给过分的（必须解释）、当年本来就没分的。
+>    补上 `store.blocked_submissions()`（取**生效**报告）+ `baseline.tier_split()`，
+>    切三档，**只有 T1 进交代名单**：T1 生效分 > 0 / T3 0 分但有 `passed_weight > 0`
+>    （与 B-07b 同批人）/ T2 其余。T3 复用 `mastery.skill_evidence()`，不另写一份口径。
+>    **我自己踩的坑已写成判据**：「补不上」有两种来源（产物没存下来 vs 学生当年就没交），
+>    只按后者造样本会让 T1 恒为 0 ⇒ 得出"没有人需要交代"，而那是构造方式给的答案；
+>    `scripts/tier_probe.py` 第 3 段把这个反证做成了可执行的一段。
+>    **核出回件也没提的一条**：T2 不等于无影响——它没有*分数*可解释，但失败证据在 P 里，
+>    且因为补不上，那份证据永远停在旧判据上（P 轴也被冻住，只是没界面显示它）。
+>    裁判：`pytest tests/test_baseline.py` 15 passed；`mutate_baseline.py` **14 组全 DETECTED**；
+>    `scripts/tier_probe.py` 打出 `TIERS_OK=True EXPLAIN_ONLY_T1=True
+>    SIMULATION_CHANGES_ANSWER=True READ_ONLY=True`。
+>    剩下的全是口径（T1 怎么交代 / T3 与 B-07b 合并拍 / 分数变了怎么告知 / 流程）⇒ B-04g。
 > 单文件交接请以 `docs/BACKLOG.md` 顶部更新块 + `docs/ROADMAP.md` 五层表为现役状态，
 > 下方 §2「当前状态（截至 2026-11-07）」是**历史快照**，勿据此判断现行状态。
 

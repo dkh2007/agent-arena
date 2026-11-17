@@ -40,6 +40,21 @@
 4. **中途抛错可安全重跑**：每份提交的重评与刷新在同一笔事务里（B-07d ③），
    失败的那份不落库；重跑时已处理过的不会重复进范围。
 
+## 「补不上」那批的分档（B-04g 的取数层）
+
+`blocked()` 把"补不上"报成一个数，但那一类里混着两种处境：当年判过给过分的
+（现在判不了，必须解释），和当年本来就没分的（没什么可解释）。拿一个总数去设计
+交代方案，等于为一个还没被数过的规模拍板。`tier_split()` 把它切成 T1/T2/T3，
+**只有 T1 进交代名单**。
+
+分档是**事实**（当年有没有分、有没有可计入的通过证据），不是政策：
+拿到名单之后是保留原分还是让学生重做，是 B-04g 要人拍的，本模块不做选择。
+
+一个和测试有关的坑（写在这里，免得下一个人重踩）：**"补不上"有两种来源**——
+产物没存下来（`artifacts` 列 v4 才有，当年的报告是看着产物判的，可以带 1.0 分）、
+和当年学生就没交产物（判出来就是 0 分）。两者在库里都是 `artifacts IS NULL`，
+但只按后者造样本，T1 会恒为 0，于是结论是"没有人需要交代"——那个答案是构造方式给的。
+
 ## 刻意不做
 
 - **不自动触发**。"判据改动在哪登记、谁批准、跑完要不要通知学生"是流程问题，
@@ -58,9 +73,13 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 try:  # 作为包被 import
+    from . import mastery as ms
     from . import reappraisal as rap
+    from . import store
 except ImportError:  # 作为独立脚本/被单文件测试直接 import
+    import mastery as ms  # type: ignore[no-redef]
     import reappraisal as rap  # type: ignore[no-redef]
+    import store  # type: ignore[no-redef]
 
 
 class BaselineError(RuntimeError):
@@ -205,4 +224,149 @@ def run_baseline(
         before=before,
         outcomes=tuple(outcomes),
         after=after,
+    )
+
+
+# ── 「补不上」那批的分档（B-04g 的取数层）──────────────────────────────────────
+# 为什么要有这一步：`blocked()` 把"补不上"当成一类报，但那一类里混着两种完全不同的处境——
+# 当年判过、给过分的人（现在判不了，必须交代），和当年本来就没分的人（没什么可解释）。
+# 把一个总数摆到人面前让他拍"怎么交代"，等于为一个还没被数过的规模设计政策。
+#
+# 分档是**事实**，不是政策：它只回答"这份提交当年有没有分、有没有可计入的通过证据"。
+# 至于拿到名单之后是保留原分、还是让学生重做，是 B-04g 要人拍的，本函数不做选择。
+
+TIERS = ("T1", "T2", "T3")
+
+TIER_TITLES = {
+    "T1": "当年有分（判过、给过分，现在判不了 —— 要交代的是这一档）",
+    "T2": "当年 0 分且无可计入证据（本来就没有分数可解释）",
+    "T3": "当年 0 分但有可计入的通过证据（分数 0，技能证据照样进了 P）",
+}
+
+
+@dataclass(frozen=True)
+class BlockedItem:
+    """一份补不上的提交，连同它落在哪一档。
+
+    `positive_skills` 是"这份提交给哪些技能留下过正向证据"（`passed_weight > 0`）。
+    它是 T3 的判据，也是把 T3 与 B-07b（门禁口径）对上号的依据——
+    那批人的分数是 0，但掌握度被这份提交抬过。
+    """
+
+    submission_id: str
+    user_id: str
+    task_id: str
+    ratio: float
+    tier: str
+    positive_skills: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "submission_id": self.submission_id,
+            "user_id": self.user_id,
+            "task_id": self.task_id,
+            "ratio": self.ratio,
+            "tier": self.tier,
+            "positive_skills": list(self.positive_skills),
+        }
+
+
+@dataclass(frozen=True)
+class TierSplit:
+    """全库"补不上"那批的分档结果。`total` 是全库提交数，用于算占比。"""
+
+    total: int
+    blocked: tuple[BlockedItem, ...]
+
+    def tier(self, name: str) -> tuple[BlockedItem, ...]:
+        if name not in TIERS:
+            raise BaselineError(f"未知档位 {name!r}，只有 {TIERS}")
+        return tuple(item for item in self.blocked if item.tier == name)
+
+    def needs_explanation(self) -> tuple[BlockedItem, ...]:
+        """真正需要向学生交代的那批（T1）。**其余两档不许混进来充数。**"""
+        return self.tier("T1")
+
+    def users(self, name: str) -> tuple[str, ...]:
+        return tuple(sorted({item.user_id for item in self.tier(name)}))
+
+    def counted(self) -> dict[str, int]:
+        return {
+            "total": self.total,
+            "blocked": len(self.blocked),
+            "T1": len(self.tier("T1")),
+            "T2": len(self.tier("T2")),
+            "T3": len(self.tier("T3")),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "counted": self.counted(),
+            "tiers": {
+                name: [item.to_dict() for item in self.tier(name)] for name in TIERS
+            },
+        }
+
+
+def classify_blocked(rows: Iterable[dict], skill_ids: Iterable[str], *, total: int) -> TierSplit:
+    """把 `store.blocked_submissions()` 的行分三档。纯函数：不读库、不写库。
+
+    判据（按顺序，先命中先落档）：
+
+    | 档 | 条件 | 为什么这么切 |
+    |---|---|---|
+    | T1 | `ratio > 0` | 判过、给过分，现在判不了 ⇒ 唯一必须解释的一档 |
+    | T3 | `ratio == 0` 且某技能 `passed_weight > 0` | 分数 0，但过程证据进了 P；与 B-07b 同批人 |
+    | T2 | 其余 | 既没分、也没留下正向证据 ⇒ 没有可解释的东西 |
+
+    **作废（`score.voided`）的天然落 T2**：`skill_evidence()` 对作废提交一律不计入，
+    所以它的 `positive_skills` 为空；这是刻意的，不作废单列一档——作废的含义就是
+    "这次不算数"，它既没有分要解释，也没有证据需要撤回。
+
+    反过来说清一件事：**T2 不等于"完全没影响"**。它没有*分数*可解释，但它的失败证据
+    （`state=fail` 且权重 > 0）照样在 P 里，而且因为补不上，那份证据**永远停在旧判据上**。
+    这一点写在这里是为了不要有人把 T2 读成"这些人跟我们改标准无关"。
+    `total` 要显式传：占比是给人看的第一句话，而"全库多少份"不可能从"补不上的那些"
+    推出来——偷偷用 `len(rows)` 顶替，报出来的占比会永远接近 100%。
+    """
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise BaselineError(f"total 必须是非负整数（全库提交数），收到 {total!r}")
+    skills = tuple(skill_ids)
+    items: list[BlockedItem] = []
+    for row in rows:
+        sid = row["submission_id"]
+        report = row["report"]
+        try:
+            positive = tuple(
+                skill for skill in skills
+                if ms.skill_evidence(report, skill, at=row["created_at"]).passed_weight > 0
+            )
+        except ms.MasteryError as exc:
+            raise BaselineError(
+                f"{sid} 的报告无法判断它有没有计入掌握度的证据：{exc}"
+            ) from exc
+        ratio = float(row["ratio"])
+        if ratio > 0:
+            tier = "T1"
+        elif positive:
+            tier = "T3"
+        else:
+            tier = "T2"
+        items.append(BlockedItem(
+            submission_id=sid,
+            user_id=row["user_id"],
+            task_id=row["task_id"],
+            ratio=ratio,
+            tier=tier,
+            positive_skills=positive,
+        ))
+    return TierSplit(total=total, blocked=tuple(items))
+
+
+def tier_split(conn) -> TierSplit:
+    """全库分档：`store.blocked_submissions()` + `classify_blocked()`。只读。"""
+    return classify_blocked(
+        store.blocked_submissions(conn),
+        store.list_skill_ids(conn),
+        total=store.count_submissions(conn),
     )
