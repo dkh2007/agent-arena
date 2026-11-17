@@ -47,7 +47,9 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_fingerprint.py` | 判据指纹（只算 credit 漏 gate / **漏 `skill_id`＝分数没变所以不重评** / 不排序键 / 按 id 排序吃掉数组顺序 / 指纹恒常量 / 绕过 `rubric_layers` 给非法 rubric 也起名字 / 版本串不进 payload / 报告不写指纹 / 可选键塞进 `required` / 格式不校验）（10 组） | round-94 / B-04e |
 | `mutate_baseline.py` | 全库基线 + 「补不上」分档（跑完不重算范围 / **只跑 stale 不跑无指纹** / 补不上的算成补上了 / 演练也落库 / 重复任务悄悄去重 / 没理由也照跑 / 结果不带 user_id / **报表说「已全部打平」** / **所有补不上的都要交代** / 0 分有证据的归进「没分可解释」 / 读冻结报告而非生效报告 / 缺 ratio 默认 0 / 坏 JSON 当空报告 / total 用补不上的冒充全库）（14 组） | round-96 / B-04f；round-97 补 M9–M14（B-04g 取数层） |
 
-> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` / `mutate_fingerprint.py` / `mutate_baseline.py` 是
+| `mutate_packet.py` | 评审包「参照物」（不告子进程准备写入的数 / **生成期间仍比上一代包** / 生成期间一律放行 / 非生成期间不比对 / 快照自己再数一次）（5 组） | round-98 / 生成器参照物修复 |
+
+> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` / `mutate_fingerprint.py` / `mutate_baseline.py` / `mutate_packet.py` 是
 > 「`rc == 1` 才算抓住」。其余 8 个仍是旧规则（`rc == 5` 判 `INVALID`、含 `error` 判 `INVALID`），
 > round-89 已实测过旧规则会把节点不存在的 `no tests ran`（rc=4）判成 `DETECTED`。
 > 它们各自的全 `DETECTED` **目前仍可信**（节点都在，跑出来是 `1 failed`），

@@ -104,6 +104,33 @@ def _pytest_count() -> int:
 
 FAST_TEST_LINE = "- 单元测试实测：`--fast` 模式未执行测试（对外发正式评审包时请去掉 --fast）"
 
+# 生成期间给子进程的"我要写入的用例数"。见 `recorded_count_error()` 与 `_pytest_result()`：
+# 生成那一跑发生在写文件**之前**，磁盘上仍是上一代包，靠它才能给出正确参照物。
+COUNT_ENV = "ARENA_PACKET_COUNT"
+
+
+def recorded_count_error(body: str, live: int, generating: int | None) -> str | None:
+    """「包里记的用例数」是否对得上现况。返回 None 表示通过，否则返回失败原因。
+
+    两个分支对应两种时刻，参照物不同：
+
+    - `generating is not None`：**正在生成**。磁盘那份是**将被替换**的旧件，
+      拿它比对等于用上几代产物判这一代对不对——生成历史越长越容易红，与代码状态无关。
+      此时唯一正确的参照物是生成器准备写入的那个数；两条计数路径（`--collect-only`
+      与全量运行）不一致仍然要报，那是真的不一致。
+    - `generating is None`：**正常跑测试**。磁盘那份就是要提交的那份，比它。
+    """
+    if generating is not None:
+        if generating != live:
+            return (
+                f"生成器准备写入 {generating}，实际收集到 {live}："
+                "两条计数路径（`--collect-only` 与全量运行）不一致"
+            )
+        return None
+    if f"**{live} 个用例被收集**" not in body:
+        return f"评审包里的测试数与实际（{live}）不一致"
+    return None
+
 # TD-040：实测行不只是给人读的，它决定这份包能不能对外发。
 # 判据只有两条——有没有实测数据、失败数是否为 0。不解析 passed 数（可由 total 推出，
 # 解析三处反而会出现三处不一致的可能）。
@@ -154,19 +181,23 @@ def _parse_pytest_summary(stdout: str) -> tuple[str, int]:
     return summary, total
 
 
-def _pytest_result(fast: bool, anchor: str) -> str:
+def _pytest_result(fast: bool, anchor: str, count: int | None = None) -> str:
     """Q9：现场跑一遍测试，如实记录通过率；失败也照实写，不强行全绿。
 
     刻意不用 `_run()`：pytest 非零退出是**要被记录的结果**，不是生成失败。
     措辞上不写「锚点实测」——测试跑的是当前工作区，不是锚点提交，
     那会是把"存在性/通过性"混为一谈的另一种过度声称。
 
-    **改过用例数之后，第一次生成可能记成「1 failed」**：这一跑发生在写文件**之前**，
-    磁盘上仍是旧包，于是 `test_test_count_matches_repo` 拿新计数去比旧正文、报红，
-    那一次的结果被如实写进实测行（round-95 抓到过一次 `1 failed, 1278 passed / 1279 total`）。
-    但**也遇到过同一初态、首次就全绿**（round-95/96 各一次），机制未查清。
-    所以别拿"第一次全绿"当收敛证据，也不要写成"必然要跑三次"这种次数规则——
-    可执行的判据只有两条：**实测行里没有 `failed`**，且**再生成一次 `packet-sha256` 不变**。
+    **`count` 是"我马上要写进包里的用例数"，传给子进程（`COUNT_ENV`）。**
+    原因是这一跑发生在写文件**之前**，磁盘上仍是上一代包，而
+    `tests/test_review_packet.py` 里那条「包里记的数 == 实际收集数」的断言读的正是
+    磁盘那份。于是只要这一轮改过用例数，第一次生成**必然**红——但红的原因是
+    "拿上几代产物判这一代"，与代码对错无关，而且这个假的 `1 failed` 会被如实
+    写进实测行、进而让包被判不可发布。
+
+    实测（2026-11-17）：把包里计数改成 1293（实际 1294），跑一次生成器，实测行得到
+    `1 failed, 1293 passed / 1294 total`，失败的正是那条计数断言。所以修法不是放宽
+    断言，而是给它正确的参照物——生成期间比"准备写入的数"（见 `recorded_count_error`）。
     """
     if fast:
         return FAST_TEST_LINE
@@ -181,6 +212,7 @@ def _pytest_result(fast: bool, anchor: str) -> str:
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "-q"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=None if count is None else {**os.environ, COUNT_ENV: str(count)},
     )
     summary, total = _parse_pytest_summary(proc.stdout)
     return (
@@ -190,16 +222,19 @@ def _pytest_result(fast: bool, anchor: str) -> str:
     )
 
 
-def _snapshot(ref: str, test_line: str) -> str:
+def _snapshot(ref: str, test_line: str, count: int | None = None) -> str:
     """生成锚点处的仓库状态。只放"会变且该被评审看到"的东西。
 
     认 `ref` 不认 HEAD：锚点处固定的 sha / 提交列表不会因为打包提交而改变，
     而单测数、实测结果、评分表、任务结构、依赖仍从**当前工作区**现算，
     仓库真漂移照样报红。
+
+    `count` 由 `build()` 传进来（它必须与交给测试子进程的那个数**是同一个**，
+    否则两处各算一次，遇到收集不稳定就会写下一份自相矛盾的包）。
     """
     sha = _git_sha(ref)
     log = _git_log(ref)
-    tests = _pytest_count()
+    tests = _pytest_count() if count is None else count
     publishable, reason = _test_gate(test_line)
     gate = "" if publishable else "\n\n" + _block_notice(reason)
     return (
@@ -376,9 +411,15 @@ def build(
     if missing:
         raise PacketError(f"手工模板缺少占位符：{missing}")
 
-    line = test_result if test_result is not None else _pytest_result(fast, _git_sha(ref))
+    # 用例数只数一次：交给人看的（快照）和交给测试子进程的（COUNT_ENV）必须是同一个数。
+    tests = _pytest_count()
+    line = (
+        test_result
+        if test_result is not None
+        else _pytest_result(fast, _git_sha(ref), tests)
+    )
     body = manual
-    body = body.replace("{{AUTO_SNAPSHOT}}", _snapshot(ref, line))
+    body = body.replace("{{AUTO_SNAPSHOT}}", _snapshot(ref, line, tests))
     body = body.replace("{{AUTO_SCORES}}", _scores())
     body = body.replace("{{AUTO_TASK}}", _task_struct())
     body = body.replace("{{AUTO_ENV}}", _env())

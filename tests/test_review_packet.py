@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import sys
 from pathlib import Path
@@ -78,11 +79,83 @@ def test_test_count_matches_repo(body: str):
 
     v1 手写"14 passed"、实际 46 —— 传给外部 AI 等于让它在评一个不存在的版本。
     这条断言把"数字漂移"变成红灯。
+
+    参照物分两种时刻（见 `review_packet.recorded_count_error` 的文档）：生成器内部
+    那一跑，磁盘上是**将被替换**的旧包，拿它比对等于用上几代产物判这一代——
+    2026-11-17 实测该分支让"改过用例数后的第一次生成"必然记成 `1 failed`。
+    所以生成期间比的是"生成器准备写入的那个数"。
     """
     n = review_packet._pytest_count()
-    assert f"**{n} 个用例被收集**" in body, f"评审包里的测试数与实际（{n}）不一致"
+    raw = os.environ.get(review_packet.COUNT_ENV)
+    error = review_packet.recorded_count_error(body, n, int(raw) if raw else None)
+    assert error is None, error
     # 生成器只做 collect-only，不许借 "passed" 字样把"数过"说成"跑过"
     assert " passed**" not in body
+
+
+def test_count_check_uses_the_right_reference_in_each_moment():
+    """两个方向的参照物错法，都不会报错，只会判错东西。"""
+    live = 72
+    current = "- 单元测试：**72 个用例被收集**（`pytest tests/ --collect-only` 计数）"
+    stale = "- 单元测试：**71 个用例被收集**（`pytest tests/ --collect-only` 计数）"
+
+    # 正常跑测试：磁盘那份就是要提交的那份，差一格就该红
+    assert review_packet.recorded_count_error(current, live, None) is None
+    assert review_packet.recorded_count_error(stale, live, None), "提交了旧计数却不报"
+
+    # 生成期间：磁盘那份是上一代，落后一格是常态、不是错
+    assert review_packet.recorded_count_error(stale, live, live) is None, (
+        "生成期间拿旧包比对 ⇒ 每次改过用例数，第一次生成都记一个假 failed，"
+        "而这个假 failed 会被如实写进实测行、让包被判不可对外发布"
+    )
+
+    # 但生成期间不许一律放行：两条计数路径真的不一致时必须红，且带上两个数
+    err = review_packet.recorded_count_error(stale, 73, live)
+    assert err and "72" in err and "73" in err
+
+
+def test_generator_tells_the_child_which_count_it_is_about_to_write(monkeypatch):
+    """生成器必须把"准备写入的用例数"告给子进程。
+
+    不告的后果不是报错，而是子进程只能拿**上一代**包当参照物：于是"改过用例数后
+    第一次生成必然红"，而那个假失败会被如实写进实测行，让包被判不可对外发布。
+    """
+    class Proc:
+        def __init__(self, out: str) -> None:
+            self.stdout, self.returncode = out, 0
+
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "git":
+            return Proc("abc1234\n")
+        seen["env"] = kwargs.get("env")
+        return Proc("72 passed in 1.00s")
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(review_packet.subprocess, "run", fake_run)
+
+    line = review_packet._pytest_result(fast=False, anchor="abc1234", count=72)
+    assert "72 passed / 72 total" in line
+    env = seen.get("env")
+    assert isinstance(env, dict), "整个 env 被丢掉（会把 PATH 等一起丢掉，或根本没传）"
+    assert env.get(review_packet.COUNT_ENV) == "72", (
+        "没把准备写入的数告给子进程 ⇒ 子进程只能拿上一代包当参照物"
+    )
+
+
+def test_snapshot_writes_the_same_count_the_child_was_told(monkeypatch):
+    """包里写的数与交给子进程的数必须是**同一个**。
+
+    两处各数一次，就可能写出一份"正文说 72、实测行说 99"的包——而两边都不会报错。
+    """
+    def counting() -> int:
+        # 与传进来的数**不同**，才能区分"用传入值"和"自己再数一次"
+        return 99
+
+    monkeypatch.setattr(review_packet, "_pytest_count", counting)
+    snap = review_packet._snapshot("HEAD", review_packet.FAST_TEST_LINE, 72)
+    assert "**72 个用例被收集**" in snap, "快照自己又数了一次，与交给子进程的数不同源"
 
 
 def test_score_table_reflects_real_run(body: str):
