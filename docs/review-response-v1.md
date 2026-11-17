@@ -9051,27 +9051,27 @@ def rubric_fingerprint(task: dict) -> str:
 三条都是"多跑一次重评"，没有一条会导致漏算。**没有一处是假阴性**——这是本轮
 唯一的硬要求，因为假阴性不会报错。
 
-### 95.5 本轮刻意没做的三件事
+### 95.5 本轮刻意没做的三件（其中①已在同一轮下半场做完，见 95.8）
 
-① **没写进报告，也没进 schema**。`docs/diagnosis-report.schema.json` 顶层是
-   `additionalProperties: false`，加字段必须同时改 schema 并把新键放成**可选**
-   （不能进 `required`，否则全部历史夹具过不了）。这是独立的一小步：
-   先决定指纹存在报告哪一层，再接 `build_report()`。
+① ~~**没写进报告，也没进 schema**~~ → **已做**。`docs/diagnosis-report.schema.json`
+   顶层是 `additionalProperties: false`，加字段必须同时改 schema 并把新键放成**可选**
+   （不能进 `required`，否则全部历史夹具过不了）。落地细节见 95.8。
 ② **没回填历史**。历史报告没有指纹，是因为**当时没有记**，事后补算等于伪造——
    你不知道那一刻的 `rubric` 长什么样。这与 `artifacts` 为 NULL 的记法一致
    （见 B-04d 的遗留条第 2 点）。
 ③ **没算"受影响集合"**。指纹只是判断依据；"给定新旧两个指纹，扫出哪些提交不匹配"
-   是下一步的查询能力，需要先有落库的指纹。
+   是下一步的查询能力，需要先有落库的指纹（②之前它连输入都没有）。
 
 ### 95.6 裁判（都不用自评）
 
 ```bash
-pytest tests/test_rubric_fingerprint.py -q      # 17 passed
-python tools/mutations/mutate_fingerprint.py    # 7 组全 DETECTED
-pytest tests/ -q                                # 1267 collected
+pytest tests/test_rubric_fingerprint.py -q      # 23 passed
+python tools/mutations/mutate_fingerprint.py    # 10 组全 DETECTED
+pytest tests/ -q                                # 1273 collected
 ```
 
-变异的 7 组对应 95.3 的四个选择 + 漏算的两个典型（漏 gate、漏 `skill_id`）+ 空转。
+变异的 10 组：M1–M7 对应 95.3 的四个选择 + 漏算的两个典型（漏 gate、漏 `skill_id`）+ 空转；
+M8–M10 对应 95.8 的接线（报告不写指纹 / 可选键被塞进 `required` / 格式不校验）。
 判定只认 `rc == 1` 为 DETECTED（`no tests ran` 的 rc 是 4）。
 
 ### 95.7 反证条件
@@ -9083,3 +9083,48 @@ pytest tests/ -q                                # 1267 collected
 ⑤ 若把 `FINGERPRINT_VERSION` 改个值而指纹不变 ⇒ 版本串没进 payload（M7），
    "算法变了"与"判据变了"从此不可区分。
 ⑥ 若指纹长度不是 64 ⇒ 有人开始截断，碰撞概率需要重新论证。
+⑦ 若 `build_report()` 产出的报告里没有 `rubric_fingerprint` ⇒ 接线断了（M8），
+   函数再正确也等于没做。
+⑧ 若历史报告（无该键）校验失败 ⇒ 有人把可选键塞进了 `required`（M9），
+   等于把"我们不认识旧数据"升级成"旧数据是坏的"。
+⑨ 若 `rubric_fingerprint: "abc"` 能过 schema ⇒ 格式不校验（M10），
+   "缺指纹"与"指纹写坏"会混成一件事。
+⑩ 若同一 task、不同作答产生不同指纹 ⇒ 指纹被写成了"成绩指纹"，
+   每次作答差异都会被当成判据变更，重评范围直接失效。
+
+---
+
+## §96 round-94 下半场：指纹接线——报告自带"按哪版判据判的"
+
+### 96.1 改了两个地方，各自防一种断法
+
+B-04e 的第二步只有两处改动，但两处都能独立地把这件事做废：
+
+| 改动 | 不做会怎样 |
+|---|---|
+| `build_report()` 无条件写 `report["rubric_fingerprint"]` | 函数存在、库里永远没有值——"写好了但没接"，`artifacts` 那次就是这么丢的（B-04d 的真 bug） |
+| schema 加**可选**键 + `pattern` 校验 | 进 `required` ⇒ 全部历史报告与旧夹具校验失败；不加 pattern ⇒ "缺指纹"与"指纹写坏"混成一样 |
+
+第一处的措辞是**无条件**，不是"有条件写"：只要走了 `build_report(task, raw)`，
+就一定有一份 rubric 在起作用，不存在"这次没有判据"的情形。所以缺这个键只有一个解释——
+生成它的那天还没有这个概念。这个区别必须保住，否则日后无法区分"历史报告"与"判据为空"。
+
+### 96.2 一个容易写反的语义：指纹不跟着作答变
+
+指纹回答「按什么标准判」，不是「判成什么」。同 task、`raw-perfect` 与 `raw-empty`
+两份夹具：`score.ratio` 一个 1.0 一个 0（甚至 disqualified），但指纹必须**逐字节相同**。
+
+写反的后果不是报错，而是重评范围失效：每一份作答差异都会被当成"判据变了"，
+于是每次比对都是全库重评，"指纹"退化成"报告内容哈希"，白做。
+
+`test_fingerprint_describes_the_rubric_not_the_answer` 里先断言两份夹具的 ratio
+确实不同——否则这条测试是空的（两条都恒等时它照样绿）。
+
+### 96.3 边界
+
+① **没回填**。历史报告缺键就是缺键，这与 `artifacts` 为 NULL 的记法一致；
+   补一个"事后算的指纹"会让历史报告看起来像"当时记过"。
+② **没说指纹进 `submissions` 列**。它现在随报告 JSON 一起落库（`diagnosis` 列），
+   没有独立列。要按指纹建索引查"哪些提交"时再谈——那是 ⓑ 的落地形态。
+③ **没改 `store` / 读接口**。三个读端点返回的报告都会自然带上这个键，
+   因为它们返回的就是落库的那份 JSON。

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import copy
 import glob
+import json
 import sys
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from arena.diagnosis_report import (  # noqa: E402
     load_task,
     rubric_fingerprint,
 )
+from arena import diagnosis_report as dr  # noqa: E402
 
 TASK_PATH = ROOT / "tasks" / "dbg-001-order-report.yaml"
 
@@ -212,3 +214,60 @@ def test_refuses_to_fingerprint_an_invalid_rubric():
     _empty_gate(task)
     with pytest.raises(ReportError):
         rubric_fingerprint(task)
+
+
+# ── 接线：报告自带指纹（B-04e 的第二步） ──────────────────────────────────
+
+def _raw(name: str = "raw-perfect.json") -> dict:
+    return json.loads((ROOT / "fixtures" / name).read_text(encoding="utf-8"))
+
+
+def test_build_report_carries_the_fingerprint():
+    task = _task()
+    report = dr.build_report(task, _raw())
+    assert report["rubric_fingerprint"] == rubric_fingerprint(task)
+
+
+def test_fingerprint_describes_the_rubric_not_the_answer():
+    """同一份判据、不同作答 ⇒ 指纹相同。
+
+    这条是本设计的核心语义：指纹回答「按什么标准判」，不是「判成什么」。
+    如果它跟着作答变，就无法拿来识别"判据改了"——每次作答差异都会被当成
+    判据变更，重评范围直接失效。所以先断言两份夹具分数确实不同，
+    否则这条测试是空的。
+    """
+    task = _task()
+    perfect = dr.build_report(task, _raw("raw-perfect.json"))
+    empty = dr.build_report(task, _raw("raw-empty.json"))
+    assert perfect["score"]["ratio"] != empty["score"]["ratio"], "两份夹具分数应当不同，否则这条断言没有验证力"
+    assert perfect["rubric_fingerprint"] == empty["rubric_fingerprint"]
+
+
+def test_changing_the_rubric_changes_the_fingerprint_in_the_report():
+    task = copy.deepcopy(_task())
+    before = dr.build_report(task, _raw())["rubric_fingerprint"]
+    task["rubric_credit"][0]["expected"]["valid_count"] = 18
+    assert dr.build_report(task, _raw())["rubric_fingerprint"] != before
+
+
+def test_report_with_fingerprint_passes_schema():
+    dr.validate_report(dr.build_report(_task(), _raw()))
+
+
+def test_historical_report_without_fingerprint_still_passes_schema():
+    """指纹是**可选键**：它出现之前的报告没有这一项，仍必须合法。
+
+    不能进 `required`——否则全部历史夹具、以及库里已经落过的报告一律校验失败，
+    那是把"我们不认识旧数据"升级成"旧数据是坏的"。
+    """
+    report = dr.build_report(_task(), _raw())
+    report.pop("rubric_fingerprint")
+    dr.validate_report(report)
+
+
+def test_schema_rejects_a_malformed_fingerprint():
+    """长度/字符集写错时必须报错，否则"缺指纹"与"指纹写坏"会被混成一样。"""
+    report = dr.build_report(_task(), _raw())
+    report["rubric_fingerprint"] = "abc123"
+    with pytest.raises(ReportError):
+        dr.validate_report(report)

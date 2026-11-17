@@ -40,7 +40,15 @@ unattributed_patterns[]  有错误模式但两条归因路都走不通的失败�
 notes[]              可选。报告出现"未覆盖情况"时必须在这里说明，不许静默
 judge_scores[]       可选（B-04b）。跑了 judge 才有：每次评价的 {rating 1–4, suspected_patterns, rationale, model, latency_ms}
 judge_agreement      可选（B-04b）。跑了 judge 才有：两两比较中 rating 相同的比例，[0,1]
+rubric_fingerprint   可选（B-04e）。64 位十六进制：这份报告按哪版判据判的（rubric_gate + rubric_credit 的规范化 sha256）
 ```
+
+> **`rubric_fingerprint` 的缺省语义与 judge 两字段同理，但理由不同**：
+> 它**无条件写**——只要走了 `build_report()` 就一定有一份 rubric 在起作用，
+> 不存在"这次没有判据"的情形。所以**缺这个键只有一个解释：生成这份报告的那天还没有这个概念**
+> （即 v5 之前的历史报告）。不要用空串/默认值替它参与比较，那会把"不知道"伪装成"一样"。
+> 它回答的是「按什么标准判」，不是「判成什么」——同一 task、不同作答，指纹必须相同
+> （`test_fingerprint_describes_the_rubric_not_the_answer`）。
 
 > **两个 judge 字段"缺省即无"，不是 `null`**：缺字段 = 这份提交没跑双评；`null` 会让
 > "没评"与"评了但没拿到值"混成一件事。两者都不参与 `score` / `assertions` /

@@ -9,7 +9,7 @@
 只有 `returncode == 1` 记 DETECTED（`no tests ran` 的退出码是 4，按"非 0 即抓住"
 会白跑一轮还留下假绿）。
 
-## 这 7 组各自防的是什么
+## 这 10 组各自防的是什么
 
 指纹的失效方式和别的模块不一样：它**不会报错**，只会安静地少算或多算一个字段。
 少算 ⇒ 标准改了但指纹没变 ⇒ 那批提交永远不进重评范围（B-04d 护栏失效，无人发现）；
@@ -17,7 +17,9 @@
 
 M1 打"门禁标准改了不算改判据"，M2 打"归因字段改了不用重评"（本轮的核心论点），
 M3 打"等价写法被当成改动"，M4 打"数组顺序语义丢失"，M5 打"整个功能空转"，
-M6 打"给非法 rubric 也起名字"，M7 打"换算法版本后旧指纹无法识别"。
+M6 打"给非法 rubric 也起名字"，M7 打"换算法版本后旧指纹无法识别"；
+M8–M10 打**接线**：函数写对了但报告里没写（M8）、可选键被塞进 `required`
+让全部历史报告校验失败（M9）、格式不校验导致"缺指纹"与"指纹写坏"混成一样（M10）。
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena"
 os.chdir(_ROOT)
 
 DR = Path("src/arena/diagnosis_report.py")
+SCHEMA = Path("docs/diagnosis-report.schema.json")
 T = "tests/test_rubric_fingerprint.py"
 PYEXE = sys.executable
 
@@ -89,6 +92,25 @@ MUTATIONS = [
      PAYLOAD,
      "{GATE: gate, CREDIT: credit}",
      f"{T}::test_bumping_the_algorithm_version_moves_every_fingerprint"),
+
+    # ── 接线：指纹得真进报告、得真可选、得真校验格式 ────────────────────────
+    ("M8 build_report 不写指纹（函数有了但报告里没有，等于没接）",
+     DR,
+     '    report["rubric_fingerprint"] = rubric_fingerprint(task)',
+     "    pass  # 变异：不写指纹",
+     f"{T}::test_build_report_carries_the_fingerprint"),
+
+    ("M9 指纹进 required（全部历史报告与旧夹具一律校验失败）",
+     SCHEMA,
+     '    "skill_gaps",\n    "unattributed_patterns"\n  ],',
+     '    "skill_gaps",\n    "unattributed_patterns",\n    "rubric_fingerprint"\n  ],',
+     f"{T}::test_historical_report_without_fingerprint_still_passes_schema"),
+
+    ("M10 schema 不校验格式（缺指纹与指纹写坏混成一样）",
+     SCHEMA,
+     '      "pattern": "^[0-9a-f]{64}$",\n',
+     "",
+     f"{T}::test_schema_rejects_a_malformed_fingerprint"),
 ]
 
 

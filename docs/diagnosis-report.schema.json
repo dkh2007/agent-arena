@@ -348,6 +348,11 @@
       "minimum": 0,
       "maximum": 1,
       "description": "B-04b：双评一致率（两两比较中 rating 相同的比例，口径见 src/arena/llm_judge.py 模块文档）。低值说明判据表述有歧义，不等于考生答错；低于调用方给的阈值时进 arbitration_queue。"
+    },
+    "rubric_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "B-04e：这份报告按哪版判据判的——rubric_gate + rubric_credit 规范化后的 sha256（算法与版本见 src/arena/diagnosis_report.py 的 FINGERPRINT_VERSION）。用途只有一个：判据改动后识别『哪些历史提交需要重评』。**字段缺失表示『生成这份报告时还没有这个概念』，不表示『判据为空』**；历史报告一律缺失，不要用空串或默认值替它参与比较——那会把『不知道』伪装成『一样』。"
     }
   },
   "$defs": {

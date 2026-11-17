@@ -763,6 +763,11 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
         "skill_gaps": sorted(gaps.values(), key=lambda g: (-g["weight_lost"], g["skill_id"])),
         "unattributed_patterns": unattributed,
     }
+    # B-04e：把「这份报告按哪版判据判的」压进报告本身。**无条件写**——只要走了
+    # build_report()，就一定有一份 rubric 在起作用，没有"有时有指纹"的情形。
+    # 反过来说：缺这个键的报告，只可能是"生成它的那一天还没有这个概念"。
+    # 这个区别必须保住，否则日后无法区分"历史报告"与"判据为空"。
+    report["rubric_fingerprint"] = rubric_fingerprint(task)
     if notes:
         report["notes"] = notes
     return report
