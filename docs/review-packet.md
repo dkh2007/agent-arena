@@ -1,4 +1,4 @@
-<!-- packet-sha256=3a5ce3325597092d snapshot-sha=8dd97dd generated=2026-11-17T10:43:52+08:00 -->
+<!-- packet-sha256=84034450b49406ae snapshot-sha=3884882 generated=2026-11-17T12:14:34+08:00 -->
 # 外部评审包 —— 请审查并回答问题
 
 > **元指令（给外部 AI）**
@@ -82,20 +82,20 @@ Agent 开发学习领域的**自适应诊断与训练闭环**：学习者提交�
 > 2 优先于 1：一个带失败记录的包若先被报成"陈旧"，会把人引去「重新生成」——
 > 而重新生成出来的仍是带失败的包。判序在代码里锁了（`test_block_precedes_stale`）。
 
-- 生成锚点：`8dd97dd`（本节提交列表固定在该提交，不随后续提交变化）
-- 单元测试：**1273 个用例被收集**（`pytest tests/ --collect-only` 计数）
-- 单元测试实测：当前工作区本地实测 **1273 passed / 1273 total**（`pytest tests/ -q`；本地 HEAD `8dd97dd`，生成锚点 `8dd97dd`；测试跑的是当前工作区而非锚点提交，仅陈述本次本地结果，不宣称普适正确）
+- 生成锚点：`3884882`（本节提交列表固定在该提交，不随后续提交变化）
+- 单元测试：**1279 个用例被收集**（`pytest tests/ --collect-only` 计数）
+- 单元测试实测：当前工作区本地实测 **1279 passed / 1279 total**（`pytest tests/ -q`；本地 HEAD `3884882`，生成锚点 `3884882`；测试跑的是当前工作区而非锚点提交，仅陈述本次本地结果，不宣称普适正确）
 
 **锚点处最近 8 条提交**
 
+- `3884882` feat(reappraisal): 受影响范围 scope_for_task()——B-04e 收口（2026-11-17）
+- `7155910` docs(packet): 重生成评审包（锚点 8dd97dd，1273 collected，sha 3a5ce3325597092d）（2026-11-17）
 - `8dd97dd` feat(report): 指纹进报告——schema 可选键 + build_report 无条件写入（B-04e 接线）（2026-11-17）
 - `8b2fd68` docs(packet): 重生成评审包（锚点 151039e，1267 collected，sha 2b46a0506249ebe2 两次收敛）（2026-11-17）
 - `151039e` feat(report): 判据指纹 rubric_fingerprint()——B-04e 第一步（地基，未接线）（2026-11-17）
 - `7852904` docs(packet): 重生成评审包（锚点 e7e4b7d，1250 collected，sha e580031a677e2f74 两次收敛）（2026-11-16）
 - `e7e4b7d` fix(store): 一笔原子写——store.atomic() 用 SAVEPOINT，B-07d ③ 关闭（2026-11-16）
 - `56c80ef` docs(mutations): README 记上 mutate_reappraisal 已扩到 14 组（2026-11-16）
-- `bdd468f` fix(api): GET /submissions/{id} 默认给生效报告（修 round-92 遗留的读数不一致）（2026-11-16）
-- `5fca8bb` docs(packet): 重生成评审包（锚点 f51822c，1242 passed，sha 08947b237709817c 两次收敛）（2026-11-16）
 
 ### 4.1 评分口径的实测分数（同一任务，五份假提交）
 
