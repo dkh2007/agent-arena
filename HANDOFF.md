@@ -44,6 +44,16 @@
 >    成绩不动（不用 `{}` 顶替）。端到端演示 `scripts/reappraisal_walk.py`（`INTEGRITY_OK=True`）。
 >    **遗留**：受影响提交的范围仍要人指定（B-04e）；复核阈值 0.02 未标定（归 B-04c）。
 >    表数 9 → 10。
+> ⑨ **round-94（2026-11-17）B-04e 第一步：判据指纹（只落地基，没接线）**。
+>    `diagnosis_report.rubric_fingerprint(task)` 把一份 task 的判据压成 sha256：
+>    整个 `rubric_gate` + `rubric_credit` 全算、**不做字段白名单**（漏算＝该重评的
+>    永远进不了范围且不报错，多算＝多跑一次重评，代价不对称）；归因字段（`skill_id`
+>    等）必须算——它们不动 `ratio` 但改 P；版本串进 payload，换算法时旧指纹一眼可辨。
+>    **它现在只是纯函数**：没进报告 schema、没回填历史、算不出"受影响集合"。
+>    拍板时要知道的一件事：历史提交**没有**指纹（当时没记，事后补算等于伪造），
+>    所以"指纹进报告"只能解决新提交，历史那批仍要靠一次全库重评打平基线——
+>    **②是①的止损，不是①的替代**。裁判：`pytest tests/test_rubric_fingerprint.py`
+>    17 passed、`python tools/mutations/mutate_fingerprint.py` 7 组全 DETECTED。
 > 单文件交接请以 `docs/BACKLOG.md` 顶部更新块 + `docs/ROADMAP.md` 五层表为现役状态，
 > 下方 §2「当前状态（截至 2026-11-07）」是**历史快照**，勿据此判断现行状态。
 

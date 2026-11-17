@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -31,6 +32,9 @@ STATES = ("pass", "fail", "blocked", "unscored")
 GATE, CREDIT = "gate", "credit"
 TRACE_TYPE_PREFIX = "trace_"
 REPORT_VERSION = "v2"
+# 判据指纹的算法版本（B-04e）。换定义必须升这个串——否则"改了归一化规则"和
+# "改了判据"在库里长得一模一样，历史指纹会集体失真且无从发现。
+FINGERPRINT_VERSION = "rubric-fp-v1"
 DENOMINATOR_POLICY = "fixed_at_credit_total_weight"
 # TD-034 (C)：评分策略声明必须与 builder 硬编码一致，见 _check_scoring_policy()。
 # 只锁影响分数的 5 组；score.formula 与 gate.source / credit.source 是纯说明字段，不参与判定。
@@ -349,6 +353,46 @@ def rubric_layers(task: dict) -> tuple[list[dict], list[dict]]:
             raise ReportError(f"{r['id']} 在 credit 层，权重必须为正数（当前 {r.get('weight')!r}）")
     _check_scoring_policy(task)
     return gate, credit
+
+
+def rubric_fingerprint(task: dict) -> str:
+    """判据指纹：把「这份任务现在按什么标准判」压成一个 sha256（B-04e）。
+
+    **为什么需要它**：B-04d 的护栏要求「标准改完后批量回溯重算」，但报告里没有任何字段
+    能回答「这份提交当时按哪版判据判的」。没有指纹，判据一改就只有两条路——全库重跑
+    （成本 = 提交数 × 断言数），或凭记忆猜范围（漏掉的永远不会被重评）。
+
+    **覆盖范围＝整个 gate + credit 数组，不做字段白名单**。理由是代价不对称：
+      漏算一个字段 ⇒ 标准改了、指纹没变、这批提交永远不进重评范围 ⇒ **静默错误**；
+      多算一个字段 ⇒ 只是多跑一次重评 ⇒ 浪费一点算力。
+    归因字段（`skill_id` / `error_patterns` / `error_pattern_detection`）**必须算进去**：
+    它们不动 `score.ratio`，但会改技能的掌握度 P（P 按技能聚合）。漏算等于认可
+    "分数没变所以不用重评"——而这正好是 B-04d 要防的那种"改了标准却没回溯"。
+
+    **唯一不计入的是 YAML 的 `#` 注释**：它不是数据，加载器根本不读，天然进不来。
+    这不属于"我们决定忽略某个字段"，所以不需要额外的白名单来维护。
+
+    **已知三处边界（都是假阳性，方向安全）**：
+      - `weight: 2` 与 `weight: 2.0` 指纹不同（JSON 里 `2` ≠ `2.0`）；
+      - 断言改名（`R2` → `R2b`）指纹不同，即使判分逻辑一字未动；
+      - 键顺序 / 缩进 / 引号风格不影响（`sort_keys=True` 把等价写法归一）。
+
+    **数组顺序敏感**：执行器按数组顺序执行，`depends_on` 也要求前置先算，
+    所以调换两条断言的位置是有语义的改动，指纹必须跟着变。
+
+    **不截断**：64 位十六进制全给。截一半省不下什么，却要多论证一遍碰撞概率。
+
+    调 `rubric_layers()` 顺带把分层校验也过一遍——指纹只允许在**合法的 rubric** 上算，
+    否则"给一个本身不成立的标准起了个名字"。
+    """
+    gate, credit = rubric_layers(task)
+    payload = json.dumps(
+        {"version": FINGERPRINT_VERSION, GATE: gate, CREDIT: credit},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _check_result_consistency(rid: str, spec: dict, result: dict, vocab: set[str]) -> None:

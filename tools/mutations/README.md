@@ -44,9 +44,10 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_b04b.py` | judge 接线层 + 仲裁队列（阈值边界 `<=`、永不入队、attach 改分、就地改原对象、配置检查、崩溃吞掉、派生列不填、重复入队覆盖阈值、裁决无理由、改判已裁决）（13 组） | round-90 / B-04b |
 | `mutate_b04d.py` | 争议护栏（标记恒空集 / 标记扩散 / 已裁决仍算争议 / 单点判据架空 / **读榜方向反了** / 参数不校验 / 落库不写产物 / **提交入口不传产物** / v4 加列不判重 / 证据一律不计入=滑回乙）（10 组） | round-91 / B-04d |
 | `mutate_reappraisal.py` | 重评链（生效报告不生效 / 重放读旧报告 / delta 起点退回最原始分 / **缺产物拿空对象顶替** / 不校验任务 / 落库不校验身份证 / 空理由照收 / **演练也落库** / 批量只报成功 / 批量不筛任务 / **读接口退回旧件** / **view 写错静默回落** / **重评链把「不存在」当「没重评过」**）（14 组） | round-92 / B-04d 接线（round-93 补 M12–M14） |
+| `mutate_fingerprint.py` | 判据指纹（只算 credit 漏 gate / **漏 `skill_id`＝分数没变所以不重评** / 不排序键 / 按 id 排序吃掉数组顺序 / 指纹恒常量 / 绕过 `rubric_layers` 给非法 rubric 也起名字 / 版本串不进 payload）（7 组） | round-94 / B-04e 第一步 |
 
-> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` 是
-> 「`rc == 1` 才算抓住」。其余 7 个仍是旧规则（`rc == 5` 判 `INVALID`、含 `error` 判 `INVALID`），
+> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` / `mutate_fingerprint.py` 是
+> 「`rc == 1` 才算抓住」。其余 8 个仍是旧规则（`rc == 5` 判 `INVALID`、含 `error` 判 `INVALID`），
 > round-89 已实测过旧规则会把节点不存在的 `no tests ran`（rc=4）判成 `DETECTED`。
 > 它们各自的全 `DETECTED` **目前仍可信**（节点都在，跑出来是 `1 failed`），
 > 但**改过测试名之后**必须人工核对一次，别只看脚本结论。统一判定登记在 BACKLOG（工具债）。

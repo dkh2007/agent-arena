@@ -8954,3 +8954,132 @@ def test_refresh_failure_rolls_back_the_submission_too(...):
    迁移中途失败会留下半迁移的库（比现在更糟）。
 ⑤ 若 `test_atomic_saves_even_when_the_driver_has_no_transaction_open` 红 ⇒
    实现又开始依赖驱动的隐式 BEGIN 了。
+
+---
+
+## §95 round-94 上半场：B-04e 第一步——给判据起个名字（指纹）
+
+### 95.1 缺口的样子
+
+B-04d 拍板的是「甲 + 护栏」，其中第四句是**标准改完后批量回溯重算**。回溯能力
+（round-92）和输入（round-91 的 `artifacts`）都有了，但整条护栏还差一环：
+
+> **谁受影响，没有人算。**
+
+现实操作是：改完 `rubric_credit[0].expected`，然后**手工指定** `user_id` + `task`
+传进 `reappraise_user()`。这意味着护栏的正确性依赖"改标准的人记得全库有哪些人练过这个任务"。
+记漏一个人，那个人的成绩就永久停在旧标准上，而且**没有任何东西会报错**。
+
+根因很具体：报告里没有任何字段记录「这份提交按哪版判据判的」。
+`submissions` 有 `trace`、`artifacts`、`assert_score`，唯独没有"标准指纹"。
+
+B-04e 登记了三种做法（全库重跑 / 判据指纹 / 只重评争议过的），都不便宜，
+所以原文写的是「人拍方向」。**本轮只做第二种做法的地基，不改任何行为**，
+理由见 95.2 末尾——地基是纯函数，三种做法里两种都用得上，等拍板再接线不浪费。
+
+### 95.2 为什么不做字段白名单
+
+指纹最容易写错的地方是"覆盖哪些字段"。直觉做法是列一个白名单：
+`type / target / expected / weight`。这个直觉是错的，因为**两侧代价不对称**：
+
+| 取向 | 后果 |
+|---|---|
+| 漏算一个字段 | 标准改了、指纹没变 ⇒ 这批提交**永远不进重评范围**，且无人发现 |
+| 多算一个字段 | 只改个无关字段 ⇒ 触发一次多余的重评，浪费一点算力 |
+
+一边是静默的正确性缺陷，一边是可见的成本浪费。所以实现选择**整个
+`rubric_gate` + `rubric_credit` 数组全算，不做白名单**——白名单本身就是维护负担，
+而且每加一个字段就要重新论证一次"它影不影响判定"。
+
+其中三组字段必须单独说明，因为它们**不动 `score.ratio`**：
+
+- `skill_id`：决定这条断言的分数落到哪个技能。改了它，ratio 一个字节都不变，
+  但 `P(skill)` 会变——而 P 是 B-07c 落库的、档案里真正被读的东西。
+- `error_patterns` / `error_pattern_detection`：决定"这份提交被读成什么毛病"，
+  进而决定技能缺口与复习排程。
+
+如果指纹漏掉它们，就会得出「分数没变，所以不用重评」的结论——
+而这恰好是 B-04d 第四句要防的那类漏算。`test_skill_id_change_moves_the_fingerprint_
+even_though_score_is_unchanged` 这个名字就是把这个论点写在测试名里。
+
+**唯一不计入的是 YAML 的 `#` 注释**：它不是数据，`yaml.safe_load` 根本不读它，
+所以它进不了 payload。这不属于"我们决定忽略某个字段"，因此不需要额外机制来保证。
+
+### 95.3 落地
+
+`src/arena/diagnosis_report.py`：
+
+```python
+FINGERPRINT_VERSION = "rubric-fp-v1"
+
+def rubric_fingerprint(task: dict) -> str:
+    gate, credit = rubric_layers(task)        # 顺带过一遍分层校验
+    payload = json.dumps(
+        {"version": FINGERPRINT_VERSION, GATE: gate, CREDIT: credit},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+```
+
+四个选择各有理由：
+
+① **调 `rubric_layers()` 而不是直接取键**：指纹只允许在**合法的 rubric** 上算。
+   一个本身不成立的标准如果也能拿到指纹，它就会在库里跟合法标准长得一样，
+   之后无法区分"两份提交用了不同标准"和"其中一份用了坏标准"。
+   变异 M6 就是把这个调用换成裸取键，`test_refuses_to_fingerprint_an_invalid_rubric` 抓它。
+
+② **`sort_keys=True`**：YAML 里调换键的书写顺序是纯格式改动。不排序的话，
+   每补一句说明、调一次排版，整库指纹就集体变一次，这个机制会被当成噪音而关掉。
+   变异 M3 抓这个。
+
+③ **数组顺序保持原样（敏感）**：执行器按数组顺序执行，`depends_on` 还要求前置先算，
+   所以调换两条断言的位置是**有语义的改动**。变异 M4 把它改成按 id 排序，数组顺序
+   敏感性测试抓它。
+
+④ **版本串进 payload**：换归一化规则时若只改代码不改串，旧指纹与新指纹会被当成
+   同一种东西比较，"算法变了"和"判据变了"从此无法区分。所以升版本 ⇒ 所有指纹同时变
+   ⇒ 旧记录一眼可辨。变异 M7 抓这个。
+
+### 95.4 三处已知假阳性（方向安全，不修）
+
+| 情形 | 为什么保留 |
+|---|---|
+| `weight: 2` 与 `weight: 2.0` 指纹不同 | JSON 里 `2` ≠ `2.0`。归一化数字类型要额外论证"哪些写法等价"，收益只是省一次重评 |
+| 断言改名 `R2` → `R2b` 指纹不同 | 即使判分逻辑一字未动。但改名通常伴随语义变化，且 `depends_on` 会跟着变 |
+| 数组顺序敏感（见 95.3 ③） | 这是特性不是缺陷 |
+
+三条都是"多跑一次重评"，没有一条会导致漏算。**没有一处是假阴性**——这是本轮
+唯一的硬要求，因为假阴性不会报错。
+
+### 95.5 本轮刻意没做的三件事
+
+① **没写进报告，也没进 schema**。`docs/diagnosis-report.schema.json` 顶层是
+   `additionalProperties: false`，加字段必须同时改 schema 并把新键放成**可选**
+   （不能进 `required`，否则全部历史夹具过不了）。这是独立的一小步：
+   先决定指纹存在报告哪一层，再接 `build_report()`。
+② **没回填历史**。历史报告没有指纹，是因为**当时没有记**，事后补算等于伪造——
+   你不知道那一刻的 `rubric` 长什么样。这与 `artifacts` 为 NULL 的记法一致
+   （见 B-04d 的遗留条第 2 点）。
+③ **没算"受影响集合"**。指纹只是判断依据；"给定新旧两个指纹，扫出哪些提交不匹配"
+   是下一步的查询能力，需要先有落库的指纹。
+
+### 95.6 裁判（都不用自评）
+
+```bash
+pytest tests/test_rubric_fingerprint.py -q      # 17 passed
+python tools/mutations/mutate_fingerprint.py    # 7 组全 DETECTED
+pytest tests/ -q                                # 1267 collected
+```
+
+变异的 7 组对应 95.3 的四个选择 + 漏算的两个典型（漏 gate、漏 `skill_id`）+ 空转。
+判定只认 `rc == 1` 为 DETECTED（`no tests ran` 的 rc 是 4）。
+
+### 95.7 反证条件
+
+① 若改 `skill_id` 而指纹不变 ⇒ 归因字段被漏算了（M2），P 会静默停在旧归因上。
+② 若只调换 YAML 键顺序而指纹变了 ⇒ `sort_keys` 被去掉（M3），机制会因噪音被弃用。
+③ 若调换 `rubric_credit` 数组顺序而指纹不变 ⇒ 顺序语义被排序吃掉（M4）。
+④ 若非法 rubric（空 `rubric_gate`）也能算出指纹 ⇒ `rubric_layers()` 调用被绕过（M6）。
+⑤ 若把 `FINGERPRINT_VERSION` 改个值而指纹不变 ⇒ 版本串没进 payload（M7），
+   "算法变了"与"判据变了"从此不可区分。
+⑥ 若指纹长度不是 64 ⇒ 有人开始截断，碰撞概率需要重新论证。
