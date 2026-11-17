@@ -35,6 +35,9 @@ REPORT_VERSION = "v2"
 # 判据指纹的算法版本（B-04e）。换定义必须升这个串——否则"改了归一化规则"和
 # "改了判据"在库里长得一模一样，历史指纹会集体失真且无从发现。
 FINGERPRINT_VERSION = "rubric-fp-v1"
+# 单条规则指纹的算法版本（B-04g）。**与整份指纹各升各的**：两者的失效模式不同，
+# 绑在一个串上会让"只改了单条算法"看起来像"判据整体变了"。
+RULE_FINGERPRINT_VERSION = "rubric-rule-fp-v1"
 DENOMINATOR_POLICY = "fixed_at_credit_total_weight"
 # TD-034 (C)：评分策略声明必须与 builder 硬编码一致，见 _check_scoring_policy()。
 # 只锁影响分数的 5 组；score.formula 与 gate.source / credit.source 是纯说明字段，不参与判定。
@@ -393,6 +396,51 @@ def rubric_fingerprint(task: dict) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def rubric_rule_fingerprints(task: dict) -> dict[str, str]:
+    """单条规则级别的判据指纹：`规则 id -> sha256`（B-04g）。
+
+    **它回答的问题与 `rubric_fingerprint()` 不同，两者不能互相替代**：
+
+    | 函数 | 回答 | 用途 |
+    |---|---|---|
+    | `rubric_fingerprint` | 这份任务**整体的**判据变了吗 | 决定"要不要重评"（范围） |
+    | 本函数 | **哪一条**规则的判据变了 | 决定"重评之后谁真的受影响"（解释面） |
+
+    为什么需要后者：整份指纹只能给出"这个任务所有提交都该重评"，而实际需要
+    向学生解释的人，只是"当年那次判定真的用到了被改的那条规则"的那部分。拿整份
+    指纹去设计交代方案，等于为一个还不知道多大的群体拍板（B-04g 的外部意见第 1 步）。
+
+    **三条边界，都写成判据了**：
+      - **规则换位置不会改单条指纹**（换位置只改整份指纹）。所以单条指纹**不能**
+        拿来决定要不要重评——`depends_on` 的执行顺序、数组顺序都有语义。
+      - **规则改名 = 一删一增**（id 进了 payload）。这是刻意的：改名后"这条规则还是不是
+        原来那条"没有机器能回答，当新增处理比当同一体更安全（新增会被算进"影响不可排除"）。
+      - **id 必须全局唯一**（gate 与 credit 之间也不许重名）。这一条由 `rubric_layers()`
+        先把关（同层重复、跨层重复都抛），本函数不再重复校验——重名时"哪条规则变了"
+        没有确定答案，而两处各写一遍校验只会让报错口径分叉。
+        也刻意**不加 layer 前缀**糊过去：前缀会让两个消费方（报告里的断言、任务里的规则）
+        各用一套键，对齐错误更难查。
+
+    不做字段白名单，与整份指纹同一理由：漏算一个字段 ⇒ 规则改了但指纹没变 ⇒ 这批提交
+    永远不会被解释；多算 ⇒ 多解释几个人。代价不对称。
+    """
+    gate, credit = rubric_layers(task)
+    out: dict[str, str] = {}
+    for layer, rules in ((GATE, gate), (CREDIT, credit)):
+        for rule in rules:
+            rid = rule.get("id")
+            if not isinstance(rid, str) or not rid:
+                raise ReportError(f"{layer} 里有规则缺 id，无法给它起指纹：{rule!r}")
+            payload = json.dumps(
+                {"version": RULE_FINGERPRINT_VERSION, "layer": layer, "rule": rule},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            out[rid] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return {rid: out[rid] for rid in sorted(out)}
 
 
 def _check_result_consistency(rid: str, spec: dict, result: dict, vocab: set[str]) -> None:
@@ -768,6 +816,9 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
     # 反过来说：缺这个键的报告，只可能是"生成它的那一天还没有这个概念"。
     # 这个区别必须保住，否则日后无法区分"历史报告"与"判据为空"。
     report["rubric_fingerprint"] = rubric_fingerprint(task)
+    # B-04g：单条规则指纹，同样是**无条件写**。用途不是决定要不要重评（那是整份指纹的活），
+    # 而是回答"这次改的到底是哪条规则、谁的提交真的用到了它"。
+    report["rubric_rule_fingerprints"] = rubric_rule_fingerprints(task)
     if notes:
         report["notes"] = notes
     return report

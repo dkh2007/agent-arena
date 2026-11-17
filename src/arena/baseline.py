@@ -73,10 +73,12 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 try:  # 作为包被 import
+    from . import diagnosis_report as dr
     from . import mastery as ms
     from . import reappraisal as rap
     from . import store
 except ImportError:  # 作为独立脚本/被单文件测试直接 import
+    import diagnosis_report as dr  # type: ignore[no-redef]
     import mastery as ms  # type: ignore[no-redef]
     import reappraisal as rap  # type: ignore[no-redef]
     import store  # type: ignore[no-redef]
@@ -370,3 +372,232 @@ def tier_split(conn) -> TierSplit:
         store.list_skill_ids(conn),
         total=store.count_submissions(conn),
     )
+
+
+# ── 「这条改过的规则，谁的提交真的用到了」（B-04g 取数层的第二段）─────────────
+# 分档回答"这批人里谁有分数需要解释"，本段回答"其中谁真的受这次改动影响"。
+# 两段的差别是**这个问题是不是凭空问的**：整份指纹只能说出"这个任务全体都该重评"，
+# 于是"要交代的人"被默认成了"补不上的全部"。而实际需要解释的，只是当年那次判定
+# **真的用到了被改的那条规则**的人——先把这个数跑出来，再谈怎么交代。
+
+EXPOSURE_STATUSES = ("touched", "added_only", "not_applied", "unknown", "untouched")
+
+
+@dataclass(frozen=True)
+class RuleTouch:
+    """一份提交里，某条被改过的规则当年判成了什么。`state` 直接来自报告断言。"""
+
+    rule_id: str
+    state: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"rule_id": self.rule_id, "state": self.state}
+
+
+@dataclass(frozen=True)
+class RuleDiff:
+    """现行判据相对某份历史报告，在**规则级别**上的差异。
+
+    `changed` / `added` / `removed` 三种要分开，因为它们对"影响"的结论不同：
+      - `changed`：这条规则当时判过，现在判据文字变了 ⇒ 拿它当年的状态就能判断"要不要解释"；
+      - `added`：现在多了这条规则，**当年那份提交根本没被它判过** ⇒ 从报告里读不出
+        "它在新判据下会不会不通过"，所以不能算"没受影响"；
+      - `removed`：当年判过、现在不判了 ⇒ 与 `changed` 同样按"当年状态"看。
+    """
+
+    changed: tuple[str, ...]
+    added: tuple[str, ...]
+    removed: tuple[str, ...]
+
+    def all(self) -> tuple[str, ...]:
+        return tuple(sorted(set(self.changed) | set(self.added) | set(self.removed)))
+
+    def is_empty(self) -> bool:
+        return not (self.changed or self.added or self.removed)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "changed": list(self.changed),
+            "added": list(self.added),
+            "removed": list(self.removed),
+        }
+
+
+def rule_diff(before: Any, task: dict) -> RuleDiff | None:
+    """把一份报告里的单条指纹与现行判据比一遍。**读不到就返回 `None`，不返回"没变"。**
+
+    `None` 是"不知道"（历史报告没有 `rubric_rule_fingerprints` 这个键），
+    与 `RuleDiff()`（确实一条都没变）是两件事。混成一个，就是"不认识当合格"——
+    B-04e 里"读不到指纹当已符合"让全部历史静默漏掉，同一个坑。
+    """
+    if before is None:
+        return None
+    if not isinstance(before, dict):
+        raise BaselineError(
+            f"rubric_rule_fingerprints 应是对象，收到 {type(before).__name__}——"
+            "坏数据不该被当成「规则没变」"
+        )
+    for rid, value in before.items():
+        if not isinstance(rid, str) or not isinstance(value, str) or not value:
+            raise BaselineError(f"rubric_rule_fingerprints 里有非法项：{rid!r} -> {value!r}")
+    if not before:
+        raise BaselineError(
+            "rubric_rule_fingerprints 是空对象——合法任务至少有一条规则，空对象等于说"
+            "「当时没有任何规则」，那是坏数据，不是「没有改动」"
+        )
+    now = dr.rubric_rule_fingerprints(task)
+    return RuleDiff(
+        changed=tuple(sorted(r for r in now if r in before and now[r] != before[r])),
+        added=tuple(sorted(r for r in now if r not in before)),
+        removed=tuple(sorted(r for r in before if r not in now)),
+    )
+
+
+# "这条规则当年真的按其判据判过"的状态集合。`blocked` / `unscored` 都不是判过：
+# 前者是**前置断言没过**（本断言未进入判据）、后者是**前置材料缺失**（没上报 trace 等）。
+# 两者对"改这条规则的判据会不会改这份分"的回答都是"不会"——因为它的判据根本没参与。
+# 这条区分就是 B-04g 外部意见里那个"这次练习里到底有没有触发那条写错的规则"，
+# 在库里唯一能被机器回答的形式。
+JUDGED_STATES = ("pass", "fail")
+
+
+@dataclass(frozen=True)
+class RuleExposure:
+    """一份补不上的提交，与"这次改过的那几条规则"的关系。
+
+    `status` 五态，**不许合并**（顺序即判定优先级）：
+
+    | status | 判据 | 为什么不能并进别的格 |
+    |---|---|---|
+    | `unknown` | 报告没有单条指纹 | "不知道"不能当"没变"，也不能当"没碰" |
+    | `touched` | 变更/删除的规则里至少一条判成了 `pass`/`fail` | 判据真的参与了 ⇒ 分数可能因这次改动而不准 |
+    | `added_only` | 没判过，但现行判据**新增**了规则 | 当年没被这条判过 ⇒ 读不出它在新判据下会不会不过 |
+    | `not_applied` | 变更/删除的规则全部是 `blocked`/`unscored` | 判据没参与 ⇒ 改它改不动这份分（唯一可核对的"没触发"） |
+    | `untouched` | 逐条比完一条差异都没有 | 这次改动跟这个任务无关，压根不用谈影响 |
+
+    **`not_applied` 与 `untouched` 的区别要守住**：前者是"改了它、但它当年没参与判定"，
+    后者是"根本没改到它"。合并会让人以为"这个任务这次没动"，从而漏掉真正该做的事——
+    确认那条规则当时确实没执行（比如学生当年没交 trace，断言全 `unscored`）。
+    """
+
+    submission_id: str
+    user_id: str
+    tier: str
+    ratio: float
+    status: str
+    touches: tuple[RuleTouch, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "submission_id": self.submission_id,
+            "user_id": self.user_id,
+            "tier": self.tier,
+            "ratio": self.ratio,
+            "status": self.status,
+            "touches": [t.to_dict() for t in self.touches],
+        }
+
+
+@dataclass(frozen=True)
+class ExposureReport:
+    """一个任务下，"补不上"的提交 × 这次改过哪些规则 的交叉表。只读。
+
+    `changed_rules` 是**各份提交各自差异的并集**，不是"一个全局新旧版本差"：
+    同一个任务的补不上那批可能来自好几个历史版本（判据改过多次），
+    拿最后一次的差异去套全部人，会把早先版本改过的规则说成"当时没碰"。
+    逐份比、再取并集，代价是多算几次 sha256，换来"每份的结论都针对它自己那版"。
+    """
+
+    task_id: str
+    changed_rules: tuple[str, ...]
+    rows: tuple[RuleExposure, ...]
+
+    def counted(self) -> dict[str, int]:
+        """按状态计数。**五态各一格**（`unknown` 就是"没指纹"那一格，不并进 untouched）。"""
+        by_state: dict[str, int] = {name: 0 for name in EXPOSURE_STATUSES}
+        for row in self.rows:
+            by_state[row.status] += 1
+        return {"rows": len(self.rows), **by_state}
+
+    def by_tier(self, name: str) -> tuple[RuleExposure, ...]:
+        if name not in TIERS:
+            raise BaselineError(f"未知档位 {name!r}，只有 {TIERS}")
+        return tuple(row for row in self.rows if row.tier == name)
+
+    def must_explain(self) -> tuple[RuleExposure, ...]:
+        """**缩窄之后**真正需要交代的名单：T1 且判据真的参与过判定（或读不出来）。
+
+        剔掉的两格都有可核对的事实依据，不是"看起来没事"：
+          - `not_applied`：那几条改过的规则当年判成 `blocked`/`unscored`，判据没参与，
+            改它不可能改这份分；
+          - `untouched`：这个任务这次一条规则都没改（差异为空）。
+        `unknown` 与 `added_only` **必须留在名单里**：留着的代价是多说一句；
+        剔掉的代价是有人被永久静默跳过（B-04e 那个"读不到指纹当已符合"的同一个坑）。
+        """
+        return tuple(row for row in self.rows
+                     if row.tier == "T1" and row.status in ("touched", "added_only", "unknown"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "changed_rules": list(self.changed_rules),
+            "counted": self.counted(),
+            "rows": [row.to_dict() for row in self.rows],
+        }
+
+
+def exposure_split(conn, task: dict) -> ExposureReport:
+    """一个任务下，"补不上"的提交各自碰没碰到这次改过的规则。只读。
+
+    **必须按 task_id 收范围**：别的任务的规则 id 可能同名（R1…R5 是骨架共用的），
+    不收范围会把"另一个任务改了 R3"算成"这个任务的人也受影响"，
+    与 B-04e 里"丢了 task_id 过滤 ⇒ 改一次判据触发全库重评"同一类错误。
+
+    **不许只报 T1**：T3（分数 0 但证据进了 P）同样被冻在旧判据上，
+    只报 T1 会让它从视野里消失；名单收窄是 `must_explain()` 的事，不是取数的事。
+    """
+    tid = task.get("task_id") if isinstance(task, dict) else None
+    if not isinstance(tid, str) or not tid:
+        raise BaselineError("task 必须是已加载的任务定义（含 task_id）")
+
+    rows = [row for row in store.blocked_submissions(conn) if row["task_id"] == tid]
+    split = classify_blocked(rows, store.list_skill_ids(conn),
+                             total=store.count_submissions(conn))
+    tier_by_id = {item.submission_id: item.tier for item in split.blocked}
+
+    exposures: list[RuleExposure] = []
+    union: set[str] = set()
+    for row in rows:
+        report = row["report"]
+        diff = rule_diff(report.get("rubric_rule_fingerprints"), task)
+        if diff is None:
+            status, touches = "unknown", ()
+        else:
+            union |= set(diff.all())
+            seen: dict[str, str] = {}
+            for assertion in report.get("assertions") or []:
+                rid = assertion.get("id") if isinstance(assertion, dict) else None
+                if rid in diff.all():
+                    seen[rid] = str(assertion.get("state"))
+            touches = tuple(RuleTouch(rid, seen[rid]) for rid in sorted(seen))
+            judged = any(t.state in JUDGED_STATES for t in touches)
+            if judged:
+                status = "touched"
+            elif diff.added:
+                status = "added_only"
+            elif touches:
+                status = "not_applied"
+            else:
+                status = "untouched"
+        exposures.append(RuleExposure(
+            submission_id=row["submission_id"],
+            user_id=row["user_id"],
+            tier=tier_by_id[row["submission_id"]],
+            ratio=row["ratio"],
+            status=status,
+            touches=touches,
+        ))
+    order = {name: i for i, name in enumerate(TIERS)}
+    exposures.sort(key=lambda r: (order[r.tier], r.submission_id))
+    return ExposureReport(task_id=tid, changed_rules=tuple(sorted(union)),
+                          rows=tuple(exposures))

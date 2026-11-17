@@ -353,6 +353,18 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
       "description": "B-04e：这份报告按哪版判据判的——rubric_gate + rubric_credit 规范化后的 sha256（算法与版本见 src/arena/diagnosis_report.py 的 FINGERPRINT_VERSION）。用途只有一个：判据改动后识别『哪些历史提交需要重评』。**字段缺失表示『生成这份报告时还没有这个概念』，不表示『判据为空』**；历史报告一律缺失，不要用空串或默认值替它参与比较——那会把『不知道』伪装成『一样』。"
+    },
+    "rubric_rule_fingerprints": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^\\S.*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "description": "B-04g：单条规则级别的判据指纹（规则 id → sha256，算法版本见 RULE_FINGERPRINT_VERSION）。与 rubric_fingerprint 分工：那个决定『要不要重评』（整份判据变没变），这个回答『哪一条规则的判据变了、谁的提交当年用到了它』。**不可用于替代 rubric_fingerprint 做重评范围判断**：规则在数组里换位置只改整份指纹，不改单条指纹，而换位置是有语义的改动。字段缺失同样表示『当年还没有这个概念』，不等于『规则没变』。"
     }
   },
   "$defs": {
