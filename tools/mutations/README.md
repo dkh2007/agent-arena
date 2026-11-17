@@ -45,8 +45,9 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_b04d.py` | 争议护栏（标记恒空集 / 标记扩散 / 已裁决仍算争议 / 单点判据架空 / **读榜方向反了** / 参数不校验 / 落库不写产物 / **提交入口不传产物** / v4 加列不判重 / 证据一律不计入=滑回乙）（10 组） | round-91 / B-04d |
 | `mutate_reappraisal.py` | 重评链（生效报告不生效 / 重放读旧报告 / delta 起点退回最原始分 / **缺产物拿空对象顶替** / 不校验任务 / 落库不校验身份证 / 空理由照收 / **演练也落库** / 批量只报成功 / 批量不筛任务 / **读接口退回旧件** / **view 写错静默回落** / **重评链把「不存在」当「没重评过」** / **读不到指纹当已符合** / **指纹取落库时那份（范围永不收敛）** / **丢了 task 过滤（全库重评）** / **坏指纹静默当没指纹** / **不校验 rubric 就给范围**）（19 组） | round-92 / B-04d 接线（round-93 补 M12–M14，round-95 补 M15–M19 打受影响范围） |
 | `mutate_fingerprint.py` | 判据指纹（只算 credit 漏 gate / **漏 `skill_id`＝分数没变所以不重评** / 不排序键 / 按 id 排序吃掉数组顺序 / 指纹恒常量 / 绕过 `rubric_layers` 给非法 rubric 也起名字 / 版本串不进 payload / 报告不写指纹 / 可选键塞进 `required` / 格式不校验）（10 组） | round-94 / B-04e |
+| `mutate_baseline.py` | 全库基线（跑完不重算范围 / **只跑 stale 不跑无指纹** / 补不上的算成补上了 / 演练也落库 / 重复任务悄悄去重 / 没理由也照跑 / 结果不带 user_id / **报表说「已全部打平」**）（8 组） | round-96 / B-04f |
 
-> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` / `mutate_fingerprint.py` 是
+> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` / `mutate_fingerprint.py` / `mutate_baseline.py` 是
 > 「`rc == 1` 才算抓住」。其余 8 个仍是旧规则（`rc == 5` 判 `INVALID`、含 `error` 判 `INVALID`），
 > round-89 已实测过旧规则会把节点不存在的 `no tests ran`（rc=4）判成 `DETECTED`。
 > 它们各自的全 `DETECTED` **目前仍可信**（节点都在，跑出来是 `1 failed`），

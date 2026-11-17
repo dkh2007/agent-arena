@@ -73,10 +73,16 @@ class ReappraisalError(RuntimeError):
 
 @dataclass(frozen=True)
 class ReappraisalOutcome:
-    """一份提交重评的结果。`delta` 为 `None` 表示"没算出差值"（见各 `state`）。"""
+    """一份提交重评的结果。`delta` 为 `None` 表示"没算出差值"（见各 `state`）。
+
+    `user_id`（round-95 / B-04f 补）：重评的产物最终是"要告诉谁他的成绩变了"，
+    只给 `submission_id` 的话调用方还得自己回查一次库——而回查那一步没人会做，
+    结果就是基线跑完了、报告很漂亮、**没有一个人知道自己被重算过**。
+    """
 
     submission_id: str
     state: str
+    user_id: str | None = None
     old_ratio: float | None = None
     new_ratio: float | None = None
     delta: float | None = None
@@ -86,6 +92,7 @@ class ReappraisalOutcome:
     def to_dict(self) -> dict[str, Any]:
         return {
             "submission_id": self.submission_id,
+            "user_id": self.user_id,
             "state": self.state,
             "old_ratio": self.old_ratio,
             "new_ratio": self.new_ratio,
@@ -183,11 +190,14 @@ def reappraise(
         )
 
     old_ratio = store.effective_ratio(conn, submission_id)
+    # 顺带取 user_id：两种 state（重评成功 / 补不上）都要能指名到人，
+    # 所以放在分叉之前，别让"缺产物的那批"变成一群没有主人的 submission_id。
+    user_id = store.load_submission(conn, submission_id)["user_id"]
     new_report, state = rebuild_report(conn, submission_id, task)
 
     if new_report is None:
         return ReappraisalOutcome(
-            submission_id=submission_id, state=state, old_ratio=old_ratio,
+            submission_id=submission_id, state=state, user_id=user_id, old_ratio=old_ratio,
         )
 
     new_ratio = float(new_report["score"]["ratio"])
@@ -204,11 +214,12 @@ def reappraise(
             revision = int(row["revision"])
             # 刷新该用户全部技能的快照：重评可能让某个技能从"有证据"变成"证据变弱"，
             # 也可能影响本提交没直接压到的技能（P 是全量重放的累积量）。
-            ms.refresh_user(conn, store.load_submission(conn, submission_id)["user_id"])
+            ms.refresh_user(conn, user_id)
 
     return ReappraisalOutcome(
         submission_id=submission_id,
         state="reappraised" if apply else "dry_run",
+        user_id=user_id,
         old_ratio=old_ratio,
         new_ratio=new_ratio,
         delta=delta,

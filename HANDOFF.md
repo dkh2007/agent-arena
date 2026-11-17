@@ -69,6 +69,19 @@
 >    **19 组全 DETECTED**；`scripts/reappraisal_probe.py` 打出
 >    `SCOPE_CONVERGED=True TRACKS_RUBRIC=True`。
 >    遗留：历史提交仍无指纹，基线要跑一次全库重评 ⇒ 新开 **B-04f**。
+> ⑪ **round-96（2026-11-17）B-04f 落地：全库基线**。
+>    `src/arena/baseline.py` 的 `run_baseline()` 按现行判据把全库打平一次，
+>    返回 `before` / `outcomes` / `after` 三份快照——这一层唯一能自证"到底写进去没有"
+>    的方式就是前后对比（演练时两者必然相同）。
+>    **验收抓出一处先前写错的话**：原文写"跑完 `unfingerprinted` 应该为空"，只对
+>    "每份历史都有产物"的库成立。真相是补不上的那批不会因为跑过就消失，每次跑
+>    都会重新尝试并再报一次（不写修订）；判据改成"跑完的 `unfingerprinted` 等于
+>    缺 trace/产物的那批"，并加变异 M8 锁"把剩余抹掉让报告变漂亮"这种做法。
+>    顺带给 `ReappraisalOutcome` 补 `user_id`：只说 submission_id 的话，基线跑完
+>    没有任何人知道自己被重算过。
+>    裁判：`pytest tests/test_baseline.py` 10 passed；`mutate_baseline.py` 8 组全 DETECTED；
+>    `scripts/baseline_probe.py` 打出 `BACKFILLED=True IDEMPOTENT=True REPORTED=True`。
+>    剩下的不是代码问题：「补不上」的那批怎么交代 ⇒ **B-04g，需人拍口径**。
 > 单文件交接请以 `docs/BACKLOG.md` 顶部更新块 + `docs/ROADMAP.md` 五层表为现役状态，
 > 下方 §2「当前状态（截至 2026-11-07）」是**历史快照**，勿据此判断现行状态。
 
