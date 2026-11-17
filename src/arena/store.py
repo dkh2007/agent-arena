@@ -56,7 +56,13 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # 这张表回答的是"同一份作答被按改后的判据重新打过分，新结论是什么"，
 # **不是**新提交：`submissions` 一行不动、不新增行。这样 P 的重放仍旧一份作答只贡献
 # 一个 step（翻新了算两次会把一个人的掌握度凭空拉高）。
-SCHEMA_VERSION = 5
+# v6（B-04h ②）：新增 `unrecoverable_marks`（「确认不可回溯」的终止标记）。
+# 它终止的是**重试**，不是**告知**：标记过的行不再每次重评一遍又报一遍，
+# 但它照样留在「补不上」名单里、照样要按 B-04g 的口径向学生交代。
+# 把标记做成"从名单里消失"是这一层唯一危险的误读——那会变成静默忘掉一个人。
+# 标记带撤销字段（`revoked_at` / `revoked_reason`）而不是靠删行：
+# 将来若产物被补回来，要能说清"谁在什么时候说过它补不回来"。
+SCHEMA_VERSION = 6
 
 # 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
 # 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
@@ -223,7 +229,36 @@ CREATE TABLE IF NOT EXISTS reappraisals (
 );
 """
 
-SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3 + SCHEMA_SQL_V5
+SCHEMA_SQL_V6 = """
+-- v6 / B-04h ②：「确认不可回溯」的终止标记。
+--
+-- 它存在的原因是一个重复劳动，不是新功能：v4 之前的提交没有 `artifacts`，
+-- 那些行**永远重评不了**，而 `scope_for_task` 每跑一次就把它们重新试一遍、
+-- 再报一次 `missing_artifacts`。跑批报告因此随时间线性变长，读的人要从
+-- 第 N 次重复里找出"这次真的变了什么"。
+--
+-- 标记的**唯一**作用是：范围计算时不再把这一行算进"待重评"。
+-- 它**不改变**任何一件事的可见性：这些行仍然在 `blocked_submissions()` 里、
+-- 仍然进 T1/T2/T3 分档、仍然是 B-04g 要交代的那批人。标记不是"结案"，是"别再试了"。
+--
+-- 为什么带撤销字段而不是 DELETE：这个标记是一个**判断**（"这份产物不可能再出现"），
+-- 判断会被推翻（例如后来做了平台侧抓包、把产物补了回来）。推翻时必须留下
+-- "谁在什么时候说过它补不回来"——删行会让那句话消失，而它正是事后复盘唯一能追的线。
+--
+-- 为什么 `reason` / `marked_by` 都 NOT NULL 且非空：没有作者、没有理由的结案
+-- 与"悄悄跳过"没有区别，而这一层的失效方式恰好就是"有人被悄悄跳过"。
+CREATE TABLE IF NOT EXISTS unrecoverable_marks (
+    submission_id  TEXT PRIMARY KEY REFERENCES submissions(submission_id),
+    reason         TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+    marked_by      TEXT NOT NULL CHECK (length(trim(marked_by)) > 0),
+    marked_at      TEXT NOT NULL,
+    revoked_at     TEXT,
+    revoked_reason TEXT,
+    CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL))
+);
+"""
+
+SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3 + SCHEMA_SQL_V5 + SCHEMA_SQL_V6
 
 
 def _ensure_artifacts_column(conn: sqlite3.Connection) -> None:
@@ -253,6 +288,7 @@ MIGRATION_STEPS: dict[int, tuple[Any, tuple[str, ...]]] = {
     3: (SCHEMA_SQL_V3, ("arbitration_queue",)),
     4: (_ensure_artifacts_column, ("submissions.artifacts",)),
     5: (SCHEMA_SQL_V5, ("reappraisals",)),
+    6: (SCHEMA_SQL_V6, ("unrecoverable_marks",)),
 }
 
 
@@ -883,8 +919,9 @@ def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
 def task_effective_fingerprints(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     """该任务下每份作答**当前生效报告**里的判据指纹（B-04e ⓑ 的取数口）。
 
-    返回每行 `{submission_id, user_id, created_at, fingerprint, source}`，
+    返回每行 `{submission_id, user_id, created_at, fingerprint, source, has_artifacts}`，
     `source` 是 `"reappraisal"` 或 `"original"`（这份指纹从哪份报告读来的），
+    `has_artifacts` 是"这份提交有没有留下可重评的输入"（终止标记要拿它复核前提）。
     按 `created_at`、`submission_id` 升序——重评范围的遍历顺序必须可复现，
     否则"演练看到 7 条、真跑动了 6 条"这种差异没法逐条对齐。
 
@@ -907,6 +944,7 @@ def task_effective_fingerprints(conn: sqlite3.Connection, task_id: str) -> list[
     """
     rows = conn.execute(
         "SELECT s.submission_id, s.user_id, s.created_at, s.diagnosis, "
+        "       (s.artifacts IS NOT NULL) AS has_artifacts, "
         "       r.report AS latest_report "
         "FROM submissions s "
         "LEFT JOIN reappraisals r ON r.submission_id = s.submission_id "
@@ -932,8 +970,135 @@ def task_effective_fingerprints(conn: sqlite3.Connection, task_id: str) -> list[
             "created_at": row["created_at"],
             "fingerprint": fp,
             "source": "reappraisal" if from_reappraisal else "original",
+            # 有没有产物，决定"补不补得上"；范围计算要靠它复核终止标记的前提，
+            # 所以一起带出来，不额外再查一次（多一次查询就多一个口径分叉的机会）。
+            "has_artifacts": bool(row["has_artifacts"]),
         })
     return out
+
+
+# ── 「确认不可回溯」的终止标记（v6 / B-04h ②）─────────────────────────────────
+# 分工：本模块只负责"照写、照读、按前提挡一次"；至于"谁有资格说它补不回来"、
+# "标记之后还要不要向学生交代"，是 B-04g 的口径（已拍：照样交代），不在这一层。
+
+def mark_unrecoverable(conn: sqlite3.Connection, submission_id: str, *,
+                       reason: str, marked_by: str,
+                       created_at: str | None = None) -> dict:
+    """给一份提交打「确认不可回溯」。返回落库后的那一行。
+
+    三条前置，**每条都是"标记本身可能是假话"的一种来源**：
+
+    1. **提交必须存在**（外键也管，但这里报得更清楚）；
+    2. **它必须真的没有产物**（`artifacts IS NULL`）。有产物的提交此刻就能重评，
+       给它打终止标记等于用一句"补不回来"盖住一件马上能做的事；
+    3. **不许重复标记**（已标记且未撤销 ⇒ 抛）。重复标记不会带来新信息，
+       只会让"谁在什么时候决定的"变成最后一次覆盖——那正好毁掉这张表存在的理由。
+
+    已撤销的标记**可以再打**：撤销意味着前提变过（产物补回来了 / 又丢了），
+    那时起一条新记录不覆盖旧的，撤销字段照旧指着上一次的推翻过程。
+    换言之，本函数只重置 `marked_at/reason/marked_by` 并清空撤销字段，
+    **不删行**——行在，历史就在。
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise StoreError("reason 必须写：没有理由的结案与「悄悄跳过」没有区别")
+    if not isinstance(marked_by, str) or not marked_by.strip():
+        raise StoreError("marked_by 必须写：谁说的这句话，事后必须能追")
+
+    row = conn.execute(
+        "SELECT (artifacts IS NOT NULL) AS has_artifacts FROM submissions WHERE submission_id = ?",
+        (submission_id,),
+    ).fetchone()
+    if row is None:
+        raise StoreError(f"没有这条提交记录：{submission_id}")
+    if row["has_artifacts"]:
+        raise StoreError(
+            f"{submission_id} 有产物、此刻就能重评——不能标记「确认不可回溯」。"
+            "标记的意思是「输入永远回不来了」，不是「这次先不跑」"
+        )
+
+    existing = conn.execute(
+        "SELECT marked_at, revoked_at FROM unrecoverable_marks WHERE submission_id = ?",
+        (submission_id,),
+    ).fetchone()
+    if existing is not None and existing["revoked_at"] is None:
+        raise StoreError(
+            f"{submission_id} 已于 {existing['marked_at']} 标记过「确认不可回溯」；"
+            "重复标记会覆盖掉「谁在什么时候决定的」——要改理由先撤销"
+        )
+
+    stamp = created_at or _now()
+    with conn:
+        if existing is None:
+            conn.execute(
+                "INSERT INTO unrecoverable_marks "
+                "(submission_id, reason, marked_by, marked_at) VALUES (?, ?, ?, ?)",
+                (submission_id, reason.strip(), marked_by.strip(), stamp),
+            )
+        else:
+            conn.execute(
+                "UPDATE unrecoverable_marks SET reason = ?, marked_by = ?, marked_at = ?, "
+                "revoked_at = NULL, revoked_reason = NULL WHERE submission_id = ?",
+                (reason.strip(), marked_by.strip(), stamp, submission_id),
+            )
+    return load_mark(conn, submission_id)
+
+
+def revoke_unrecoverable(conn: sqlite3.Connection, submission_id: str, *,
+                         reason: str, revoked_at: str | None = None) -> dict:
+    """撤销一条终止标记（前提变了：产物补回来了，或当初判断错了）。
+
+    **不删行**：撤销之后这一行仍留着 `marked_at / reason / marked_by`，
+    再加一个 `revoked_at`。删掉它等于把那句判断从历史里抹去，
+    而"当初是谁说它补不回来"恰恰是复盘时唯一能追的线。
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise StoreError("撤销也要理由：这次为什么推翻上一次的判断")
+    row = conn.execute(
+        "SELECT revoked_at FROM unrecoverable_marks WHERE submission_id = ?",
+        (submission_id,),
+    ).fetchone()
+    if row is None:
+        raise StoreError(f"{submission_id} 没有终止标记，无从撤销")
+    if row["revoked_at"] is not None:
+        raise StoreError(f"{submission_id} 的终止标记已于 {row['revoked_at']} 撤销过")
+
+    with conn:
+        conn.execute(
+            "UPDATE unrecoverable_marks SET revoked_at = ?, revoked_reason = ? "
+            "WHERE submission_id = ?",
+            (revoked_at or _now(), reason.strip(), submission_id),
+        )
+    return load_mark(conn, submission_id)
+
+
+def load_mark(conn: sqlite3.Connection, submission_id: str) -> dict:
+    """读一条标记（含已撤销的）。没有则抛——它只被上面两个函数在"刚写过"之后调。"""
+    row = conn.execute(
+        "SELECT * FROM unrecoverable_marks WHERE submission_id = ?", (submission_id,)
+    ).fetchone()
+    if row is None:
+        raise StoreError(f"{submission_id} 没有终止标记")
+    return dict(row)
+
+
+def unrecoverable_marks(conn: sqlite3.Connection, task_id: str | None = None) -> dict[str, dict]:
+    """**未撤销**的终止标记，`submission_id -> 行`。
+
+    只返回未撤销的：撤销的含义就是"前提不再成立、要重新考虑它"，
+    把它继续当成"别试了"是撤销功能的失效方式。历史行仍可通过 `load_mark()` 查到。
+
+    `task_id` 过滤与 `scope_for_task` 同一约定：判据按任务写，跨任务收范围
+    会让一个任务的标记影响另一个任务的重试范围。
+    """
+    sql = ("SELECT m.* FROM unrecoverable_marks m "
+           "JOIN submissions s ON s.submission_id = m.submission_id "
+           "WHERE m.revoked_at IS NULL")
+    params: tuple = ()
+    if task_id is not None:
+        sql += " AND s.task_id = ?"
+        params = (task_id,)
+    sql += " ORDER BY m.submission_id"
+    return {row["submission_id"]: dict(row) for row in conn.execute(sql, params)}
 
 
 def blocked_submissions(conn: sqlite3.Connection) -> list[dict]:
@@ -941,6 +1106,11 @@ def blocked_submissions(conn: sqlite3.Connection) -> list[dict]:
 
     返回每行 `{submission_id, user_id, task_id, created_at, ratio, report, source}`，
     按 `created_at`、`submission_id` 升序（要能逐条对照，顺序必须可复现）。
+
+    **它不排除已打终止标记的行**（v6）。标记终止的是"重试"，不是"这批人的存在"：
+    补不上的名单、T1/T2/T3 分档、要交代的名单，都仍以本函数为取数口。
+    若要"还剩谁要试"，看 `unrecoverable_marks()` 的差集，不要在这里加 WHERE——
+    在这里加一个条件，等于让标记把一个人从交代名单里静默删掉。
 
     三个刻意的选择：
 

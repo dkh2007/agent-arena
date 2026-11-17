@@ -33,6 +33,12 @@
    `unfingerprinted` 桶里，于是每次跑都会重新尝试一遍、再报一次 `missing_*`。
    这是刻意的——那条记录从来没被修好，把它从范围里剔掉等于让"还剩谁"消失。
    代价是 `scanned` 永远不会归零；收益是"我们回溯过了"这句话永远带着后缀。
+
+   **唯一的出口是显式标记**（v6 / B-04h ②）：人确认过"这份产物不可能再回来"之后，
+   用 `store.mark_unrecoverable()` 打一个带理由、带人名、可撤销的标记，该行从此
+   进 `retired` 而不再被逐次重试。**出口必须是人给的、留痕的、可撤回的**——
+   自动判定"试了三次就算了"会把"平台当年没存产物"变成"这个人不重要"。
+   标记只影响重试，不影响交代：那批人仍在 `tier_split()` 与 `notices` 里。
 2. **不静默跳过**：`missing_trace` / `missing_artifacts` 逐条留在 `outcomes` 里，
    并且跑完重算范围，看 `unfingerprinted` 还剩谁——"补不上的是哪些"必须能指名。
 3. **演练与真跑同数**：同一段代码，只差 `apply`。演练不落库，所以它的
@@ -114,6 +120,10 @@ class BaselineReport:
         **`still_unfingerprinted` 不会因为跑过就变 0**：补不上的那批仍留在桶里，
         下次跑还会被重新尝试。所以判"打平了没有"看的是它**等于补不上的那批**，
         不是"等于 0"。两者不等才说明有提交既没补上、也没被报出来。
+
+        `retired`（v6）单独一格，**不算进 `scanned`**：这些行已标「确认不可回溯」，
+        本次没有重试它们。把它并进 `scanned` 会让"这次扫了多少"虚高，
+        并进 `missing_artifacts` 会让"还剩谁要重试"虚高；两处都会让人误判规模。
         """
         by_state: dict[str, int] = {}
         for out in self.outcomes:
@@ -126,6 +136,7 @@ class BaselineReport:
             "dry_run": by_state.get("dry_run", 0),
             "missing_trace": by_state.get("missing_trace", 0),
             "missing_artifacts": by_state.get("missing_artifacts", 0),
+            "retired": sum(len(s.retired) for s in self.before.values()),
             "score_changed": changed,
             "needs_review": sum(1 for out in self.outcomes if out.needs_manual_review),
             "still_stale": sum(len(s.stale) for s in self.after.values()),
@@ -152,7 +163,8 @@ class BaselineReport:
                 tid: scope.to_dict() for tid, scope in self.before.items()
             },
             "remaining": {
-                tid: {"stale": list(s.stale), "unfingerprinted": list(s.unfingerprinted)}
+                tid: {"stale": list(s.stale), "unfingerprinted": list(s.unfingerprinted),
+                      "retired": list(s.retired), "ignored_marks": list(s.ignored_marks)}
                 for tid, s in self.after.items()
             },
             "outcomes": [out.to_dict() for out in self.outcomes],

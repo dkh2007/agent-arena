@@ -152,8 +152,10 @@ python scripts/demo_decision.py --all     # 全跑；退出码 0 = 无 FAIL
 | `NOT_EXECUTABLE` | 仓库里没有可执行载体（阶段未到，不是失败） |
 | `FAIL` | 可判定部分有任一不成立 |
 
-当前结果：**PASS 7 / PARTIAL 3 / NOT_EXECUTABLE 1 / FAIL 0**。三条 `PARTIAL`（决策 1 / 2 / 8）
-与一条 `NOT_EXECUTABLE`（决策 3）的剩余部分**不由脚本担保**——这正是把它们单列、不并入 PASS 的原因。
+当前结果：**PASS 8 / PARTIAL 3 / NOT_EXECUTABLE 0 / FAIL 0**。三条 `PARTIAL`（决策 1 / 2 / 8）
+的剩余部分**不由脚本担保**——这正是把它们单列、不并入 PASS 的原因。
+（决策 3 于 round-83 由 `PARTIAL` 升 `PASS`，`NOT_EXECUTABLE` 那一格因此归零；
+本行上一版还写着 7 / 3 / 1，是那次升级后漏改的一处漂移，round-101 校准时改掉。）
 
 两条写进脚本的自我约束，供你核对：
 

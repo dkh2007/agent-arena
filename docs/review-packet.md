@@ -1,4 +1,4 @@
-<!-- packet-sha256=030e99df1ebe2e5d snapshot-sha=a64f905 generated=2026-11-17T22:47:51+08:00 -->
+<!-- packet-sha256=649483cc376a52f1 snapshot-sha=19f3f29 generated=2026-11-18T00:44:12+08:00 -->
 # 外部评审包 —— 请审查并回答问题
 
 > **元指令（给外部 AI）**
@@ -82,20 +82,20 @@ Agent 开发学习领域的**自适应诊断与训练闭环**：学习者提交�
 > 2 优先于 1：一个带失败记录的包若先被报成"陈旧"，会把人引去「重新生成」——
 > 而重新生成出来的仍是带失败的包。判序在代码里锁了（`test_block_precedes_stale`）。
 
-- 生成锚点：`a64f905`（本节提交列表固定在该提交，不随后续提交变化）
-- 单元测试：**1320 个用例被收集**（`pytest tests/ --collect-only` 计数）
-- 单元测试实测：当前工作区本地实测 **1320 passed / 1320 total**（`pytest tests/ -q`；本地 HEAD `a64f905`，生成锚点 `a64f905`；测试跑的是当前工作区而非锚点提交，仅陈述本次本地结果，不宣称普适正确）
+- 生成锚点：`19f3f29`（本节提交列表固定在该提交，不随后续提交变化）
+- 单元测试：**1346 个用例被收集**（`pytest tests/ --collect-only` 计数）
+- 单元测试实测：当前工作区本地实测 **1346 passed / 1346 total**（`pytest tests/ -q`；本地 HEAD `19f3f29`，生成锚点 `19f3f29`；测试跑的是当前工作区而非锚点提交，仅陈述本次本地结果，不宣称普适正确）
 
 **锚点处最近 8 条提交**
 
+- `19f3f29` feat(notices): 处置计划排成「一页纸」(scripts/notices_page.py)（2026-11-17）
+- `8115711` feat(notices): 口径拍完——五态记录表 + 按「件」拆的对外文案 (B-04g 关闭)（2026-11-17）
 - `a64f905` docs: round-99 登记——外部回件核证（附录第 3 条与实现不符）+ 评审包重生成（2026-11-17）
 - `6d60047` feat(exposure): 逐条规则的判据指纹 + 「谁真的用到了那条改过的规则」(B-04g 取数第二段)（2026-11-17）
 - `d36fedb` docs(packet): 重生成评审包（锚点 a2e73da，1297 collected，sha ceeb6fb4b5ba521f 两次一致；改过用例数后首次即全绿）（2026-11-17）
 - `d5461be` fix(packet): 生成器比错了参照物——「首次全绿」悬案结案（2026-11-17）
 - `a2e73da` docs(packet): 重生成评审包（锚点 a573db2，1294 collected，sha 7fcaef31fc186b0c 两次一致）（2026-11-17）
 - `a573db2` feat(baseline): 「补不上」那批分档 tier_split()——B-04g 先数规模再谈政策（2026-11-17）
-- `21d161c` docs(packet): 重生成评审包（锚点 c8e9529，1289 collected，sha cb682e8bed5b01fa）（2026-11-17）
-- `c8e9529` feat(baseline): 全库基线 run_baseline()——B-04f 落地（2026-11-17）
 
 ### 4.1 评分口径的实测分数（同一任务，五份假提交）
 
@@ -190,8 +190,10 @@ python scripts/demo_decision.py --all     # 全跑；退出码 0 = 无 FAIL
 | `NOT_EXECUTABLE` | 仓库里没有可执行载体（阶段未到，不是失败） |
 | `FAIL` | 可判定部分有任一不成立 |
 
-当前结果：**PASS 7 / PARTIAL 3 / NOT_EXECUTABLE 1 / FAIL 0**。三条 `PARTIAL`（决策 1 / 2 / 8）
-与一条 `NOT_EXECUTABLE`（决策 3）的剩余部分**不由脚本担保**——这正是把它们单列、不并入 PASS 的原因。
+当前结果：**PASS 8 / PARTIAL 3 / NOT_EXECUTABLE 0 / FAIL 0**。三条 `PARTIAL`（决策 1 / 2 / 8）
+的剩余部分**不由脚本担保**——这正是把它们单列、不并入 PASS 的原因。
+（决策 3 于 round-83 由 `PARTIAL` 升 `PASS`，`NOT_EXECUTABLE` 那一格因此归零；
+本行上一版还写着 7 / 3 / 1，是那次升级后漏改的一处漂移，round-101 校准时改掉。）
 
 两条写进脚本的自我约束，供你核对：
 

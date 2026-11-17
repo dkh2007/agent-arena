@@ -91,7 +91,13 @@ def _check_plain(text: str) -> None:
 
 @dataclass(frozen=True)
 class Notice:
-    """一条记录的处置计划：状态 + 谁看得到 + 要说的那几句（按"件"拆开）。"""
+    """一条记录的处置计划：状态 + 谁看得到 + 要说的那几句（按"件"拆开）。
+
+    `retired`（v6）表示这条记录已标「确认不可回溯」。它**只影响重试与内部核对**，
+    **不影响这一条要不要说、说什么**：学生看到的仍是原分 + 同一句标注。
+    如果标记能改变对外文案，它就变成了"标一下就不用解释"的开关——
+    而那正是 B-04g 拍板时明确否掉的读法。
+    """
 
     submission_id: str
     user_id: str
@@ -100,6 +106,7 @@ class Notice:
     disclosure: str
     elements: tuple[tuple[str, str], ...]
     needs_decision: bool = False
+    retired: bool = False
 
     def text(self) -> str:
         return "\n".join(text for _, text in self.elements)
@@ -115,6 +122,7 @@ class Notice:
             "state": self.state,
             "disclosure": self.disclosure,
             "needs_decision": self.needs_decision,
+            "retired": self.retired,
             "elements": [{"key": k, "text": t} for k, t in self.elements],
         }
 
@@ -147,11 +155,20 @@ class NoticePlan:
     def needs_decision(self) -> tuple[Notice, ...]:
         return tuple(n for n in self.notices if n.needs_decision)
 
+    def retired(self) -> tuple[Notice, ...]:
+        """已标「确认不可回溯」的那些。**它们仍在 `notices` 里**，只是不再重试。
+
+        单列这个方法而不是把它们从名单里剔掉：这一层要回答的是"跟谁说什么"，
+        而"还试不试"是重试范围的事。剔掉会让一次内部决定悄悄改变对外口径。
+        """
+        return tuple(n for n in self.notices if n.retired)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
             "changed_rules": list(self.changed_rules),
             "counted": self.counted(),
+            "retired_count": len(self.retired()),
             "notices": [n.to_dict() for n in self.notices],
         }
 
@@ -202,6 +219,21 @@ def _legacy_scored(ratio: float, *, changed_on: str) -> tuple[tuple[str, str], .
     )
 
 
+def recalculated_elements(ratio_before: float, ratio_after: float, *, changed_on: str,
+                          what_changed: str,
+                          scope: str = "这次判据修订后重算的一批记录里有这一条。",
+                          ) -> tuple[tuple[str, str], ...]:
+    """演练用：分数还**没**写进库，但"会变成什么、要跟他说什么"现在就要能看。
+
+    存在的理由只有一个：`plan_notices()` 读的是生效分，演练时它读不到变化，
+    于是"先看清单再批准"这句话会变成看一份空清单。
+    这里复用同一组模板（`_recalculated`），**不另写一套文案**——
+    两套文案的差别不会报错，只会让演练看到的话与真正发出去的话不一样。
+    """
+    return _recalculated(ratio_before, ratio_after, changed_on=changed_on,
+                         what_changed=what_changed, scope=scope)
+
+
 def _unchanged_recalculated() -> tuple[tuple[str, str], ...]:
     return (("reviewed", "已复核，结论不变。"),)
 
@@ -218,6 +250,10 @@ def plan_notices(conn, task: dict, *, changed_on: str, what_changed: str,
     本函数不猜、不编版本号——编一个日期进学生的页面，比不说更糟。
 
     状态判定顺序（先命中先落格）：分数变了 → 补得上的 → 补不上的（按档位与曝光）。
+
+    终止标记（v6）**只改 `retired` 这个标记位，不改状态、不改文案、不改谁看得到**。
+    "补不上"那批里，标记过的仍然要按 B-04g 的口径解释一次——
+    标记回答的是"还试不试"，不是"说不说"。
     """
     if not isinstance(task, dict) or not task.get("task_id"):
         raise NoticeError("task 必须是已加载的任务定义（含 task_id）")
@@ -231,6 +267,7 @@ def plan_notices(conn, task: dict, *, changed_on: str, what_changed: str,
     tier_by_id = {row.submission_id: row.tier for row in exposure.rows}
     status_by_id = {row.submission_id: row.status for row in exposure.rows}
     blocked_ids = set(tier_by_id)
+    marks = store.unrecoverable_marks(conn, tid)
 
     rows = [s for s in store.list_submissions(conn, limit=10_000) if s["task_id"] == tid]
     notices: list[Notice] = []
@@ -239,6 +276,9 @@ def plan_notices(conn, task: dict, *, changed_on: str, what_changed: str,
         original = float(store.load_report(conn, sid)["score"]["ratio"])
         effective = store.effective_ratio(conn, sid)
         changed = abs(effective - original) > 1e-12
+        # 只对"此刻仍补不上"的行认标记：产物补回来之后，标记的前提就不成立了，
+        # 这时它既不该被算成 retired，也不该影响后面按普通行走的分支。
+        retired = sid in marks and sid in blocked_ids
 
         if changed:
             notice = Notice(sid, row["user_id"], tid, "recalculated", "page",
@@ -248,16 +288,18 @@ def plan_notices(conn, task: dict, *, changed_on: str, what_changed: str,
             tier, status = tier_by_id[sid], status_by_id[sid]
             if tier == "T1" and status in ("touched", "added_only", "unknown"):
                 notice = Notice(sid, row["user_id"], tid, "legacy_scored", "page",
-                                _legacy_scored(original, changed_on=changed_on))
+                                _legacy_scored(original, changed_on=changed_on),
+                                retired=retired)
             elif tier == "T3":
                 # 分数侧没有可解释的东西，但过程证据进过 P 且永远停在旧判据上。
                 notice = Notice(sid, row["user_id"], tid, "pending_mastery", "none",
-                                (), needs_decision=True)
+                                (), needs_decision=True, retired=retired)
             elif tier == "T1":
                 notice = Notice(sid, row["user_id"], tid, "unchanged", "archive",
-                                _unchanged_recalculated())
+                                _unchanged_recalculated(), retired=retired)
             else:
-                notice = Notice(sid, row["user_id"], tid, "legacy_unscored", "none", ())
+                notice = Notice(sid, row["user_id"], tid, "legacy_unscored", "none", (),
+                                retired=retired)
         else:
             notice = Notice(sid, row["user_id"], tid, "unchanged", "archive",
                             _unchanged_current())
@@ -274,8 +316,9 @@ def _fmt(plan: NoticePlan) -> str:
              f"本次改到的规则：{', '.join(plan.changed_rules) or '（无）'}"]
     for notice in plan.notices:
         head = notice.elements[0][1] if notice.elements else "（不告知）"
+        flag = "  [已确认不可回溯 · 不再重试]" if notice.retired else ""
         lines.append(f"  [{notice.state:<16}] {notice.submission_id:<22} "
-                     f"{notice.disclosure:<8} {head}")
+                     f"{notice.disclosure:<8} {head}{flag}")
         for key, text in notice.elements[1:]:
             lines.append(f"      · {key}: {text}")
     return "\n".join(lines)

@@ -271,15 +271,26 @@ def reappraise_user(
 
 @dataclass(frozen=True)
 class ReappraisalScope:
-    """一个任务在**现行判据**下的重评范围。三个桶互斥且穷尽。
+    """一个任务在**现行判据**下的重评范围。四个桶互斥且穷尽。
 
     - `stale`：指纹算得出、但与现行判据不同 ⇒ 确定要重评；
     - `unfingerprinted`：指纹读不到（v5 之前的报告）⇒ **也要重评**，理由见 `scope_for_task`；
-    - `current`：指纹与现行判据一致 ⇒ 不动。
+    - `current`：指纹与现行判据一致 ⇒ 不动；
+    - `retired`：已标「确认不可回溯」且**确实没有输入** ⇒ 不再重试（v6 / B-04h ②）。
 
-    分成三个桶而不是一个"要重评的列表"，是因为这三类的**可判定程度不同**：
-    前一类能说"它按旧标准判的"，后一类只能说"它按什么判的无从得知"。
+    分成多个桶而不是一个"要重评的列表"，是因为这几类的**可判定程度不同**：
+    前一类能说"它按旧标准判的"，第二类只能说"它按什么判的无从得知"，
+    最后一类能说"我们确认过它判不了，且这个确认还没被推翻"。
     合成一个列表报给人看，等于把推测和事实混成一行。
+
+    `retired` **不进** `all_ids`：它已经从"待重评"里出去了。但它**不是**从
+    `blocked_submissions()` 里出去了——交代名单与重试范围是两件事，混起来就会
+    变成"标记一下，这个人就不用解释了"。
+
+    `ignored_marks`（v6）是第五格，只用于交代：这些行**打过标记，但输入又出现了**
+    （有人在补产物），于是标记的前提不再成立、本函数按普通行处理它们。
+    把它们显式列出来，是因为"标记被静默忽略"和"标记被撤销"是两种不同的现实，
+    前者没人知道、后者有人签过字。
     """
 
     task_id: str
@@ -287,6 +298,8 @@ class ReappraisalScope:
     stale: tuple[str, ...] = ()
     unfingerprinted: tuple[str, ...] = ()
     current: tuple[str, ...] = ()
+    retired: tuple[str, ...] = ()
+    ignored_marks: tuple[str, ...] = ()
 
     @property
     def all_ids(self) -> tuple[str, ...]:
@@ -294,6 +307,8 @@ class ReappraisalScope:
 
         顺序只要求**确定**（同输入同输出），不要求按时间交织：每份重评独立算、
         独立刷快照，谁先谁后不影响最终结果；但演练与真跑必须逐条对得上。
+
+        `retired` 不在其中——那是这一层唯一的"不再试"的格，理由见类文档。
         """
         return self.stale + self.unfingerprinted
 
@@ -308,6 +323,8 @@ class ReappraisalScope:
             "stale": list(self.stale),
             "unfingerprinted": list(self.unfingerprinted),
             "current": list(self.current),
+            "retired": list(self.retired),
+            "ignored_marks": list(self.ignored_marks),
             "to_reappraise": list(self.all_ids),
         }
 
@@ -330,15 +347,33 @@ def scope_for_task(conn, task: dict) -> ReappraisalScope:
        否则"我们回溯过了"会变成一句没根据的话。
     4. **不自己造判据**。现行判据由调用方传入（与 `reappraise()` 同一约定）：
        "标准改成什么"是人的判断，本函数只回答"按你给的标准，谁对不上"。
+    5. **终止标记只终止重试，且每次都要复核前提**（v6）。标记过的行若真的仍无产物，
+       进 `retired`、不再逐次重试；若产物已经补回来，标记的前提就不成立了，
+       该行按普通行重新分类，并进 `ignored_marks` 让人知道"有一条标记被现实推翻了"。
+       不在这里抛错：批次不该因为一条过期标记就整批停下，但也不许它悄悄生效。
     """
     task = _check_task(task)
     fingerprint = dr.rubric_fingerprint(task)   # 非法 rubric 在这里就抛，不给它算范围
 
+    # 终止标记（v6）：只认**未撤销**的；并且必须当场复核它的前提。
+    # 复核的理由：标记说的是"输入永远回不来"，而输入（`artifacts`）是可变的一列。
+    # 有人补了产物之后继续跳过这一行，就等于用一条过期的判断把它永久排除在重评之外——
+    # 那是这一层最坏的失效（静默、不可见、还带着"我们已经确认过"的背书）。
+    marks = store.unrecoverable_marks(conn, task["task_id"])
+
     stale: list[str] = []
     unknown: list[str] = []
     current: list[str] = []
+    retired: list[str] = []
+    ignored: list[str] = []
     for row in store.task_effective_fingerprints(conn, task["task_id"]):
         sid, fp = row["submission_id"], row["fingerprint"]
+        if sid in marks:
+            if row["has_artifacts"]:
+                ignored.append(sid)      # 前提被推翻：按普通行走，一行都不许少判
+            else:
+                retired.append(sid)      # 前提仍成立：不再重试
+                continue
         if fp is None:
             unknown.append(sid)
         elif fp != fingerprint:
@@ -352,4 +387,6 @@ def scope_for_task(conn, task: dict) -> ReappraisalScope:
         stale=tuple(stale),
         unfingerprinted=tuple(unknown),
         current=tuple(current),
+        retired=tuple(retired),
+        ignored_marks=tuple(ignored),
     )

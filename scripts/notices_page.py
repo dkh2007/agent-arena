@@ -41,6 +41,9 @@ def _row(notice: nt.Notice) -> str:
         for k, t in notice.elements
     ) or "<div class='el muted'>（不告知）</div>"
     flag = "<span class='tag warn'>待拍</span>" if notice.needs_decision else ""
+    # 已标「确认不可回溯」的行照常出现在表里（标记只停重试，不停交代），
+    # 这里加一个中性标记，免得看的人以为"怎么还在"。
+    flag += "<span class='tag'>已确认不可回溯</span>" if notice.retired else ""
     return (f"<tr><td><code>{html.escape(notice.submission_id)}</code></td>"
             f"<td>{html.escape(notice.user_id)}</td>"
             f"<td>{html.escape(STATE_LABEL[notice.state][0])}{flag}</td>"

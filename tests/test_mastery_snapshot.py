@@ -167,12 +167,13 @@ def test_criterion_migrate_from_real_v1_keeps_data_and_backfills(tmp_path):
 
     result = store.migrate(conn)
     # v1 → 最新版本要**逐级**跑：v2 建快照表 + 回填，v3 建仲裁队列表，v4 加产物列，
-    # v5 建重评表。一次跳到最新那段是错的写法——这里锁住"每一级的动作都在"。
+    # v5 建重评表、v6 建终止标记表。一次跳到最新那段是错的写法——这里锁住"每一级的动作都在"。
     assert result["from"] == 1 and result["to"] == store.SCHEMA_VERSION
     assert result["added_tables"] == ["mastery_snapshots", "arbitration_queue",
-                                      "submissions.artifacts", "reappraisals"]
+                                      "submissions.artifacts", "reappraisals",
+                                      "unrecoverable_marks"]
     assert result["backfilled"] == 3
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 5
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 6
     assert store.count_submissions(conn) == before
     assert store.load_report(conn, "old-1") == report          # 旧报告一个字节没动
     # 旧提交的产物补不回来 —— 迁移只加列，不给历史数据编造产物。
@@ -494,8 +495,14 @@ def test_v1_ddl_really_lacks_the_snapshot_table():
     assert "reappraisals" not in store.SCHEMA_SQL_V2
     assert "reappraisals" not in store.SCHEMA_SQL_V3
     assert "reappraisals" in store.SCHEMA_SQL_V5
+    assert "unrecoverable_marks" not in store.SCHEMA_SQL_V1
+    assert "unrecoverable_marks" not in store.SCHEMA_SQL_V2
+    assert "unrecoverable_marks" not in store.SCHEMA_SQL_V3
+    assert "unrecoverable_marks" not in store.SCHEMA_SQL_V5
+    assert "unrecoverable_marks" in store.SCHEMA_SQL_V6
     assert store.SCHEMA_SQL == (store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2
-                                + store.SCHEMA_SQL_V3 + store.SCHEMA_SQL_V5)
+                                + store.SCHEMA_SQL_V3 + store.SCHEMA_SQL_V5
+                                + store.SCHEMA_SQL_V6)
 
 
 # --- round-88 外部回件：三条新锁 ----------------------------------------------
