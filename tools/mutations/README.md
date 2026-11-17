@@ -43,7 +43,7 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_snapshot.py` | 掌握度快照（重放唯一权威、P_raw 不存 P_eff、参数同存、没证据不写 0、v1→v2 迁移）；round-88 外审回件后补 3 组：词表拼错 / 迁移版本号超前 / 名次字段偷长（21 组） | round-88 / B-07c + 外审回件 |
 | `mutate_b04b.py` | judge 接线层 + 仲裁队列（阈值边界 `<=`、永不入队、attach 改分、就地改原对象、配置检查、崩溃吞掉、派生列不填、重复入队覆盖阈值、裁决无理由、改判已裁决）（13 组） | round-90 / B-04b |
 | `mutate_b04d.py` | 争议护栏（标记恒空集 / 标记扩散 / 已裁决仍算争议 / 单点判据架空 / **读榜方向反了** / 参数不校验 / 落库不写产物 / **提交入口不传产物** / v4 加列不判重 / 证据一律不计入=滑回乙）（10 组） | round-91 / B-04d |
-| `mutate_reappraisal.py` | 重评链（生效报告不生效 / 重放读旧报告 / delta 起点退回最原始分 / **缺产物拿空对象顶替** / 不校验任务 / 落库不校验身份证 / 空理由照收 / **演练也落库** / 批量只报成功 / 批量不筛任务 / **读接口退回旧件** / **view 写错静默回落** / **重评链把「不存在」当「没重评过」**）（14 组） | round-92 / B-04d 接线（round-93 补 M12–M14） |
+| `mutate_reappraisal.py` | 重评链（生效报告不生效 / 重放读旧报告 / delta 起点退回最原始分 / **缺产物拿空对象顶替** / 不校验任务 / 落库不校验身份证 / 空理由照收 / **演练也落库** / 批量只报成功 / 批量不筛任务 / **读接口退回旧件** / **view 写错静默回落** / **重评链把「不存在」当「没重评过」** / **读不到指纹当已符合** / **指纹取落库时那份（范围永不收敛）** / **丢了 task 过滤（全库重评）** / **坏指纹静默当没指纹** / **不校验 rubric 就给范围**）（19 组） | round-92 / B-04d 接线（round-93 补 M12–M14，round-95 补 M15–M19 打受影响范围） |
 | `mutate_fingerprint.py` | 判据指纹（只算 credit 漏 gate / **漏 `skill_id`＝分数没变所以不重评** / 不排序键 / 按 id 排序吃掉数组顺序 / 指纹恒常量 / 绕过 `rubric_layers` 给非法 rubric 也起名字 / 版本串不进 payload / 报告不写指纹 / 可选键塞进 `required` / 格式不校验）（10 组） | round-94 / B-04e |
 
 > **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` / `mutate_fingerprint.py` 是

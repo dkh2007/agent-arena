@@ -250,3 +250,95 @@ def reappraise_user(
                    apply=apply, created_at=created_at)
         for sid in ids
     ]
+
+
+# ── 受影响范围（B-04e ⓑ）────────────────────────────────────────────────────
+# 前三步都能做，但它们仍然需要人来指范围（`reappraise_user` 要给 user_id）。
+# 「标准改完后批量回溯重算」缺的最后一块是：**改完标准，谁受影响**。
+# 漏掉一个人的后果不是报错，是他的成绩永久停在旧标准上、而且没有任何东西会响。
+
+
+@dataclass(frozen=True)
+class ReappraisalScope:
+    """一个任务在**现行判据**下的重评范围。三个桶互斥且穷尽。
+
+    - `stale`：指纹算得出、但与现行判据不同 ⇒ 确定要重评；
+    - `unfingerprinted`：指纹读不到（v5 之前的报告）⇒ **也要重评**，理由见 `scope_for_task`；
+    - `current`：指纹与现行判据一致 ⇒ 不动。
+
+    分成三个桶而不是一个"要重评的列表"，是因为这三类的**可判定程度不同**：
+    前一类能说"它按旧标准判的"，后一类只能说"它按什么判的无从得知"。
+    合成一个列表报给人看，等于把推测和事实混成一行。
+    """
+
+    task_id: str
+    rubric_fingerprint: str
+    stale: tuple[str, ...] = ()
+    unfingerprinted: tuple[str, ...] = ()
+    current: tuple[str, ...] = ()
+
+    @property
+    def all_ids(self) -> tuple[str, ...]:
+        """要重评的全部提交。**两桶都算**，顺序先 `stale` 后 `unfingerprinted`。
+
+        顺序只要求**确定**（同输入同输出），不要求按时间交织：每份重评独立算、
+        独立刷快照，谁先谁后不影响最终结果；但演练与真跑必须逐条对得上。
+        """
+        return self.stale + self.unfingerprinted
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.all_ids
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "rubric_fingerprint": self.rubric_fingerprint,
+            "stale": list(self.stale),
+            "unfingerprinted": list(self.unfingerprinted),
+            "current": list(self.current),
+            "to_reappraise": list(self.all_ids),
+        }
+
+
+def scope_for_task(conn, task: dict) -> ReappraisalScope:
+    """按**现行判据**算出这个任务下哪些作答需要重评。只读，不改库。
+
+    四个决定，每个都对应一种会让机制"看着能用、实则失效"的写法：
+
+    1. **范围必须按 `task_id` 收，不能全库扫。** 判据是按任务写的，不同任务的指纹
+       天生不同；拿一个任务的指纹去全库比对，答案恒等于"其他所有任务的全部提交"。
+       这种错不会报错，只会让每次改判据都触发一次全库重评。
+    2. **比对对象是生效报告**（`store.task_effective_fingerprints` 已保证）。
+       拿落库时那份比，重评过的提交永远是"过期"，同一批会被反复重评——
+       重评链因此堆满 no-op 修订，"这轮改了谁"从此读不出来。
+    3. **读不到指纹算进范围（`unfingerprinted`），不算"已符合"。** 默认"不知道 ⇒ 要重评"
+       的理由是代价不对称：多算 ⇒ 多跑一次重评，且会被 `missing_artifacts` 挡住；
+       少算 ⇒ 这批历史永远停在旧标准上，且没有任何信号。
+       这批本来就大多重评不了（v4 之前没有 `artifacts`），但它们必须**被报出来**，
+       否则"我们回溯过了"会变成一句没根据的话。
+    4. **不自己造判据**。现行判据由调用方传入（与 `reappraise()` 同一约定）：
+       "标准改成什么"是人的判断，本函数只回答"按你给的标准，谁对不上"。
+    """
+    task = _check_task(task)
+    fingerprint = dr.rubric_fingerprint(task)   # 非法 rubric 在这里就抛，不给它算范围
+
+    stale: list[str] = []
+    unknown: list[str] = []
+    current: list[str] = []
+    for row in store.task_effective_fingerprints(conn, task["task_id"]):
+        sid, fp = row["submission_id"], row["fingerprint"]
+        if fp is None:
+            unknown.append(sid)
+        elif fp != fingerprint:
+            stale.append(sid)
+        else:
+            current.append(sid)
+
+    return ReappraisalScope(
+        task_id=task["task_id"],
+        rubric_fingerprint=fingerprint,
+        stale=tuple(stale),
+        unfingerprinted=tuple(unknown),
+        current=tuple(current),
+    )

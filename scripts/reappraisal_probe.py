@@ -146,6 +146,35 @@ def main() -> int:
     print("   为什么不用空对象顶替：那会把「我们没存下来」算成「他没交」，")
     print("   而两份在报告里长得一模一样（决策 7 要挡的正是这个）。")
 
+    print("=" * 74)
+    print("5. 改完标准，系统能不能自己算出「谁受影响」，算完还收得回来")
+    # 这一段是 B-04e ⓑ 的验收：范围必须**自己**算出来（不再靠人报 user_id），
+    # 而且批量重评完必须自己变空——否则同一条判据改动每跑一次就把同一批再评一次。
+    orig_scope = rap.scope_for_task(c, task)
+    print(f"   判据没改时的范围：current={list(orig_scope.current)}"
+          f"  stale={list(orig_scope.stale)}")
+    assert orig_scope.is_empty, "判据没改却说有人「过期」——范围算错了"
+
+    pending = rap.scope_for_task(c, changed)
+    print(f"   判据改后自动算出的范围：stale={list(pending.stale)}"
+          f"  ← 人只给了任务和新判据，没报任何 user_id")
+
+    outs = rap.reappraise_user(c, "u-probe", changed, reason="probe: R2 标准答案 +1",
+                               created_at=AT)
+    states = {o.submission_id: o.state for o in outs}
+    print(f"   批量重评结果：{states}")
+
+    after = rap.scope_for_task(c, changed)
+    print(f"   重评后的范围：stale={list(after.stale)}  current={list(after.current)}")
+    converged = after.stale == () and set(after.current) == set(states)
+    print(f"   范围收敛 ⇒ {converged}"
+          f"{'' if converged else '  ← 同一批会被反复重评，机制等于没有'}")
+
+    back = rap.scope_for_task(c, task)
+    print(f"   把标准改回原样后：stale={list(back.stale)}"
+          f"  ← 范围跟着判据走，不跟着「重评过没有」走")
+    track_rubric = set(back.stale) == set(states)
+
     c.close()
     print("=" * 74)
     print("结论（由本次实测生成，不是预先写好的）：")
@@ -158,9 +187,17 @@ def main() -> int:
     print(f"  · 库里有 {len(blocked)} 份提交因缺产物不可重评（成绩不动，不冒算）；")
     print("  · 所以「标准改完后批量回溯重算」只在 v4 之后的新提交上完整成立，")
     print("    旧提交只能用「让学生重做」或「承认不可回溯」，不许拿空产物冒充重评。")
-    print("  · 产品入口：reappraisal.reappraise() / reappraise_user()（本轮已接，"
-          "落库进 reappraisals，不动 submissions）。")
-    return 0
+    print("  · 受影响范围由 scope_for_task() 按任务自己算出（ⓑ），"
+          f"重评后收敛={converged}、跟判据走={track_rubric}：")
+    print("    这两条同时成立，第四句护栏「标准改完后批量回溯重算」才算兑现——")
+    print("    只有前者不成立（范围不收），同一批会被每扫一次重评一次；")
+    print("    只有后者不成立（范围不跟判据走），改了标准也不会有人进范围。")
+    print("  · 产品入口：reappraisal.reappraise() / reappraise_user() / scope_for_task()"
+          "（都不是只算不写的脚本）。")
+    ok = converged and track_rubric and (delta is None or abs(delta) >= 0.02)
+    print(f"SCOPE_CONVERGED={converged} TRACKS_RUBRIC={track_rubric} "
+          f"DELTA_MEASURED={delta is not None}")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

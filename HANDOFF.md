@@ -56,6 +56,19 @@
 >    重评打平基线——**②是①的止损，不是①的替代**。
 >    裁判：`pytest tests/test_rubric_fingerprint.py` 23 passed、
 >    `python tools/mutations/mutate_fingerprint.py` 10 组全 DETECTED。
+> ⑩ **round-95（2026-11-17）B-04e 收口：改完标准，系统自己算出谁受影响**。
+>    补两处：`store.task_effective_fingerprints(conn, task_id)`（取**生效报告**的指纹）
+>    与 `reappraisal.scope_for_task(conn, task)`（按现行判据分三桶：
+>    `stale` / `unfingerprinted` / `current`）。人只给任务和新判据，**不再报 `user_id`**。
+>    三个会把机制写废的坑各有一条判据 + 一组变异锁着：
+>    ① 比对落库时那份 ⇒ 重评过的提交永远"过期"、范围永不收敛、重评链被 no-op 灌满；
+>    ② 丢了 `task_id` 过滤 ⇒ 改一次判据＝触发一次全库重评，而且不报错；
+>    ③ 读不到指纹当"已符合" ⇒ 全部历史静默漏掉（对的做法是单列一桶、算进范围）。
+>    **刻意没加指纹列/表达式索引**：范围查询是冷路径，加列的代价换不到可测收益。
+>    裁判：`pytest tests/test_reappraisal.py` 17 passed；`mutate_reappraisal.py`
+>    **19 组全 DETECTED**；`scripts/reappraisal_probe.py` 打出
+>    `SCOPE_CONVERGED=True TRACKS_RUBRIC=True`。
+>    遗留：历史提交仍无指纹，基线要跑一次全库重评 ⇒ 新开 **B-04f**。
 > 单文件交接请以 `docs/BACKLOG.md` 顶部更新块 + `docs/ROADMAP.md` 五层表为现役状态，
 > 下方 §2「当前状态（截至 2026-11-07）」是**历史快照**，勿据此判断现行状态。
 

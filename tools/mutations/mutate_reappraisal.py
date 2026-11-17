@@ -6,7 +6,7 @@
     MISSED    变异后仍全绿——这条测试没在管这事
     INVALID   锚点没命中 / 收集失败——**不算抓住**
 
-## 这 11 组各自防的是什么
+## 这 19 组各自防的是什么
 
 重评链最容易的失效方式不是崩，而是**"做了但没生效"**：新报告落了库、分数没变、
 或者变了但历史被覆盖。所以：
@@ -22,6 +22,11 @@
 - M11 打"批量不筛任务"（顺手把别的任务也重评了）；
 - M12/M13/M14 打"读数口径退回旧件"（round-93：默认视图仍给冻结报告、
   `view` 写错静默回落、子资源把"不存在"和"没重评过"混成一样）。
+- M15–M19 打"受影响范围算错"（B-04e ⓑ）。这一组的失效方式和上面都不同：
+  **范围错了不会报错，只会多算或少算**——
+  少算（M15 读不到指纹当已符合 / M17 丢 task 过滤）⇒ 有人永久停在旧标准上；
+  多算（M16 拿落库时那份比）⇒ 每次扫都把同一批重评一遍，范围永不收敛；
+  M18 让坏数据混进"不知道怎么判的"那桶，M19 让空判据算出"全库过期"。
 
 每条变异用一个**全新的** `PYTEST_DEBUG_TEMPROOT`：默认临时根攒满旧目录后，
 pytest 收尾清理会撞沙箱批量删除守卫并抛 `SystemExit(1)`，让退出码失去意义。
@@ -59,7 +64,9 @@ MUTATIONS = [
 
     ("M2 重放读 diagnosis 而非生效报告（P 停在旧结论）",
      ST,
+     '        "SELECT s.submission_id, s.user_id, s.task_id, s.created_at, s.diagnosis, "\n'
      '        "       r.report AS latest_report "',
+     '        "SELECT s.submission_id, s.user_id, s.task_id, s.created_at, s.diagnosis, "\n'
      '        "       NULL AS latest_report "',
      f"{T}::test_one_submission_still_contributes_exactly_one_step"),
 
@@ -163,6 +170,41 @@ MUTATIONS = [
      "        try:\n"
      "            store.load_report(conn, submission_id)",
      f"{TA}::test_reappraisal_chain_distinguishes_missing_from_never_reappraised"),
+
+    # ── 受影响范围（B-04e ⓑ）────────────────────────────────────────────────
+    ("M15 读不到指纹就当「已符合」（全部历史静默漏掉，没有任何信号）",
+     RAP,
+     "        if fp is None:\n"
+     "            unknown.append(sid)",
+     "        if fp is None:\n"
+     "            current.append(sid)  # 变异：不知道 ⇒ 当作已经符合",
+     f"{T}::test_unfingerprinted_history_is_in_scope_and_reported_as_its_own_bucket"),
+
+    ("M16 指纹取落库时那份（重评过的提交永远「过期」，范围永不收敛）",
+     ST,
+     '        report = _load(row["latest_report"] if from_reappraisal else row["diagnosis"])',
+     '        report = _load(row["diagnosis"])  # 变异：无视重评链',
+     f"{T}::test_scope_shrinks_after_reappraisal_instead_of_flagging_it_forever"),
+
+    ("M17 取数不按 task_id 过滤（改一次判据＝触发一次全库重评）",
+     ST,
+     '"WHERE s.task_id = ? ORDER BY s.created_at ASC, s.submission_id ASC",',
+     '"WHERE s.task_id IS NOT NULL AND ? IS NOT NULL "\n'
+     '        "ORDER BY s.created_at ASC, s.submission_id ASC",  # 变异：丢了过滤',
+     f"{T}::test_scope_never_lends_one_task_its_neighbours_submissions"),
+
+    ("M18 坏指纹静默当「没指纹」（坏数据永远查不出来）",
+     ST,
+     "        if fp is not None and not (isinstance(fp, str) and fp):",
+     "        if False:  # 变异：不校验，坏数据混进「不知道怎么判的」那桶",
+     f"{T}::test_a_corrupt_fingerprint_is_loud_instead_of_looking_unfingerprinted"),
+
+    ("M19 不校验 rubric 就给范围（空判据会算出「全库过期」）",
+     RAP,
+     '    task = _check_task(task)\n'
+     '    fingerprint = dr.rubric_fingerprint(task)',
+     '    fingerprint = dr.rubric_fingerprint(task)  # 变异：跳过 _check_task',
+     f"{T}::test_scope_refuses_an_invalid_rubric_and_writes_nothing"),
 ]
 
 

@@ -880,6 +880,62 @@ def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
     ]
 
 
+def task_effective_fingerprints(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    """该任务下每份作答**当前生效报告**里的判据指纹（B-04e ⓑ 的取数口）。
+
+    返回每行 `{submission_id, user_id, created_at, fingerprint, source}`，
+    `source` 是 `"reappraisal"` 或 `"original"`（这份指纹从哪份报告读来的），
+    按 `created_at`、`submission_id` 升序——重评范围的遍历顺序必须可复现，
+    否则"演练看到 7 条、真跑动了 6 条"这种差异没法逐条对齐。
+
+    四个刻意的选择：
+
+    1. **取生效报告，不取 `diagnosis`**。落库时那份永远不变，重评过之后它照样是"旧"的，
+       于是同一批提交每扫一次就重新进一次范围——重评链被同一批 no-op 修订灌满，
+       而"这一轮究竟改动了谁"再也读不出来。生效报告随重评往前滚，范围才会自己收敛。
+    2. **读不到指纹就是 `None`，不猜也不补**。v5 之前的报告没有这个键（当时没这个概念），
+       唯一诚实的表示是"不知道"。编一个假值回去，"旧的"与"新的"就混成一回事了。
+       `None` 算不算进重评范围是**策略**，交给调用方（见 `reappraisal.scope_for_task`）。
+    3. **指纹存在但不是字符串 ⇒ 抛**。这只会是坏数据；batch 操作悄悄跳过一行，
+       意味着有人的成绩静默停在旧标准上，正是这一层要挡的错。
+    4. **不在这里判范围**。本函数只回答"库里每条记录按什么判据判的"，
+       不回答"哪些该重评"。混在一起会让"范围"变成一段没法单独测的 SQL。
+
+    成本如实记：一行的 `diagnosis` 整份要反序列化，量级是"该任务的作答数 × 报告大小"。
+    这是**冷路径**（一次判据改动跑一次），所以没为它加列或加表达式索引；
+    真变成热路径时再加 `submissions(rubric_fingerprint)`，那时才有标定依据。
+    """
+    rows = conn.execute(
+        "SELECT s.submission_id, s.user_id, s.created_at, s.diagnosis, "
+        "       r.report AS latest_report "
+        "FROM submissions s "
+        "LEFT JOIN reappraisals r ON r.submission_id = s.submission_id "
+        "     AND r.revision = (SELECT MAX(revision) FROM reappraisals "
+        "                      WHERE submission_id = s.submission_id) "
+        "WHERE s.task_id = ? ORDER BY s.created_at ASC, s.submission_id ASC",
+        (task_id,),
+    ).fetchall()
+
+    out = []
+    for row in rows:
+        from_reappraisal = row["latest_report"] is not None
+        report = _load(row["latest_report"] if from_reappraisal else row["diagnosis"])
+        fp = report.get("rubric_fingerprint")
+        if fp is not None and not (isinstance(fp, str) and fp):
+            raise StoreError(
+                f"{row['submission_id']} 的 rubric_fingerprint 存在但不是非空字符串"
+                f"（{type(fp).__name__}）——坏数据不该被当成「没指纹」跳过"
+            )
+        out.append({
+            "submission_id": row["submission_id"],
+            "user_id": row["user_id"],
+            "created_at": row["created_at"],
+            "fingerprint": fp,
+            "source": "reappraisal" if from_reappraisal else "original",
+        })
+    return out
+
+
 # ── 仲裁队列的落库（v3 / B-04b）───────────────────────────────────────────────
 # judge 双评不一致时的**人工待办**。判定与入队条件在 `judge_pipeline.py`，这里只存取。
 #

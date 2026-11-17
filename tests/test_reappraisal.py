@@ -372,3 +372,168 @@ def test_a_failed_refresh_rolls_back_the_reappraisal_record(env, monkeypatch):
         assert store.effective_ratio(c, "s-1") == 0.5
     finally:
         c.close()
+
+
+# ── 7. 受影响范围（B-04e ⓑ）─────────────────────────────────────────────────
+# 「标准改完后批量回溯重算」的最后一块：改完标准，**谁受影响**。
+# 漏一个人的后果不是报错，是他的成绩永久停在旧标准上，而且没有任何东西会响。
+
+
+def _insert_row(c, submission_id, task_id, report, *, user_id="u-raw"):
+    """直插一行——用来造正常 API 造不出来的历史形态（别的任务的作答 / 没有指纹的旧报告）。
+
+    正常路径造不出这两种：`submit()` 只会写当前任务，且 `build_report()` 一定写指纹。
+    历史数据恰恰就是这样进来的，所以要测它就得绕过 API，而不是把 API 改成能造历史。
+    """
+    store.ensure_user(c, user_id)
+    c.execute(
+        "INSERT INTO submissions (submission_id, user_id, task_id, assert_score, "
+        "detected_patterns, diagnosis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (submission_id, user_id, task_id, 1.0, "[]",
+         json.dumps(report, ensure_ascii=False, sort_keys=True), AT),
+    )
+    c.commit()
+    return submission_id
+
+
+def test_scope_lists_the_submissions_judged_under_the_old_rubric(env):
+    """范围按**现行判据**算：同一条提交，判据不变时在 `current`，判据一改就进 `stale`。
+
+    同一条记录在两个判据下结论不同，这正是"指纹回答的是按什么标准判"的直接体现。
+    """
+    _submit(env, _payload(submission_id="s-1"))
+    original = dr.load_task(TASK_PATH)
+    c = env["conn"]()
+    try:
+        same = rap.scope_for_task(c, original)
+        assert same.current == ("s-1",)
+        assert same.stale == () and same.unfingerprinted == ()
+        assert same.is_empty is True, "判据没改，不该有任何重评对象"
+
+        moved = rap.scope_for_task(c, _changed_task())
+        assert moved.stale == ("s-1",)
+        assert moved.current == ()
+        assert moved.is_empty is False
+        assert moved.rubric_fingerprint == dr.rubric_fingerprint(_changed_task())
+        assert moved.rubric_fingerprint != same.rubric_fingerprint
+    finally:
+        c.close()
+
+
+def test_scope_shrinks_after_reappraisal_instead_of_flagging_it_forever(env):
+    """重评过一次之后，同一份提交必须**退出**范围——否则每次扫都会重评它一次。
+
+    这是本步最容易写错的地方：拿落库时那行 `diagnosis` 比指纹，它永远不变，
+    于是每次判据一改（甚至不改，只要再扫一次）都会把同一批提交重新判为"过期"，
+    重评链被同一批 no-op 修订灌满，"这轮究竟改了谁"就再也读不出来了。
+    变化是静默的：分数看上去一次没变，链在长。
+    """
+    _submit(env, _payload(submission_id="s-1"))
+    changed = _changed_task()
+    c = env["conn"]()
+    try:
+        assert rap.scope_for_task(c, changed).stale == ("s-1",)
+
+        rap.reappraise(c, "s-1", changed, reason=REASON, created_at=AT)
+
+        after = rap.scope_for_task(c, changed)
+        assert after.stale == (), "重评过了还判它过期 ⇒ 比对的是原始报告，范围永不收敛"
+        assert after.current == ("s-1",)
+        assert after.is_empty is True
+        assert len(store.list_reappraisals(c, "s-1")) == 1, "重评链不该因为再扫一遍而变长"
+
+        # 范围是纯读：连扫两次结果必须逐字段相同（演练与真跑要能逐条对齐）。
+        assert rap.scope_for_task(c, changed).to_dict() == after.to_dict()
+
+        # 沿用改回去的标准，它又该"过期"了——范围跟着判据走，不是跟着"重评过没有"走。
+        assert rap.scope_for_task(c, dr.load_task(TASK_PATH)).stale == ("s-1",)
+    finally:
+        c.close()
+
+
+def test_scope_never_lends_one_task_its_neighbours_submissions(env):
+    """范围必须按 `task_id` 收。拿一个任务的指纹去全库比对，答案恒等于全库。
+
+    判据是按任务写的，不同任务的指纹天生不同；少了这个过滤，每次改判据都会
+    触发一次**全库**重评，而且不会报错——只会越来越慢、越来越贵。
+    """
+    _submit(env, _payload(submission_id="s-1"))
+    other_task = dr.load_task(ROOT / "tasks" / "dbg-002-invoice-report.yaml")
+    c = env["conn"]()
+    try:
+        _insert_row(c, "s-other", other_task["task_id"],
+                    {"rubric_fingerprint": dr.rubric_fingerprint(other_task),
+                     "score": {"ratio": 1.0}})
+
+        leaked = rap.scope_for_task(c, _changed_task())
+        assert leaked.stale == ("s-1",), "别的任务的作答混进来了 ⇒ task_id 过滤丢了"
+
+        mine = rap.scope_for_task(c, other_task)
+        assert mine.current == ("s-other",), "按自己任务的判据应当对得上"
+        assert mine.stale == ()
+    finally:
+        c.close()
+
+
+def test_unfingerprinted_history_is_in_scope_and_reported_as_its_own_bucket(env):
+    """读不到指纹 ⇒ 算进范围，但**单独成桶**，不许混进 current。
+
+    默认"不知道就算要重评"的理由是代价不对称：
+      - 多算 ⇒ 多跑一次重评，且会被 `missing_artifacts` 挡住，代价可数；
+      - 少算 ⇒ 这批历史永久停在旧标准上，且没有任何信号。
+    单独成桶的理由：这两类的**可判定程度**不同。前一类能说"它按旧标准判的"，
+    后一类只能说"它按什么判的无从得知"。合成一行报给人看，就是把推测当事实。
+    """
+    legacy_task = dr.load_task(TASK_PATH)
+    c = env["conn"]()
+    try:
+        _insert_row(c, "s-legacy", legacy_task["task_id"], {"score": {"ratio": 1.0}})
+
+        scope = rap.scope_for_task(c, legacy_task)
+        assert scope.unfingerprinted == ("s-legacy",)
+        assert scope.current == (), "没有指纹被当成「已符合」⇒ 全部历史静默漏掉"
+        assert scope.stale == ()
+        assert scope.all_ids == ("s-legacy",), "单独成桶不等于不进范围"
+    finally:
+        c.close()
+
+
+def test_a_corrupt_fingerprint_is_loud_instead_of_looking_unfingerprinted(env):
+    """指纹存在但不是字符串 ⇒ 抛。不许被当成"没指纹"混进历史桶。
+
+    两者处理方式一样（都进范围），但**诊断价值完全不同**：一个是"那时还没有这个概念"，
+    另一个是"这份数据坏了"。悄悄合并，坏数据就永远查不出来。
+    """
+    task = dr.load_task(TASK_PATH)
+    c = env["conn"]()
+    try:
+        _insert_row(c, "s-bad", task["task_id"], {"rubric_fingerprint": 12345})
+        with pytest.raises(store.StoreError) as err:
+            rap.scope_for_task(c, task)
+        assert "s-bad" in str(err.value), "报错要指名是哪一条，否则等于没报"
+    finally:
+        c.close()
+
+
+def test_scope_refuses_an_invalid_rubric_and_writes_nothing(env):
+    """空 rubric 的 task 连指纹都不该有（`rubric_fingerprint` 已如此），范围更不该给。
+
+    顺带锁住"只读"：算范围不许动 `submissions` / `reappraisals` / 分数。
+    """
+    _submit(env, _payload(submission_id="s-1"))
+    c = env["conn"]()
+    try:
+        broken = copy.deepcopy(dr.load_task(TASK_PATH))
+        broken["rubric_credit"] = []
+        broken["rubric_gate"] = []
+        with pytest.raises(rap.ReappraisalError):
+            rap.scope_for_task(c, broken)
+
+        before = store.load_submission(c, "s-1")["assert_score"]
+        rap.scope_for_task(c, _changed_task())
+        rap.scope_for_task(c, dr.load_task(TASK_PATH))
+        assert store.load_submission(c, "s-1")["assert_score"] == before
+        assert store.list_reappraisals(c, "s-1") == []
+        assert store.count_submissions(c) == 1
+    finally:
+        c.close()
