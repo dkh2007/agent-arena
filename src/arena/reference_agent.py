@@ -21,12 +21,15 @@
 
 ## 为什么 trace 的 `call_index` 由 Agent 编号
 
-任务 YAML 写的是「call_index 平台侧编号（1 起）」，但当前架构是**Agent 自报 trace**
-（平台不观测调用）。所以本模块按调用到达顺序 1..n 编号，平台侧只校验
-「连续、从 1 起」（`trace_pipeline._trace_audit_issues`）。
+任务 YAML 写的是「call_index 平台侧编号（1 起）」，但本模块**自己**按调用到达顺序 1..n
+编号，平台侧只校验「连续、从 1 起」（`trace_pipeline._trace_audit_issues`）。
 
-**这是一处已知弱点**：Agent 可以改写编号把重试藏起来。彻底解决要平台侧抓包
-（下方"未做"第 2 条），在那之前不能声称"trace 不可伪造"。
+**这是一处已知弱点**：Agent 可以改写编号、也可以把一次失败的调用整个不写。
+平台侧抓包已经落地在 `platform_capture.py`（B-03b ①）：把 Agent 指向那个代理，
+账本由平台自己编，自报与账本逐条对账，不一致即 `mismatch`。
+但要清楚边界——**默认路径仍是自报**：只有部署时强制 Agent 走代理，这句话才成立；
+`scripts/capture_probe.py` 的第 4 段给出了反例：一份凭空编出来的"失败+重试"在评测器里
+`schema_valid=True` 且 R3 `pass`，唯一能说破它的是账本。
 """
 
 from __future__ import annotations

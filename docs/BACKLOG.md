@@ -4,6 +4,17 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-18（round-106：**B-03b ① 平台侧采集落地——"我重试了"这句话从此可证伪**。
+> ① `platform_capture.py`：工具调用过平台代理，**账本由平台自己编号**（先记账再返回，
+>    记账失败则请求失败）；`compare_traces()` 按 `call_index` 对齐逐条比 name/params/status/http_status。
+> ② **判据实证**（`scripts/capture_probe.py` → `CAPTURE_OK=True`）：伪造一条"失败+重试"的 trace，
+>    评测器给 `schema_valid=True` + R3 `pass`（完美满分），**只有平台对账报 mismatch**。
+>    这就是这条待办存在的理由，也锁进了测试。
+> ③ 裁判：`test_platform_capture.py` **17 passed**；`mutate_capture.py` **6/6 DETECTED**。
+> ④ 边界如实写：① 是**可选代理**，默认仍是自报；不强制走代理，"不可伪造"就不成立。
+> ⑤ ② （LLM Agent 跑 dbg-001）未做：底座 `llm_client.py` 已有，卡点是**配额与模型版本固定**，
+>    不是技术。见 B-03b 条目。
+>
 > 更新：2026-11-18（round-105：**B-22 / B-23 关闭——两条"悬着的声明"各自收口**。
 > ① B-22 选**删声明**（不给 `error`/`result_summary` 补执行者）：判定链不读这两个字段，
 >    它们只进 llm_judge 投影与对账，是诊断线索；一旦条件必填，缺文案的失败步会被判 `unscored`，
@@ -409,17 +420,39 @@
 - **验证**：`pytest tests/test_mock_tools.py tests/test_reference_agent.py -q` → 25 passed；
   8 组变异全 DETECTED。
 
-### [ ] B-03b 平台侧采集 + LLM 驱动的 Agent（R-4 的真正缺口）
+### [~] B-03b 平台侧采集 + LLM 驱动的 Agent — ① 已落地（round-106），② 待做
 
-- **是什么**：现在 trace 仍是 **Agent 自报**。Agent 可以改写 `call_index` 把重试藏起来，
+- **是什么**：此前 trace 仍是 **Agent 自报**。Agent 可以把一次失败的调用整个不写，
   平台无法证伪。另有一个决策体（LLM）而不是写死流程的 Agent 尚未接入。
-- **为什么现在不做**：要有一个可调的模型端点与配额；且 OTel GenAI 语义约定截至 2026-11
-  仍是 Development，属性名变过（`gen_ai.*`）。
-- **做完判据**：① 平台自己代理工具调用（Agent 只能拿到平台返回的结果），
-  得到的 trace 与 Agent 自报的 **call_index / 参数 / 状态逐条可比**，不一致即 `mismatch`；
-  ② 一个 LLM Agent 跑 `dbg-001` 且不触发 `trace_invalid`。
-- **验证**：故意让参考 Agent 上报一份"删掉失败调用"的 trace → 平台侧比对必须报不一致
-- **谁推**：我（M1 剩余部分）。
+- **① 平台侧采集 + 逐条对账：已落地**（`src/arena/platform_capture.py`）
+  - **代理**：工具服务前加一层，账本由**平台**按到达到序自己编 `call_index`、记
+    `params / status / http_status`；**先记账再返回**，记账失败则请求失败（fail closed）。
+    HTTP 层复用 `mock_tools.make_server` 的 `on_call` 钩子——只有一份实现，不另起一份 handler。
+  - **对账**：`compare_traces()` 按 `call_index` 对齐（**不是按数组次序**），逐条比
+    `name / params / status / http_status`；文案点名"第几条、哪个字段、两边各是什么"。
+    `http_status` 只在失败调用上必填（与 B-22 结论一致）。
+  - **判据实证**：`scripts/capture_probe.py` → `CAPTURE_OK=True`，四种形态一起看：
+
+    | 形态 | schema_valid | R3 | 平台对账 |
+    |---|---|---|---|
+    | 原样 | True | pass | match |
+    | 删掉失败调用 | False | unscored | mismatch |
+    | 失败改成功 | True | fail | mismatch |
+    | **伪造「失败+重试」** | **True** | **pass** | **mismatch** |
+
+    最后一行是这条待办的理由：一份凭空编出来的重试在评测器里**完全合法**（结构层无红灯、
+    R3 给满分），唯一能说破它的是平台账本。这条也锁进了 `tests/test_platform_capture.py`。
+  - **裁判**：`test_platform_capture.py` 17 passed；`tools/mutations/mutate_capture.py`
+    **6 组全 DETECTED**（编号不归平台 / 按数组次序比 / 漏报缺失 / 参数不比 / 缺 http_status 放行 / 条数不报）。
+- **② LLM 驱动的 Agent：未做**。底座已有（`llm_client.py`：`LLM_API_KEY` 走环境变量或 `.env`，
+  429/5xx 才重试、截断单独归因、密钥打码）。缺的是一个"读 scenario、自己决定调什么工具"的
+  Agent 进程，并且要跑 `dbg-001` 一次、不触发 `trace_invalid`。
+  未做的真实卡点不是技术：**要烧配额**，且"模型会不会自己想到重试"这个结论依赖模型版本，
+  需要固定版本 + 记录调用次数才有可比性。
+- **边界要写清**：① 是**可选代理**，默认路径仍是自报。只有部署时强制 Agent 走代理，
+  "trace 不可伪造"才成立；单独存在一个能对账的模块，不改变"默认自报"这个事实。
+- **验证（判据原文）**：故意让参考 Agent 上报一份"删掉失败调用"的 trace → 平台侧比对报不一致 ✅
+- **谁推**：我（① 已完，② 等模型端点与配额确认）。
 
 ### [~] B-04 LLM Judge 双评 + 一致性（round-79 做了一半）
 

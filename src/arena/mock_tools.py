@@ -317,8 +317,14 @@ class MockToolService:
 # ---------------------------------------------------------------------------
 
 def make_server(task: dict, *, host: str = "127.0.0.1", port: int = 0,
-                quiet: bool = True) -> tuple[ThreadingHTTPServer, MockToolService]:
-    """起一个 mock 工具服务，返回 (server, service) —— service 需要 reset()。"""
+                quiet: bool = True, on_call=None
+                ) -> tuple[ThreadingHTTPServer, MockToolService]:
+    """起一个 mock 工具服务，返回 (server, service) —— service 需要 reset()。
+
+    `on_call(name, params, status, body)` 是平台侧采集钩子（B-03b）：**先记账再返回**
+    由调用点保证——它写在 `service.call()` 之后、`_send()` 之前，钩子抛异常时
+    结果不会发给调用方（fail closed：宁可这次提交报废，也不留"已发生但没记到"的洞）。
+    """
     service = MockToolService(task)
 
     class Handler(BaseHTTPRequestHandler):
@@ -355,6 +361,10 @@ def make_server(task: dict, *, host: str = "127.0.0.1", port: int = 0,
                 self._send(400, {"error": "bad_request", "detail": "body 不是合法 JSON"})
                 return
             status, body = service.call(name, params)
+            if on_call is not None:
+                # 记账必须在把结果交出去之前：反过来的话，进程在两步之间被杀的窗口里
+                # 这次调用"真实发生过但平台没记到"，对账就会把诚实的 Agent 判成多写。
+                on_call(name, params, status, body)
             self._send(status, body)
 
     server = ThreadingHTTPServer((host, port), Handler)
