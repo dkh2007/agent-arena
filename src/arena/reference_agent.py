@@ -46,9 +46,10 @@ from pathlib import Path
 from typing import Any
 
 try:  # 作为包被 import
-    from . import diagnosis_report as dr
+    from . import agent_trace, diagnosis_report as dr
 except ImportError:  # 作为独立脚本运行
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import agent_trace  # type: ignore[no-redef]
     import diagnosis_report as dr  # type: ignore[no-redef]
 
 REPORT_PATH = "/workspace/report.json"
@@ -265,20 +266,15 @@ class ReferenceAgent:
             return status, body
 
     def _record(self, name: str, params: dict, status: int, body: dict) -> None:
-        """把一次尝试写进 trace。字段按 trace_requirements.minimum.item_fields 给满。"""
-        item: dict[str, Any] = {
-            "call_index": len(self._calls) + 1,
-            "name": name,
-            "params": params,
-        }
-        if status == 0:
-            item.update(status="timeout", error=str(body.get("error")))
-        elif 200 <= status < 300:
-            item.update(status="success", result_summary=_summary(body))
-        else:
-            item.update(status="error", http_status=status,
-                        error=str(body.get("error") or f"http_{status}"))
-        self._calls.append(item)
+        """把一次尝试写进 trace。
+
+        字段拼装不在本模块：`agent_trace.trace_item()` 是唯一实现，LLM Agent 用的是同一个。
+        两处各写一份的话，改一处漏一处会让 trace 静默地不符合契约，而后果是断言 fail——
+        看起来像"这个 Agent 能力不行"，归因直接指错方向。
+        """
+        self._calls.append(
+            agent_trace.trace_item(len(self._calls) + 1, name, params, status, body)
+        )
 
     # ── 主流程 ──────────────────────────────────────────────────────────────
 
@@ -461,21 +457,6 @@ def _line_in_function(source_text: str, func: str, needle: str) -> int:
         if needle in line:
             return i + 1
     raise AgentError(f"函数 {func}() 体内找不到含 {needle!r} 的行")
-
-
-def _summary(body: dict) -> dict:
-    """把工具返回压成可核对的小摘要：**只记形状与计数，不记原始行**。
-
-    为什么不记 `orders` 全量：trace 会长到不可读，且金额出现在 trace 里会让
-    「答案是否来自过程」变成看运气（凑巧有个数等于合计）。真正的出处核查
-    属平台侧抓包（B-03b），不靠 Agent 自觉多写。
-    """
-    if "orders" in body and isinstance(body["orders"], list):
-        return {"orders": len(body["orders"]), "total": body.get("total")}
-    # 定位骨架的 read_file：记路径与规模即可，内容不进 trace（同上：不能让"答案"
-    # 与"过程"在 trace 里同时出现，否则出处核查就退化成看运气）。
-    keep = ("path", "written", "lines", "bytes")
-    return {k: v for k, v in body.items() if k in keep} or {"ok": True}
 
 
 def _summarize_orders(rows: list[dict], *, apply_filter: bool = True) -> dict[str, Any]:

@@ -4,6 +4,17 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-18（round-107：**B-03b ② 骨架落地——模型自己决策，框架不许代劳**。
+> ① `llm_agent.py`：每步一纸 JSON（`call_tool`/`finish`），本进程发调用、回填观察、写 trace；
+>    trace 字段拼装抽到 `agent_trace.py`，与参考 Agent **共用一份实现**（两处各写会静默漂移）。
+> ② **`_invoke_once` 只发一次**：循环里加一句"5xx 再试"会让 R3 对任何模型恒为 pass——
+>    与任务 YAML 的 `platform_retry: 0` 是同一件事往上挪了一层。
+> ③ 判据实证（`scripts/llm_agent_probe.py` → `LLM_PROBE_OK=True`）：三个剧本同场，
+>    ratio **1.0 / 0.0 / 0.75**，差别只来自决策；三份 trace 与平台账本均逐条一致。
+> ④ 提示不放期望值与故障位（否则这道题证明不了能算出来、R3 变成照做），两条用例锁着。
+> ⑤ 裁判：`test_llm_agent.py` **17 passed**；`mutate_llm_agent.py` **6/6 DETECTED**。
+> ⑥ 未做且不假装做了：这套跑的是**剧本模型**，只证链路，不证"真模型会自己想到重试"。
+>
 > 更新：2026-11-18（round-106：**B-03b ① 平台侧采集落地——"我重试了"这句话从此可证伪**。
 > ① `platform_capture.py`：工具调用过平台代理，**账本由平台自己编号**（先记账再返回，
 >    记账失败则请求失败）；`compare_traces()` 按 `call_index` 对齐逐条比 name/params/status/http_status。
@@ -420,7 +431,7 @@
 - **验证**：`pytest tests/test_mock_tools.py tests/test_reference_agent.py -q` → 25 passed；
   8 组变异全 DETECTED。
 
-### [~] B-03b 平台侧采集 + LLM 驱动的 Agent — ① 已落地（round-106），② 待做
+### [~] B-03b 平台侧采集 + LLM 驱动的 Agent — ① 与 ② 骨架已落地（round-106/107），② 真跑待配额
 
 - **是什么**：此前 trace 仍是 **Agent 自报**。Agent 可以把一次失败的调用整个不写，
   平台无法证伪。另有一个决策体（LLM）而不是写死流程的 Agent 尚未接入。
@@ -444,15 +455,35 @@
     R3 给满分），唯一能说破它的是平台账本。这条也锁进了 `tests/test_platform_capture.py`。
   - **裁判**：`test_platform_capture.py` 17 passed；`tools/mutations/mutate_capture.py`
     **6 组全 DETECTED**（编号不归平台 / 按数组次序比 / 漏报缺失 / 参数不比 / 缺 http_status 放行 / 条数不报）。
-- **② LLM 驱动的 Agent：未做**。底座已有（`llm_client.py`：`LLM_API_KEY` 走环境变量或 `.env`，
-  429/5xx 才重试、截断单独归因、密钥打码）。缺的是一个"读 scenario、自己决定调什么工具"的
-  Agent 进程，并且要跑 `dbg-001` 一次、不触发 `trace_invalid`。
-  未做的真实卡点不是技术：**要烧配额**，且"模型会不会自己想到重试"这个结论依赖模型版本，
-  需要固定版本 + 记录调用次数才有可比性。
+- **② LLM 驱动的 Agent：骨架已落地（round-107），真跑待配额**。
+  - `src/arena/llm_agent.py`：模型每步输出一纸 JSON（`call_tool` / `finish`），本进程负责
+    发调用、回填观察、写 trace。`meta` 记 `prompt_version` / 服务端回报的 `model` /
+    `temperature` / 步数 / `bad_outputs`——不钉这几样，"会不会自己重试"下次跑不出来也没法归因。
+  - **框架不替模型重试**（`_invoke_once` 只发一次）。任务 YAML 里 `platform_retry: 0` 的理由
+    是「重试是本次被测的能力」，同一条理由在 Agent 层同样成立：循环里加一句"5xx 再发一次"，
+    R3 就对**任何**模型恒为 pass，成了一条不可能变红的绿。
+  - **提示里不放期望值与故障位**：`tool_specs()` 只取对外声明（名字/说明/参数边界），
+    `mock` / `fixture` / `failure` 一律不进；两条用例锁着。情景原文照搬 YAML，不改写
+    （改写会造出两份真相源）。
+  - **判据实证**：`scripts/llm_agent_probe.py` → `LLM_PROBE_OK=True`，三个剧本同场比赛：
+
+    | 剧本 | 调用 | R1 | R2 | R3 | R4 | ratio | 平台对账 |
+    |---|---|---|---|---|---|---|---|
+    | 会重试 | 4 | pass | pass | pass | pass | 1.0 | 一致 |
+    | 不重试 | 2 | fail | blocked | fail | pass | 0.0 | 一致 |
+    | 先幻觉参数（limit=50）再自行纠正 | 5 | pass | pass | pass | fail | 0.75 | 一致 |
+
+    三行差别**只来自决策**——框架若代劳，第二行会变得和第一行一样。
+  - **裁判**：`test_llm_agent.py` 17 passed；`tools/mutations/mutate_llm_agent.py`
+    **6 组全 DETECTED**（框架代重试 / 提示带 fixture / 未声明工具照发并记 / finish 自述当产物 /
+    中止记成 completed / 纠正消息递答案）。
+  - **仍未做的**：真模型跑一次。这里用的是**剧本模型**，它证明的是链路
+    （提示→协议→观察→记录→评测→对账）齐备，**不**证明"某个真模型会自己想到重试"。
+    卡点仍是配额与模型版本固定；混着说就是拿脚手架当成绩。
 - **边界要写清**：① 是**可选代理**，默认路径仍是自报。只有部署时强制 Agent 走代理，
   "trace 不可伪造"才成立；单独存在一个能对账的模块，不改变"默认自报"这个事实。
 - **验证（判据原文）**：故意让参考 Agent 上报一份"删掉失败调用"的 trace → 平台侧比对报不一致 ✅
-- **谁推**：我（① 已完，② 等模型端点与配额确认）。
+- **谁推**：我（① 与 ② 骨架已完，② 真跑等模型端点与配额确认）。
 
 ### [~] B-04 LLM Judge 双评 + 一致性（round-79 做了一半）
 

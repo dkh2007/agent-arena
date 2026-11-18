@@ -10324,3 +10324,106 @@ LLM 驱动的 Agent 尚未接入。底座 `llm_client.py` 已有（重试只对 
 密钥打码），缺的是一个"读 scenario 自己决定调什么"的进程 + 一次真实跑通。
 卡点不是技术而是**配额与模型版本固定**：不固定版本，"模型会不会自己想到重试"这个结论
 下次就复现不了。这条留着，等配额口径定了一起做。
+
+---
+
+## §109 round-107：模型自己决策，框架不许代劳（B-03b ② 骨架）
+
+### 109.1 这条待办真正要回答的问题
+
+R-4 缺的不是"再来一个能跑的 Agent"（`reference_agent.py` 早就跑通了），而是
+**决策来自模型**：翻不翻页、撞了 500 要不要再试、写不写报告，都是模型自己选的。
+参考 Agent 把这些写死在流程里，所以它跑满分只说明"题目可解"，不说明任何模型的能力。
+
+### 109.2 一条不能让步的设计：框架不替模型重试
+
+任务 YAML 里 `execution.platform_retry: 0` 的理由是「重试是本次被测的能力，平台代劳会让
+R3 测不到」。**同一条理由在 Agent 框架这一层同样成立**：只要 `_invoke_once()` 外面套一个
+"5xx 再发一次"的循环，无论模型多差，trace 里都会出现"失败后成功"，R3 恒为 pass。
+
+那是一条**不可能变红的绿**：分数更高、没有任何报错、也没有人会发现。所以：
+
+```python
+status, body, _elapsed = self.tools.call(name, params)   # 只发一次
+```
+
+失败事实原样进观察（`[工具结果] fetch_orders → HTTP 500 {...}`），重不重试是模型的选择。
+
+`mutate_llm_agent.py` 的 M1 把这条改成自动重试，`test_harness_issues_exactly_one_call_per_decision`
+立刻变红——**这条用例数的是调用次数，不是分数**：分数会骗人，次数不会。
+
+### 109.3 trace 记录抽成一份实现（`agent_trace.py`）
+
+`trace.tool_calls[*]` 的字段名被四处消费：结构校验（编号连续、status 枚举）、R3（`http_status`）、
+R4（`params` 键集）、平台对账（逐项比）。两个 Agent 各写一份 `_record()`，某天只改一处，
+另一处产出的 trace 就**静默地**不符合契约——而后果是断言 fail，看起来像"这个 Agent 能力不行"，
+归因直接指错方向。所以 `agent_trace.trace_item()` 是唯一实现，参考 Agent 的 `_record` 改成调它
+（`test_reference_agent.py` 63 passed 不变，行为未动）。
+
+### 109.4 提示的边界：两类东西绝不进
+
+| 不放 | 放了会怎样 |
+|---|---|
+| 期望答案（`test_inputs` / 合计值 / 订单号） | 这道题从此证明不了"能算出结果"，变成抄写题 |
+| 故障注入细节（`failures` / `attempt` / `offset=10`） | 等于告诉它"这页会挂，直接重试"，R3 测的是照做 |
+| "遇到失败请重试"这类指令 | 把判据写进提示，测的就不再是模型的判断 |
+
+`tool_specs()` 只取对外声明（名字 / 说明 / 参数边界，包括 `limit ≤ 10`——不给边界它没法
+避免 `invalid_limit`，那是接口说明不是考题）。情景**原文照搬** YAML 的 `scenario`：改写会
+造出两份真相源，YAML 改了提示没跟上，判出来是"答非所问"。
+
+两条用例锁着：`test_prompt_does_not_carry_the_expected_answer`、
+`test_prompt_does_not_reveal_where_the_fault_is_injected`。
+
+### 109.5 实测：三档差异只来自决策
+
+```
+剧本               final        调用   账本     R1     R2     R3     R4  ratio     对账
+会重试              completed     4    4   pass   pass   pass   pass    1.0     一致
+不重试              completed     2    2   fail blockd   fail   pass    0.0     一致
+先幻觉参数再纠正     completed     5    5   pass   pass   pass   fail   0.75     一致
+LLM_PROBE_OK=True
+```
+
+第二行是这条链路的**意义所在**：同一套框架、同一道题，只差一次"要不要再试"的决策，
+分数从 1.0 掉到 0.0（R1 未交产物 ⇒ 门禁不过 ⇒ ratio 0）。
+第三行说明粒度还在：`limit=50` 被服务端拒、模型自己改回 10，只该打掉 R4（0.75），
+不该连坐 R2/R3。
+
+三份 trace 与平台账本**逐条一致**（`compare_traces.ok`）——模型驱动不改变"记录归平台"。
+
+### 109.6 失败路径必须落成 `crashed`，不许伪装成收尾
+
+| 情形 | 处置 |
+|---|---|
+| 接口 5xx（`LLMClient` 自己重试两轮后仍失败） | `crashed`，note 带 `LLMError` |
+| 正文为空且 `finish_reason=length` | `crashed`，note 说"预算被思考吃光、调大 `max_tokens`"（不算接口故障） |
+| 输出不是协议 JSON | 回一条"照协议重发"（**不给正确答案**），超 `max_bad_outputs` 才放弃 |
+| 步数预算用尽 | `crashed`，note 说明是预算不是崩溃（trace 枚举没有 `gave_up`，R5 只认 `completed`） |
+
+已发生的调用**全部保留**在 trace 里：把半截执行丢掉，等于让 R3/R5 连证据都看不到。
+
+### 109.7 边界：这套跑的是剧本模型，证不了什么
+
+`ScriptedModel` 按剧本吐决策，所以本轮的结论只有一条：**链路齐备**（提示构造 → 协议解析 →
+观察回填 → 记录 → 评测 → 对账），任何一处坏掉都会在烧配额之前暴露。
+
+它**不**证明"某个真模型会自己想到重试"。真跑还差两件：模型端点、**版本钉死**
+（`meta.model` 记服务端回报的模型名，`prompt_version` 记提示版本）。不钉这两样，
+"这个模型会不会重试"下次跑不出来也没法归因。**把脚手架当成绩，就是这条待办最容易被糊过去的地方。**
+
+### 109.8 反证条件
+
+① 若 `LLMAgent` 在工具 5xx 上自动重试 ⇒ `test_harness_issues_exactly_one_call_per_decision` 红
+   （它也意味着 R3 对任何模型恒为 pass）。
+② 若提示里出现 fixture 或 `failures` ⇒ 两条 leak 用例红，且 `LLM_PROBE_OK=False`。
+③ 若 `finish` 时把 `answer` 当产物写进 `artifacts` ⇒ "模型说写了就算"，R1 变自述。
+④ 若未声明的工具也照发并记进 trace ⇒ 平台账本里没有这次调用，对账会把"幻觉"错报成"篡改"，
+   受冤的是提交方。
+⑤ 若 `except` 分支记 `completed` ⇒ R5 不再可信，所有失败伪装成正常收尾。
+⑥ 若纠正消息里递一个正确决策 ⇒ `bad_outputs` 那层测的变成提示里的答案。
+
+### 109.9 状态变化
+
+B-03b ① 已关闭；② **骨架落地、真跑未做**，条目保持 `[~]`，不改成 `[x]`。
+C 线只剩 C-02（批次化包重生成，等真有 ≥3 步加用例的批次自动触发）。
