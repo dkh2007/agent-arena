@@ -1227,8 +1227,10 @@
   - **B-20b 实现与接线**：`evaluate_reconciliation` + `SUPPORTED_TYPES` + 结果形状。
     **硬约束：不许做成 credit 断言**。credit 分母恒定为权重和（P4），一条"有代理才过得了"
     的断言会让无代理部署的每份提交白扣 20%——正是本条目第 2 条障碍的同一种病。
-    正确落点是 `process_fact` 那一类**流程事实**（P2 已有先例：缺过程记中性事实，不记能力不足），
-    或报告里的诊断字段。接线前后必须跑 `test_task_executability.py`。
+    **也不许复用 `process_fact.missing`**：那个字段一为真，`weighted_sum` 与 `ratio` 双双归零
+    （`suppressed = disqualified or voided or missing_process`）⇒ 无代理部署**全员 0 分**，
+    比 20% 的税更糟。正确落点是**新增一个中性流程事实字段**，或只落诊断区。
+    接线前后必须跑 `test_task_executability.py`。
   - **甲（原始行进 Agent 记录）已结构性否掉，不是偏好**：答案与原始行同处一份 Agent 可控内容里，
     「出处」就退化成「能不能凑出一个相等的数」——诚实的和伪造的都能凑，那不是弱证据，是**无效证据**
     （`agent_trace.summary` 原文：看运气）。**只有一种残骸值得保留**：Agent 交**主张**
