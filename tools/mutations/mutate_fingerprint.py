@@ -1,6 +1,6 @@
 """B-04e 判据指纹的变异检验：证明这 17 条判据真的在管指纹，而不是在管注释。
 
-判定三档与 `README.md` 第 5 坑一致：
+判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）：
 
     DETECTED  变异后 pytest 退出码 **1** —— 真被抓住
     MISSED    变异后仍全绿 —— 这条测试没在管这事
@@ -25,18 +25,16 @@ M8–M10 打**接线**：函数写对了但报告里没写（M8）、可选键�
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 DR = Path("src/arena/diagnosis_report.py")
 SCHEMA = Path("docs/diagnosis-report.schema.json")
 T = "tests/test_rubric_fingerprint.py"
-PYEXE = sys.executable
 
 PAYLOAD = '{"version": FINGERPRINT_VERSION, GATE: gate, CREDIT: credit}'
 
@@ -56,9 +54,15 @@ MUTATIONS = [
      f"{T}::test_skill_id_change_moves_the_fingerprint_even_though_score_is_unchanged"),
 
     # ── 多算：等价写法被当成改动 ⇒ 补一句注释触发全库重评 ────────────────────
+    # 锚点带上 version 那一行：round-99 加了逐条规则的指纹函数，`sort_keys=True,`
+    # 在文件里变成两处，只写它命中 2 次会判 INVALID。整份指纹才该被这条变异打到。
     ("M3 不排序键（YAML 调换书写顺序被算成判据变更）",
      DR,
+     '        {"version": FINGERPRINT_VERSION, GATE: gate, CREDIT: credit},\n'
+     "        ensure_ascii=False,\n"
      "        sort_keys=True,",
+     '        {"version": FINGERPRINT_VERSION, GATE: gate, CREDIT: credit},\n'
+     "        ensure_ascii=False,\n"
      "        sort_keys=False,",
      f"{T}::test_key_order_does_not_move_the_fingerprint"),
 
@@ -79,11 +83,17 @@ MUTATIONS = [
      f"{T}::test_expected_value_change_moves_the_fingerprint"),
 
     # ── 校验旁路：非法 rubric 也拿到指纹 ────────────────────────────────────
+    # 同上：`gate, credit = rubric_layers(task)` 在 round-99 之后出现两处，
+    # 锚点必须带上下一步（`payload` 用的是整份版本号）才唯一。
     ("M6 不调 rubric_layers（非法 rubric 也有指纹，与合法标准无法区分）",
      DR,
-     "    gate, credit = rubric_layers(task)",
-     "    gate = list(task.get(\"rubric_gate\") or [])\n"
-     "    credit = list(task.get(\"rubric_credit\") or [])",
+     "    gate, credit = rubric_layers(task)\n"
+     "    payload = json.dumps(\n"
+     '        {"version": FINGERPRINT_VERSION',
+     '    gate = list(task.get("rubric_gate") or [])\n'
+     '    credit = list(task.get("rubric_credit") or [])\n'
+     "    payload = json.dumps(\n"
+     '        {"version": FINGERPRINT_VERSION',
      f"{T}::test_refuses_to_fingerprint_an_invalid_rubric"),
 
     # ── 版本串：换归一化规则后旧指纹必须可辨 ────────────────────────────────
@@ -113,47 +123,19 @@ MUTATIONS = [
      f"{T}::test_schema_rejects_a_malformed_fingerprint"),
 ]
 
-
 def _run(node: str) -> tuple[int, str]:
     env = {**os.environ, "PYTEST_DEBUG_TEMPROOT": tempfile.mkdtemp(prefix="pt-fp-")}
     r = subprocess.run([PYEXE, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
                        capture_output=True, text=True, env=env)
     return r.returncode, (r.stdout + r.stderr).strip()
 
-
 def main() -> int:
-    results: list[tuple[str, str, str]] = []
-    originals = {p: p.read_text(encoding="utf-8") for p in {m[1] for m in MUTATIONS}}
-    try:
-        for name, path, old, new, node in MUTATIONS:
-            orig = originals[path]
-            hits = orig.count(old)
-            if hits != 1:
-                results.append((name, "INVALID", f"锚点命中 {hits} 次（应为 1）"))
-                continue
-            path.write_text(orig.replace(old, new, 1), encoding="utf-8")
-            try:
-                rc, out = _run(node)
-            finally:
-                path.write_text(orig, encoding="utf-8")
-            if rc == 1:
-                tail = [line for line in out.splitlines() if line.strip()][-1:]
-                results.append((name, "DETECTED", tail[0] if tail else ""))
-            elif rc == 0:
-                results.append((name, "MISSED", "测试仍绿——没在管这事"))
-            else:
-                results.append((name, "INVALID", f"收集/环境错误 rc={rc}"))
-    finally:
-        for path, text in originals.items():
-            path.write_text(text, encoding="utf-8")
+    """判定与还原全交给 `_runner`：本文件只负责"变异长什么样"。
 
-    for name, verdict, detail in results:
-        print(f"{verdict:9} {name}  {detail}")
-    ok = all(v == "DETECTED" for _, v, _ in results)
-    print("---")
-    print(f"共 {len(results)} 组；判定：", "全 DETECTED" if ok else "有漏网或无效变异")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报"抓住了"（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, temp_prefix="pt-fingerprint-")
 
 if __name__ == "__main__":
     raise SystemExit(main())

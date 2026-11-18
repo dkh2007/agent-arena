@@ -1,6 +1,6 @@
 """掌握度模块的变异测试（round-80，B-07）。
 
-判定三档沿用 round-75：`DETECTED` / `INVALID`（锚点未命中、变异自身崩、语法错）/ `MISSED`。
+判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）：`DETECTED` / `INVALID`（锚点未命中、变异自身崩、语法错）/ `MISSED`。
 **`INVALID` 不算抓住**——变异脚本自己的 bug 会让它看起来像"抓住了"。
 
 跑法： python tools/mutations/mutate_mastery.py
@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 # 站到仓根再干活：脚本里全是相对路径（src/… / tests/…），在别的目录直接跑会
@@ -20,10 +18,11 @@ import os as _os
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 _os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 M = Path("src/arena/mastery.py")
 S = Path("src/arena/store.py")
 T = "tests/test_mastery.py"
-PYEXE = sys.executable
 
 MUTATIONS = [
     # (说明, 文件, 旧片段, 新片段, 期望撞红的用例)
@@ -131,51 +130,13 @@ MUTATIONS = [
      "tests/test_diagnosis_report.py::test_td038_voided_never_counts_toward_mastery"),
 ]
 
-
 def main() -> int:
-    results = []
-    for name, path, old, new, node in MUTATIONS:
-        orig = path.read_text(encoding="utf-8")
-        backup = orig
-        if orig.count(old) != 1:
-            results.append((name, "INVALID", f"锚点命中 {orig.count(old)} 次（应恰好 1 次）"))
-            continue
-        try:
-            path.write_text(orig.replace(old, new, 1), encoding="utf-8")
-            status, detail = "MISSED", ""
-            for i in range(2):  # 每个变异跑两遍：测试若自己抖动，两次结果必须一致
-                r = subprocess.run(
-                    [PYEXE, "-m", "pytest", "-q", node, "-p", "no:cacheprovider"],
-                    capture_output=True, text=True,
-                    env={**__import__("os").environ, "PYTEST_DEBUG_TEMPROOT": str(Path(".git/pt").resolve())},
-                )
-                if r.returncode == 0:
-                    status, detail = "MISSED", "测试仍绿——这条测试没在管这事"
-                    break
-                # pytest 退出码只有 1 代表"有用例失败"。4=用法错误、5=没收集到用例、
-                # 2/3=中断或内部错——这些是**变异脚本自己**坏了，必须记 INVALID。
-                # round-89 踩到过：测试改名后节点不存在，旧判定把 "no tests ran" 当成
-                # DETECTED，看着像"抓住了"。（`INVALID` 不算抓住。）
-                if r.returncode != 1:
-                    status, detail = "INVALID", f"pytest 退出码 {r.returncode}（不是 1）"
-                    break
-                lines = [ln for ln in r.stdout.strip().splitlines() if ln.strip()]
-                tail = lines[-1] if lines else ""
-                if "error" in r.stdout.lower() and "failed" not in r.stdout.lower():
-                    status, detail = "INVALID", "收集/语法错误，不算抓住"
-                    break
-                status, detail = "DETECTED", tail
-        finally:
-            path.write_text(backup, encoding="utf-8")
-        results.append((name, status, detail))
+    """判定与还原全交给 `_runner`：本文件只负责"变异长什么样"。
 
-    for name, status, detail in results:
-        print(f"{status:9} {name}  {detail}")
-    ok = all(status == "DETECTED" for _, status, _ in results)
-    print("---")
-    print("判定：", f"全 DETECTED（{len(results)} 条）" if ok else "有漏网或无效变异，需处理")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报"抓住了"（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, temp_prefix="pt-mastery-", repeats=2)
 
 if __name__ == "__main__":
     raise SystemExit(main())

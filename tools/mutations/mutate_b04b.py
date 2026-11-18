@@ -1,6 +1,6 @@
 """B-04b 的变异检验：judge 接线层 + 仲裁队列。
 
-判定三档（与 round-89 定的规则一致，见 `tools/mutations/README.md` 第 5 坑）：
+判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）：
 
     DETECTED  变异后 pytest 退出码 **1**（有用例失败）——真被抓住
     MISSED    变异后仍全绿——这条测试没在管这事
@@ -16,20 +16,18 @@ pytest 收尾清理会撞沙箱的批量删除守卫并抛 `SystemExit(1)`，让
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 # 站到仓根再干活：下面全是相对路径。按"往上找 src/arena"定位，从任何目录调用都成立。
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 JP = Path("src/arena/judge_pipeline.py")
 ST = Path("src/arena/store.py")
 API = Path("src/arena/submission_api.py")
 T = "tests/test_judge_pipeline.py"
-PYEXE = sys.executable
 
 MUTATIONS = [
     # ── judge_pipeline：入队判据与 attach 的边界 ────────────────────────────
@@ -111,47 +109,19 @@ MUTATIONS = [
      f"{T}::test_resolution_requires_a_note_and_is_not_overwritable"),
 ]
 
-
 def _run(node: str) -> tuple[int, str]:
     env = {**os.environ, "PYTEST_DEBUG_TEMPROOT": tempfile.mkdtemp(prefix="pt-b04b-")}
     r = subprocess.run([PYEXE, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
                        capture_output=True, text=True, env=env)
     return r.returncode, (r.stdout + r.stderr).strip()
 
-
 def main() -> int:
-    results: list[tuple[str, str, str]] = []
-    originals = {p: p.read_text(encoding="utf-8") for p in (JP, ST, API)}
-    try:
-        for name, path, old, new, node in MUTATIONS:
-            orig = originals[path]
-            hits = orig.count(old)
-            if hits != 1:
-                results.append((name, "INVALID", f"锚点命中 {hits} 次（应为 1）"))
-                continue
-            path.write_text(orig.replace(old, new, 1), encoding="utf-8")
-            try:
-                rc, out = _run(node)
-            finally:
-                path.write_text(orig, encoding="utf-8")
-            if rc == 1:
-                tail = [line for line in out.splitlines() if line.strip()][-1:]
-                results.append((name, "DETECTED", tail[0] if tail else ""))
-            elif rc == 0:
-                results.append((name, "MISSED", "测试仍绿——没在管这事"))
-            else:
-                results.append((name, "INVALID", f"收集/环境错误 rc={rc}"))
-    finally:
-        for path, text in originals.items():
-            path.write_text(text, encoding="utf-8")
+    """判定与还原全交给 `_runner`：本文件只负责"变异长什么样"。
 
-    for name, verdict, detail in results:
-        print(f"{verdict:9} {name}  {detail}")
-    ok = all(v == "DETECTED" for _, v, _ in results)
-    print("---")
-    print(f"共 {len(results)} 组；判定：", "全 DETECTED" if ok else "有漏网或无效变异")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报"抓住了"（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, temp_prefix="pt-b04b-")
 
 if __name__ == "__main__":
     raise SystemExit(main())

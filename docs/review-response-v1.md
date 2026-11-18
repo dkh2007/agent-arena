@@ -9900,3 +9900,126 @@ PREMISE_RECHECKED=True REVOKE_KEEPS_RECORD=True
   流程层也会在"还要人做的"里点出来，不会被吞掉。
 - **真正的发送**：没有代码，只留清单与人。
 - **定时跑**：刻意不做（被判据改动触发，不由时钟触发）。
+
+---
+
+## §104 round-102：变异脚本的判定收成一处（工具债 C-04 关闭）
+
+### 104.1 为什么这不是"代码整洁"问题
+
+19 个变异脚本里有 8 个还留着 round-75 那套判定：
+
+```
+rc == 0            → MISSED（对）
+rc == 1            → DETECTED（对）
+rc == 2/3/4/5 且不含 error → DETECTED（← 这条是错的）
+```
+
+pytest 的退出码里**只有 1 表示"有用例失败"**：
+
+| 退出码 | 含义 | 旧判定 |
+|---|---|---|
+| 0 | 全绿 | MISSED |
+| 1 | 有用例失败 | DETECTED |
+| 2 | 会话被中断（收集期崩） | **DETECTED** |
+| 3 | 内部错误 | **DETECTED** |
+| 4 | 用法错误（节点名写错） | **DETECTED** |
+| 5 | 没收集到用例 | INVALID |
+
+也就是说：**改个测试名，脚本照样打印 `DETECTED`**，告诉你"这条测试在管这事"，
+而实际是那条用例根本没跑。round-89 M14 就是这么踩的（`no tests ran` 走 rc=4）。
+假绿比漏网贵：漏网会让人去补测试，假绿让人以为已经补过了。
+
+### 104.2 落地形态：`judge()` 只有一处
+
+```python
+# tools/mutations/_runner.py
+def judge(rc) -> tuple[str, str]:
+    if rc == 1: return DETECTED, ""
+    if rc == 0: return MISSED, "测试仍绿——没在管这事"
+    return INVALID, f"{RC_MEANING[rc]} rc={rc}"     # 文案直接写"用法错误（节点名可能写错）"
+```
+
+各脚本的 `main()` 收成一句 `return run_mutations(MUTATIONS, ...)`，
+`MUTATIONS` 一个字没动（4 元组走 `default_path`，5 元组自带路径）。
+净变化 **−754 / +178 行**。
+
+三个保留的细节：
+
+1. **`repeats` 参数**：`mutate_mastery.py` 原本每条变异连跑两遍（防用例本身抖动）。
+   收编时没丢，并且语义修好了——原来"第一遍红、第二遍绿"会因为 `break` 只报第一个结果；
+   现在**两次退出码不一致直接 `INVALID`**（报"用例在抖"），不冒充抓住。
+2. **每条变异一个全新 `PYTEST_DEBUG_TEMPROOT`**：顺手把 `mutate_scheduler` / `mutate_judge` /
+   `mutate_client` 里固定 `.git/pt` 的写法也换掉了（那是 README 第 1 坑，只是没爆过）。
+3. **`--self-test`**：判定器自己要被判一次。四种情形：
+
+   | 情形 | 期望 |
+   |---|---|
+   | 真变异（删掉权重递减校验） | DETECTED |
+   | 无害变异（只改模块文档首行） | MISSED |
+   | 锚点不存在 | INVALID |
+   | **节点名写错** | INVALID |
+
+   第四条就是旧规则假绿的那条路。断言写进 `tests/test_mutation_runner.py`，
+   判定器一旦被改坏，全量测试先红。
+
+### 104.3 收编当场就查出四处漂移（这才是统一判定的第一个收益）
+
+换成严格判定后，19 个脚本里有 4 个立刻报 `INVALID`——不是新代码的错，是**旧判定一直盖着的**：
+
+| 脚本 | 症状 | 真因 |
+|---|---|---|
+| `mutate_client` M5 | 锚点命中 2 次 | `self._sleep(min(2 ** attempt * 0.5, 4.0))` 在文件里有两处（网络异常 / HTTP 错误各一条重试路径），旧判定是 `hits < 1` 就放行，于是**两处一起被改** |
+| `mutate_fingerprint` M3 | 锚点命中 2 次 | round-99 加了逐条规则的指纹函数，`sort_keys=True,` 变成两处 |
+| `mutate_fingerprint` M6 | 锚点命中 2 次 | 同上：`gate, credit = rubric_layers(task)` 变成两处 |
+| `mutate_reappraisal` M2 | 锚点命中 2 次 | 同一段 SELECT 在 `user_reports` 与 `blocked_submissions` 里各有一份 |
+| `mutate_notices` M4 | **锚点命中 0 次** | round-101 给 `Notice` 加了 `retired=` 参数，锚点里的那行已经不在了 |
+
+四条都不是"脚本没写好"，是**源码改了、脚本没跟上**——README 第 4 坑早就写了
+"改过 `src/` 必须重跑变异脚本"，但以前靠人记，现在由 `!= 1` 直接报出来。
+修法一律是"把锚点扩到唯一"（带上下一行/WHERE 子句），不是放宽判定。
+
+顺带说明：`mutate_notices` 的 0 次命中尤其值得记——它在旧规则下会走 `hits != 1 → INVALID`，
+也就是说它**一直是红的**，只是上一轮的日志被 `tail -4` 截掉了没看见。这类"截断吃掉结论"
+和 §98 的"参照物错误"同源：看的是报尾，不是结论。
+
+### 104.4 裁判
+
+```bash
+pytest tests/test_mutation_runner.py -q          # 34 passed
+python tools/mutations/_runner.py --self-test     # 四行 OK，SELF_TEST_PASS=True
+for f in tools/mutations/mutate_*.py; do python "$f"; done   # 19 个全 DETECTED
+pytest tests/ -q                                  # 1380 passed
+```
+
+19 个脚本逐个实跑（本轮全量 232 条变异）：
+
+| 脚本 | 组数 | 脚本 | 组数 |
+|---|---|---|---|
+| advisor | 13 | notices | 8 |
+| b04 | 9 | packet | 5 |
+| b04b | 13 | reappraisal | 19 |
+| b04d | 13 | retirement | 12 |
+| baseline | 14 | scheduler | 14 |
+| client | 11 | snapshot | 21 |
+| cycle | 10 | decay | 10 |
+| exposure | 12 | fingerprint | 10 |
+| judge | 10 | locate | 11 |
+| mastery | 17 | **合计** | **232** |
+
+### 104.5 反证条件（什么时候说明这一轮做错了）
+
+① 若某个脚本里又出现 `def judge(` ⇒ 口径重新分叉，`test_judging_exists_in_exactly_one_place` 先红。
+② 若判定把 rc=4 当 `DETECTED` ⇒ 单元测试与 `--self-test` 同时红（双保险，缺一都不能算过）。
+③ 若把"锚点命中多次"放行回去 ⇒ 104.3 那四处会重新变成"看起来抓到了"，
+   而且改一次源码就可能多命中一处，人眼看不出来。
+④ 若 `repeats` 在统一时丢了 ⇒ 掌握度那条抖动用例会被当成"抓住"，比没有变异更糟。
+⑤ 若某脚本删掉 `return run_mutations(` 改成自己 print ⇒ 参数化测试按文件名点名报错。
+
+### 104.6 顺带记的
+
+- `tools/mutations/README.md`：删掉"判定规则尚未统一（如实记）"那段，换成"判定只有一处实现"
+  + `--self-test` 用法；表格补齐 `exposure` / `notices` / `retirement` / `cycle` 四行
+  （它们早就在仓库里，表格一直没登记）。
+- 跑全量测试又撞了一次 README 第 3 坑（默认临时根攒满后 atexit 清理撞沙箱守卫，`SystemExit(1)`，
+  输出被吞、看起来像挂住）。处置没变：换新的 `PYTEST_DEBUG_TEMPROOT`，或把输出重定向到文件再读。

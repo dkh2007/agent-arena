@@ -1,6 +1,6 @@
 """B-04g「每条记录说什么」的变异检验（round-100）。
 
-判定三档与 `README.md` 第 5 坑一致：
+判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）：
 
     DETECTED  变异后 pytest 退出码 **1** —— 真被抓住
     MISSED    变异后仍全绿 —— 这条测试没在管这事
@@ -24,17 +24,15 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 NT = Path("src/arena/notices.py")
 T = "tests/test_notices.py"
-PYEXE = sys.executable
 
 MUTATIONS = [
     ("M1 少一件「能跟什么比」（学生看完就去跟别人对数）",
@@ -58,12 +56,16 @@ MUTATIONS = [
      '            elif False:  # 变异：T3 落到下面的 legacy_unscored',
      f"{T}::test_evidence_only_record_is_pending_not_folded_into_unscored"),
 
+    # round-101 给这批记录加了 `retired` 标记位，锚点里必须带上它——不然命中 0 次，
+    # 变异会以 INVALID 形式"看起来做过"，实际一个字符都没改。
     ("M4 把没分的那批也推上页面（通知变成噪音）",
      NT,
-     '''            else:
-                notice = Notice(sid, row["user_id"], tid, "legacy_unscored", "none", ())''',
-     '''            else:
-                notice = Notice(sid, row["user_id"], tid, "legacy_unscored", "page", ())  # 变异''',
+     '            else:\n'
+     '                notice = Notice(sid, row["user_id"], tid, "legacy_unscored", "none", (),\n'
+     '                                retired=retired)',
+     '            else:\n'
+     '                notice = Notice(sid, row["user_id"], tid, "legacy_unscored", "page", (),\n'
+     '                                retired=retired)  # 变异',
      f"{T}::test_zero_score_unrepairable_keeps_its_diagnosis_and_is_not_announced"),
 
     ("M5 内部术语检查放行（学生读到「平台出故障」）",
@@ -91,47 +93,19 @@ MUTATIONS = [
      f"{T}::test_recalculated_record_names_what_changed_and_the_new_score"),
 ]
 
-
 def _run(node: str) -> tuple[int, str]:
     env = {**os.environ, "PYTEST_DEBUG_TEMPROOT": tempfile.mkdtemp(prefix="pt-nt-")}
     r = subprocess.run([PYEXE, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
                        capture_output=True, text=True, env=env)
     return r.returncode, (r.stdout + r.stderr).strip()
 
-
 def main() -> int:
-    results: list[tuple[str, str, str]] = []
-    originals = {p: p.read_text(encoding="utf-8") for p in {m[1] for m in MUTATIONS}}
-    try:
-        for name, path, old, new, node in MUTATIONS:
-            orig = originals[path]
-            hits = orig.count(old)
-            if hits != 1:
-                results.append((name, "INVALID", f"锚点命中 {hits} 次（应为 1）"))
-                continue
-            path.write_text(orig.replace(old, new, 1), encoding="utf-8")
-            try:
-                rc, out = _run(node)
-            finally:
-                path.write_text(orig, encoding="utf-8")
-            if rc == 1:
-                tail = [line for line in out.splitlines() if line.strip()][-1:]
-                results.append((name, "DETECTED", tail[0] if tail else ""))
-            elif rc == 0:
-                results.append((name, "MISSED", "测试仍绿——没在管这事"))
-            else:
-                results.append((name, "INVALID", f"收集/环境错误 rc={rc}"))
-    finally:
-        for path, text in originals.items():
-            path.write_text(text, encoding="utf-8")
+    """判定与还原全交给 `_runner`：本文件只负责"变异长什么样"。
 
-    for name, verdict, detail in results:
-        print(f"{verdict:9} {name}  {detail}")
-    ok = all(v == "DETECTED" for _, v, _ in results)
-    print("---")
-    print(f"共 {len(results)} 组；判定：", "全 DETECTED" if ok else "有漏网或无效变异")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报"抓住了"（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, temp_prefix="pt-notices-")
 
 if __name__ == "__main__":
     raise SystemExit(main())

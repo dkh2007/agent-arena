@@ -26,7 +26,8 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 > `scripts/push_gate.py` 的 `ABS_PATH` 规则就会拦下（那是匿名要求的一部分）。
 > 你本机要完整路径时，把仓根换成你自己的路径即可。
 
-判定：末尾一行是「全 DETECTED（N 条）」且退出码 0；出现 `MISSED` / `INVALID` 就是有洞。
+判定：末尾一行是「共 N 组：DETECTED N / MISSED 0 / INVALID 0」且退出码 0；
+出现 `MISSED` / `INVALID` 就是有洞。判定代码在 `_runner.py`，脚本里不再各写一份。
 
 ## 每个脚本对应哪一轮的哪条结论
 
@@ -46,14 +47,29 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
 | `mutate_reappraisal.py` | 重评链（生效报告不生效 / 重放读旧报告 / delta 起点退回最原始分 / **缺产物拿空对象顶替** / 不校验任务 / 落库不校验身份证 / 空理由照收 / **演练也落库** / 批量只报成功 / 批量不筛任务 / **读接口退回旧件** / **view 写错静默回落** / **重评链把「不存在」当「没重评过」** / **读不到指纹当已符合** / **指纹取落库时那份（范围永不收敛）** / **丢了 task 过滤（全库重评）** / **坏指纹静默当没指纹** / **不校验 rubric 就给范围**）（19 组） | round-92 / B-04d 接线（round-93 补 M12–M14，round-95 补 M15–M19 打受影响范围） |
 | `mutate_fingerprint.py` | 判据指纹（只算 credit 漏 gate / **漏 `skill_id`＝分数没变所以不重评** / 不排序键 / 按 id 排序吃掉数组顺序 / 指纹恒常量 / 绕过 `rubric_layers` 给非法 rubric 也起名字 / 版本串不进 payload / 报告不写指纹 / 可选键塞进 `required` / 格式不校验）（10 组） | round-94 / B-04e |
 | `mutate_baseline.py` | 全库基线 + 「补不上」分档（跑完不重算范围 / **只跑 stale 不跑无指纹** / 补不上的算成补上了 / 演练也落库 / 重复任务悄悄去重 / 没理由也照跑 / 结果不带 user_id / **报表说「已全部打平」** / **所有补不上的都要交代** / 0 分有证据的归进「没分可解释」 / 读冻结报告而非生效报告 / 缺 ratio 默认 0 / 坏 JSON 当空报告 / total 用补不上的冒充全库）（14 组） | round-96 / B-04f；round-97 补 M9–M14（B-04g 取数层） |
-
 | `mutate_packet.py` | 评审包「参照物」（不告子进程准备写入的数 / **生成期间仍比上一代包** / 生成期间一律放行 / 非生成期间不比对 / 快照自己再数一次）（5 组） | round-98 / 生成器参照物修复 |
+| `mutate_exposure.py` | 规则级曝光（五态混并 / `not_applied` 并进 untouched / 缺指纹当没变 / 只报 T1 漏 T3 / 不按 task 收范围 / 变更规则并集丢单份差异 …）（12 组） | round-99 / B-04g 取数第二段 |
+| `mutate_notices.py` | 对外文案（少一件可比边界 / 少「不是你的问题」/ 待定并进「不用管」/ 把没分的也推上页面 / 放行内部术语 / 加将来承诺 / 缺参数静默填空 / 分数变了当没变）（8 组） | round-100 / B-04g 处置计划 |
+| `mutate_retirement.py` | 终止标记（标记能删名单里的人 / 标记后仍重试 / 产物补回还跳过 / 撤销是删行 / 无署名也写库 …）（12 组） | round-101 / B-04h ② |
+| `mutate_cycle.py` | 跑批流程（演练也写库 / 只比份数不比 delta / 演练文案与真跑不同 / 冲突仍写 …）（10 组） | round-101 / B-04h ③ |
 
-> **判定规则尚未统一（如实记）**：只有 `mutate_mastery.py` / `mutate_b04b.py` / `mutate_b04d.py` / `mutate_reappraisal.py` / `mutate_fingerprint.py` / `mutate_baseline.py` / `mutate_packet.py` 是
-> 「`rc == 1` 才算抓住」。其余 8 个仍是旧规则（`rc == 5` 判 `INVALID`、含 `error` 判 `INVALID`），
-> round-89 已实测过旧规则会把节点不存在的 `no tests ran`（rc=4）判成 `DETECTED`。
-> 它们各自的全 `DETECTED` **目前仍可信**（节点都在，跑出来是 `1 failed`），
-> 但**改过测试名之后**必须人工核对一次，别只看脚本结论。统一判定登记在 BACKLOG（工具债）。
+> **判定只有一处实现（2026-11-18 / round-102 统一）**：所有脚本的 `DETECTED` / `MISSED` / `INVALID`
+> 都由 `tools/mutations/_runner.py` 的 `judge()` 给，各脚本里只剩「变异长什么样」。
+>
+> 之前这里是分叉的两套：8 个脚本用旧规则（`rc == 5` 判 `INVALID`、输出含 `error` 判 `INVALID`，
+> **其余非 0 一律 `DETECTED`**）。旧规则会把 rc=2/3/4 当成抓住，于是**测试改名后脚本照样打印
+> `DETECTED`**——round-89 M14 实测过（节点不存在时 pytest 退出码是 4）。
+> 假绿比漏网贵：它让人以为"这条测试在管这事"。
+>
+> 判定器自己有自查，不需要跑任何真实变异：
+>
+> ```bash
+> python tools/mutations/_runner.py --self-test
+> ```
+>
+> 四种情形（真变异 / 无害变异 / 锚点不存在 / **节点名写错**）分别应得
+> `DETECTED` / `MISSED` / `INVALID` / `INVALID`，末行 `SELF_TEST_PASS=True`。
+> 第四条就是旧规则假绿的那条路。
 
 ## 踩过的坑（写进脚本注释了，这里再记一次）
 
@@ -70,10 +86,11 @@ python /abs/path/to/agent-arena/tools/mutations/mutate_locate.py   # 绝对路�
    reason 字面量改成从词表解包的常量，M5 / M6 两条锚点立刻失效 → `INVALID`。
    锚点是「源码里的一串字」，不是「语义」，重构会悄悄把它变成假抓住；
    所以每次改 `src/` 后要把对应变异脚本完整跑一遍，确认仍是全 `DETECTED`。
-5. **测试改名会让变异"假抓住"，而旧判定看不出来。** round-89 把
+5. **测试改名会让变异"假抓住"，旧判定看不出来，现在的判定能。** round-89 把
    `test_gate_status_is_recorded_but_does_not_change_p` 改名后，M14 指向的节点不存在，
    pytest 退出码是 **4**（不是 5），旧脚本没拦，把 `no tests ran` 当成 `DETECTED` 打印出来。
-   现在判定收紧成：**只有 `returncode == 1` 才算抓住**，2/3/4/5 一律 `INVALID`。
+   现在 `_runner.judge()` 只认 `returncode == 1`，2/3/4/5 一律 `INVALID` 并在详情里写出
+   退出码的含义（`用法错误（节点名可能写错） rc=4`），不用去查表。
    改测试名的同一次提交里必须顺手改对应变异条目的节点。
 6. **不要一边跑全量 `pytest`、一边跑变异脚本。** round-93 同时起了 `pytest tests/ -q`
    和 `mutate_mastery.py`（后者自己再 spawn 一批 pytest 子进程），全量那边报

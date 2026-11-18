@@ -1,10 +1,7 @@
-"""LLM 传输层的变异检验（临时脚本，不提交）。判定三档同 round-75。"""
+"""LLM 传输层的变异检验（临时脚本，不提交）。判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）。"""
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 # 站到仓根再干活：脚本里全是相对路径（src/… / tests/…），在别的目录直接跑会
@@ -15,15 +12,11 @@ import os as _os
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 _os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 SRC = Path("src/arena/llm_client.py")
-PYEXE = sys.executable
 T = "tests/test_llm_client.py"
 
-# pytest 默认把 tmp_path 建在系统临时目录（Windows 上是 %LOCALAPPDATA% 下的 Temp），
-# 清理时会触发沙箱的删除确认。改到仓库内的 .git/pt，删除范围就落在仓库里。
-PT = Path(".git/pt").resolve()
-PT.mkdir(parents=True, exist_ok=True)
-CHILD_ENV = {**os.environ, "PYTEST_DEBUG_TEMPROOT": str(PT)}
 
 MUTATIONS = [
     ("M1 手写 repr 不打码", "key={mask(self.api_key)}", "key={self.api_key}",
@@ -38,7 +31,18 @@ MUTATIONS = [
     ("M4 5xx 不重试", "    return LLMError(msg, retryable=status in RETRYABLE_STATUS, status=status)",
      "    return LLMError(msg, retryable=False, status=status)",
      f"{T}::test_server_errors_are_retried_until_budget_exhausted"),
-    ("M5 退避固定不递增", "min(2 ** attempt * 0.5, 4.0)", "0.5",
+    # 锚点带上前一行 `err = _http_error(...)`：`self._sleep(...)` 在文件里有两处
+    # （网络层异常与 HTTP 错误各一条重试路径），只写 sleep 会命中 2 次而判 INVALID。
+    # 测试走的是 503（HTTP 错误）那条路，所以锚在这里才对得上。
+    ("M5 退避固定不递增",
+     '            err = _http_error(status, data)\n'
+     '            if err.retryable and attempt < retries:\n'
+     '                attempt += 1\n'
+     '                self._sleep(min(2 ** attempt * 0.5, 4.0))',
+     '            err = _http_error(status, data)\n'
+     '            if err.retryable and attempt < retries:\n'
+     '                attempt += 1\n'
+     '                self._sleep(0.5)',
      f"{T}::test_backoff_grows"),
     ("M6 不查键名重复", '            if values[k].startswith(f"{k}="):', "            if False:",
      f"{T}::test_from_env_rejects_duplicated_key_name"),
@@ -55,44 +59,13 @@ MUTATIONS = [
      f"{T}::test_endpoint_trims_trailing_slash"),
 ]
 
-
 def main() -> int:
-    orig = SRC.read_text(encoding="utf-8")
-    results = []
-    try:
-        for name, old, new, node in MUTATIONS:
-            hits = orig.count(old)
-            if hits < 1:
-                results.append((name, "INVALID", "锚点未命中"))
-                continue
-            SRC.write_text(orig.replace(old, new), encoding="utf-8")
-            r = subprocess.run(
-                [PYEXE, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
-                capture_output=True,
-                text=True,
-                env=CHILD_ENV,
-            )
-            SRC.write_text(orig, encoding="utf-8")
-            out = (r.stdout + r.stderr).lower()
-            if r.returncode == 5:
-                results.append((name, "INVALID", "测试节点不存在"))
-            elif r.returncode == 0:
-                results.append((name, "MISSED", "测试仍绿 ⇒ 没在管这事"))
-            elif "error" in out and "failed" not in out:
-                results.append((name, "INVALID", "收集/语法错误，不算抓住"))
-            else:
-                last = [l for l in r.stdout.strip().splitlines() if l.strip()][-1:]
-                results.append((name, "DETECTED", last[0] if last else ""))
-    finally:
-        SRC.write_text(orig, encoding="utf-8")
+    """判定与还原全交给 `_runner`：本文件只负责"变异长什么样"。
 
-    for n, v, d in results:
-        print(f"{v:9} {n}  {d}")
-    ok = all(v == "DETECTED" for _, v, _ in results)
-    print("---")
-    print("判定：", "全 DETECTED" if ok else "有漏网或无效变异")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报"抓住了"（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, default_path=SRC, temp_prefix="pt-client-")
 
 if __name__ == "__main__":
     raise SystemExit(main())

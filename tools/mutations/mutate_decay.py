@@ -1,4 +1,4 @@
-"""P 的衰减（B-08b）的变异测试。判定三档沿用既有约定：`DETECTED` / `INVALID` / `MISSED`。
+"""P 的衰减（B-08b）的变异测试。判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）：`DETECTED` / `INVALID` / `MISSED`。
 
 **`INVALID` 不算抓住**——脚本自己写错锚点会让它看起来像"抓住了"。
 每条变异必须换一个新的 `PYTEST_DEBUG_TEMPROOT`：复用同一目录时 pytest 开场清理旧编号目录、
@@ -12,9 +12,6 @@ round-84 / round-85 各栽过一次。
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 # 站到仓根再干活：脚本里全是相对路径（src/… / tests/…），在别的目录直接跑会
@@ -22,10 +19,11 @@ from pathlib import Path
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 D = Path("src/arena/decay.py")
 S = Path("src/arena/scheduler.py")
 T = "tests/test_decay.py"
-PYEXE = sys.executable
 
 MUTATIONS = [
     # 缺卡时若不退化，py-fsrs 对无历史卡返回 0 ⇒ P 直接变 0（把"还没开始"说成"忘光了"）
@@ -89,40 +87,13 @@ MUTATIONS = [
      f"{T}::test_anchor_uses_evidence_when_card_is_older"),
 ]
 
-
 def main() -> int:
-    results = []
-    for name, path, old, new, node in MUTATIONS:
-        env = {**os.environ, "PYTEST_DEBUG_TEMPROOT": tempfile.mkdtemp(prefix="pt-dec-")}
-        orig = path.read_text(encoding="utf-8")
-        if orig.count(old) != 1:
-            results.append((name, "INVALID", f"锚点命中 {orig.count(old)} 次（应恰好 1 次）"))
-            continue
-        try:
-            path.write_text(orig.replace(old, new, 1), encoding="utf-8")
-            r = subprocess.run([PYEXE, "-m", "pytest", "-q", node, "-p", "no:cacheprovider"],
-                               capture_output=True, text=True, env=env)
-            if r.returncode == 0:
-                status, detail = "MISSED", "测试仍绿——这条测试没在管这事"
-            elif r.returncode == 5:
-                status, detail = "INVALID", "测试节点不存在"
-            else:
-                lines = [ln for ln in r.stdout.strip().splitlines() if ln.strip()]
-                if "error" in r.stdout.lower() and "failed" not in r.stdout.lower():
-                    status, detail = "INVALID", "收集/语法错误，不算抓住"
-                else:
-                    status, detail = "DETECTED", lines[-1] if lines else ""
-        finally:
-            path.write_text(orig, encoding="utf-8")
-        results.append((name, status, detail))
+    """判定与还原全交给 `_runner`：本文件只负责"变异长什么样"。
 
-    for name, status, detail in results:
-        print(f"{status:9} {name}  {detail}")
-    ok = all(status == "DETECTED" for _, status, _ in results)
-    print("---")
-    print("判定：", f"全 DETECTED（{len(results)} 条）" if ok else "有漏网或无效变异，需处理")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报"抓住了"（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, temp_prefix="pt-decay-")
 
 if __name__ == "__main__":
     raise SystemExit(main())

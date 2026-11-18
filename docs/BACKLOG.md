@@ -4,6 +4,19 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-18（round-102：**C-04 关闭——变异脚本判定收成一处**。
+> ① `tools/mutations/_runner.py` 是唯一判定：`judge(rc)` 只认 `rc == 1` 为 `DETECTED`，
+>    2/3/4/5 一律 `INVALID` 并把退出码含义写进文案（旧规则把 rc=2/3/4 当抓住 ⇒ 测试改名后假绿）。
+> ② 19 个脚本各剩一句 `return run_mutations(...)`，`MUTATIONS` 未动；净 −754 / +178 行。
+>    `mutate_mastery` 的"连跑两遍"保留成 `repeats=2`，且两次不一致改判 `INVALID`（原来只取第一遍）。
+> ③ **收编当场查出四处漂移**（旧判定一直盖着）：client M5 / fingerprint M3+M6 / reappraisal M2
+>    锚点命中 2 次（源码加了同类代码），notices M4 命中 0 次（round-101 给 `Notice` 加了 `retired=`）。
+>    四处都是"源码改了脚本没跟上"，修法一律扩锚点到唯一，不放宽判定。
+> ④ 判定器自带 `--self-test`（真变异 / 无害变异 / 锚点不存在 / **节点名写错**），
+>    并锁进 `tests/test_mutation_runner.py`（34 条）。
+> ⑤ 裁判：19 个脚本 **232 条变异全 DETECTED**；全量 **1380 passed**；
+>    评审包 `9071ffa7d049b829`（首次生成即 RC=0，round-98 的参照物修复生效）。
+>
 > 更新：2026-11-17（round-101：**B-04h 的 ②③ 关闭——终止标记 + 跑批流程；① T3 口径仍待人拍**。
 > ① 终止标记（v6 / 第 11 张表 `unrecoverable_marks`）：只终止**重试**，不终止**交代**。
 >    三个前置（必须真没产物 / 必须写理由与人名 / 可撤销且撤销不删行）各挡一种"假结案"；
@@ -1155,17 +1168,19 @@
 - **验证**：改完连跑两次生成，第一次就 RC=0；再手工把包里的数改错 → 该测试变红
 - **谁推**：我（下一批）。
 
-### [ ] C-04 变异脚本判定规则统一（工具债，2026-11-16 round-90 记录）
+### [x] C-04 变异脚本判定规则统一 — 2026-11-18 round-102 关闭
 
-- **是什么**：`tools/mutations/` 下 9 个脚本里，只有 `mutate_mastery.py` 与 `mutate_b04b.py`
-  用「`rc == 1` 才算抓住」；另外 7 个仍是旧规则（`rc == 5` 判 `INVALID`、输出含 `error` 判 `INVALID`）。
-- **为什么现在不做**：旧规则在本轮所有脚本上都还能给出正确结论（节点都在、跑出 `1 failed`），
-  不挡当前判据；但它**已知会把 rc=4 的 `no tests ran` 判成 `DETECTED`**（round-89 M14 实测），
-  一旦有人改测试名，这 7 个脚本就可能给出假绿。改它们是纯机械替换，但不新增判据价值。
-- **做完判据**：9 个脚本的判定分支完全同构（只认 `rc == 1`）；`tools/mutations/README.md`
-  里「判定规则尚未统一」那段可以删掉。
-- **验证**：随便挑一个脚本，把对应测试节点名改错 → 必须打印 `INVALID`，不许出现 `DETECTED`。
-- **谁推**：我（随时可做，不需要人拍）。
+- **做完判据（两条都达成）**：19 个脚本判定分支**完全同构**（`judge()` 只在 `_runner.py` 一处，
+  参数化测试按文件名逐个点名）；README 里「判定规则尚未统一」那段已删。
+- **验证（比原判据更强）**：原判据是"挑一个脚本把节点名改错 → 必须 INVALID"。现在是
+  `python tools/mutations/_runner.py --self-test`，四种情形一次跑完：
+  真变异 `DETECTED` / 无害变异 `MISSED` / 锚点不存在 `INVALID` / **节点名写错 `INVALID`**，
+  末行 `SELF_TEST_PASS=True`；并锁进 `tests/test_mutation_runner.py`（34 条）。
+- **收编收益（不是零）**：当场查出四处一直盖着的漂移（client M5 / fingerprint M3·M6 /
+  reappraisal M2 锚点命中 2 次，notices M4 命中 0 次），全部是"源码改了脚本没跟上"。
+  详见 `review-response-v1.md` §104.3。
+- **残留风险（如实记）**：`MUTATIONS` 仍是"源码里的字符串"，重构随时能把锚点变成假抓住。
+  现在至少会以 `INVALID` 显名而不是静默 —— 但**改过 `src/` 仍要重跑对应脚本**，这条没被自动化掉。
 
 ---
 

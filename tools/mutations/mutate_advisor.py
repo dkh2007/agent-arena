@@ -1,4 +1,4 @@
-"""排程层（B-09）的变异测试。判定三档沿用 round-75：`DETECTED` / `INVALID` / `MISSED`。
+"""排程层（B-09）的变异测试。判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）：`DETECTED` / `INVALID` / `MISSED`。
 
 **`INVALID` 不算抓住**——变异脚本自己写错锚点会让它看起来像"抓住了"（round-84 就踩过两次：
 一次把锚点写进了 `scheduler.py` 而实际在 `diagnosis_report.py`，一次是测试数据全整秒导致变异无行为）。
@@ -8,10 +8,6 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 # 站到仓根再干活：脚本里全是相对路径（src/… / tests/…），在别的目录直接跑会
@@ -22,9 +18,10 @@ import os as _os
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 _os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 A = Path("src/arena/schedule_advisor.py")
 T = "tests/test_schedule_advisor.py"
-PYEXE = sys.executable
 
 MUTATIONS = [
     # (说明, 文件, 旧片段, 新片段, 期望撞红的用例)
@@ -101,43 +98,13 @@ MUTATIONS = [
      f"{T}::test_item_from_another_user_is_rejected"),
 ]
 
-
 def main() -> int:
-    results = []
-    for name, path, old, new, node in MUTATIONS:
-        # **每次一条新 TEMPROOT**：复用同一个目录时，pytest 会在会话开始时清理旧编号目录，
-        # 而沙箱的 bulk-delete 守卫会拦掉删除，于是整场变成 INTERNALERROR——
-        # 输出里既没有 "failed" 也没有真正的断言信息，看起来像"变异无效"。round-84 踩过。
-        env = {**os.environ, "PYTEST_DEBUG_TEMPROOT": tempfile.mkdtemp(prefix="pt-adv-")}
-        orig = path.read_text(encoding="utf-8")
-        if orig.count(old) != 1:
-            results.append((name, "INVALID", f"锚点命中 {orig.count(old)} 次（应恰好 1 次）"))
-            continue
-        try:
-            path.write_text(orig.replace(old, new, 1), encoding="utf-8")
-            r = subprocess.run([PYEXE, "-m", "pytest", "-q", node, "-p", "no:cacheprovider"],
-                               capture_output=True, text=True, env=env)
-            if r.returncode == 0:
-                status, detail = "MISSED", "测试仍绿——这条测试没在管这事"
-            elif r.returncode == 5:
-                status, detail = "INVALID", "测试节点不存在"
-            else:
-                lines = [ln for ln in r.stdout.strip().splitlines() if ln.strip()]
-                if "error" in r.stdout.lower() and "failed" not in r.stdout.lower():
-                    status, detail = "INVALID", "收集/语法错误，不算抓住"
-                else:
-                    status, detail = "DETECTED", lines[-1] if lines else ""
-        finally:
-            path.write_text(orig, encoding="utf-8")
-        results.append((name, status, detail))
+    """判定与还原全交给 `_runner`：本文件只负责“变异长什么样”。
 
-    for name, status, detail in results:
-        print(f"{status:9} {name}  {detail}")
-    ok = all(status == "DETECTED" for _, status, _ in results)
-    print("---")
-    print("判定：", f"全 DETECTED（{len(results)} 条）" if ok else "有漏网或无效变异，需处理")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报“抓住了”（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, temp_prefix="pt-advisor-")
 
 if __name__ == "__main__":
     raise SystemExit(main())

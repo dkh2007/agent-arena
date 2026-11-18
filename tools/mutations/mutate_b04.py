@@ -1,6 +1,6 @@
 """B-04 机制层的变异检验（临时脚本，不提交）。
 
-判定三档沿用 round-75：
+判定三档（由 `_runner.judge()` 统一给，**只认 `rc == 1`**）：
   DETECTED 变异被指定测试抓住
   MISSED   测试仍绿 ⇒ 这条测试没在管这事
   INVALID  变异自身崩（锚点未命中 / 语法错 / 节点不存在）⇒ 不算抓住
@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 # 站到仓根再干活：脚本里全是相对路径（src/… / tests/…），在别的目录直接跑会
@@ -20,8 +18,9 @@ import os as _os
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "arena").is_dir())
 _os.chdir(_ROOT)
 
+from _runner import run_mutations  # 同目录；判定只有一处实现
+
 SRC = Path("src/arena/llm_judge.py")
-PYEXE = sys.executable
 T = "tests/test_llm_judge.py"
 
 # (名称, 锚点, 替换, 应抓住它的测试)
@@ -82,39 +81,13 @@ MUTATIONS = [
     ),
 ]
 
-
 def main() -> int:
-    orig = SRC.read_text(encoding="utf-8")
-    results = []
-    try:
-        for name, old, new, node in MUTATIONS:
-            hits = orig.count(old)
-            if hits != 1:
-                results.append((name, "INVALID", f"锚点命中 {hits} 次（应为 1）"))
-                continue
-            SRC.write_text(orig.replace(old, new, 1), encoding="utf-8")
-            r = subprocess.run([PYEXE, "-m", "pytest", "-q", node], capture_output=True, text=True)
-            SRC.write_text(orig, encoding="utf-8")
-            out = (r.stdout + r.stderr).lower()
-            if r.returncode == 5:
-                results.append((name, "INVALID", "测试节点不存在"))
-            elif r.returncode == 0:
-                results.append((name, "MISSED", "测试仍绿 ⇒ 没在管这事"))
-            elif "error" in out and "failed" not in out:
-                results.append((name, "INVALID", "收集/语法错误，不算抓住"))
-            else:
-                last = [l for l in r.stdout.strip().splitlines() if l.strip()][-1:]
-                results.append((name, "DETECTED", last[0] if last else ""))
-    finally:
-        SRC.write_text(orig, encoding="utf-8")
+    """判定与还原全交给 `_runner`：本文件只负责“变异长什么样”。
 
-    for n, v, d in results:
-        print(f"{v:9} {n}  {d}")
-    ok = all(v == "DETECTED" for _, v, _ in results)
-    print("---")
-    print("判定：", "全 DETECTED" if ok else "有漏网或无效变异")
-    return 0 if ok else 1
-
+    以前这里有一份自己的判定代码，窄看只是重复；实际是两套规则会分叉——旧那套
+    把 rc=2/3/4 也当 `DETECTED`，于是节点名写错时会报“抓住了”（round-89 M14 实测）。
+    """
+    return run_mutations(MUTATIONS, default_path=SRC, temp_prefix="pt-b04-")
 
 if __name__ == "__main__":
     raise SystemExit(main())
