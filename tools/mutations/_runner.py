@@ -82,6 +82,17 @@ def _child_env(prefix: str) -> dict[str, str]:
     return {**os.environ, "PYTEST_DEBUG_TEMPROOT": tempfile.mkdtemp(prefix=prefix)}
 
 
+def _write_like(orig_raw: bytes, text: str, path: Path) -> None:
+    """按**原文件**的换行风格写回变异体。
+
+    锚点是在归一化（`\r\n`→`\n`）后的文本上匹配的，写回时若一并用 `\n`，CRLF 仓库里
+    就会出现整文件行尾翻转。这里按原样还原风格，只改变异那一处。
+    """
+    if b"\r\n" in orig_raw:
+        text = text.replace("\n", "\r\n")
+    path.write_bytes(text.encode("utf-8"))
+
+
 def _one(name: str, path: Path, old: str, new: str, node: str,
          temp_prefix: str, repeats: int = 1) -> tuple[str, str, str]:
     """跑一条变异，返回 `(说明, 判定, 详情)`。**无论判定如何都会还原文件**。
@@ -90,20 +101,25 @@ def _one(name: str, path: Path, old: str, new: str, node: str,
     两次结果不一致说明这条用例本身在抖，此时报 `DETECTED` 等于把抖动当成"抓住了"。
     """
     path = Path(path)
-    orig = path.read_text(encoding="utf-8")
+    # 按字节读写，而不是 read_text/write_text：文本模式在 Windows 上会把 `\n` 翻成 `\r\n`，
+    # 于是"还原"写出的是 CRLF，原始字节再也回不去——每跑一次变异，仓库里就多一批
+    # 改了行尾的文件（git 因为 autocrlf 看不出内容差异，只有 `git status` 一直是脏的）。
+    # 匹配仍然在归一化后的文本上做，否则 CRLF 文件里带 `\n` 的锚点一个都命中不了。
+    orig_raw = path.read_bytes()
+    orig = orig_raw.decode("utf-8").replace("\r\n", "\n")
     hits = orig.count(old)
     if hits != 1:
         return name, INVALID, f"锚点命中 {hits} 次（应为 1）——锚点写错或代码已改"
     runs: list[subprocess.CompletedProcess] = []
     try:
-        path.write_text(orig.replace(old, new, 1), encoding="utf-8")
+        _write_like(orig_raw, orig.replace(old, new, 1), path)
         for _ in range(max(1, repeats)):
             runs.append(subprocess.run(
                 [PYEXE, "-m", "pytest", "-q", node, "-p", "no:cacheprovider"],
                 capture_output=True, text=True, env=_child_env(temp_prefix),
             ))
     finally:
-        path.write_text(orig, encoding="utf-8")
+        path.write_bytes(orig_raw)  # 逐字节还原，不留行尾残渣
     codes = [r.returncode for r in runs]
     if len(set(codes)) > 1:
         return name, INVALID, f"同一变异连跑 {len(codes)} 遍结果不一致 rc={codes}（用例在抖）"

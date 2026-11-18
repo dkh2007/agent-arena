@@ -10527,3 +10527,34 @@ trace 只记形状（`result_summary: {"orders": 10, "total": 20}`）是 round-7
 B-20 保持 `[ ]`，但判据作废并拆分：**B-20a**（让推导值可重放 / 换对账对象，需人定向）＋
 **B-20b**（实现 `evaluate_reconciliation` 与接线）。本轮新增闸门
 `test_task_executability.py`（13 用例）与 `mutate_task_exec.py`（2 组）。
+
+### 110.10 顺带修掉一处静默副作用：变异脚本会改仓库的行尾
+
+这一轮跑完变异后 `git status` 一直是脏的：`tasks/ret-003`、`tasks/fix-001` 显示被修改，
+但 `git diff` 是空的。查下去是共享执行器 `tools/mutations/_runner.py` 的读写方式：
+
+```python
+orig = path.read_text(encoding="utf-8")     # 通用换行 ⇒ CRLF 被归一成 LF
+...
+path.write_text(orig, encoding="utf-8")     # 文本模式 ⇒ LF 又按平台翻成 CRLF
+```
+
+仓库里这两个文件是 **LF**，恢复时却被写成 **CRLF**——「还原」把字节改了。
+`core.autocrlf=true` 会在暂存时normalize 回去，所以 `git diff` 看不见、提交里也没有痕迹，
+只剩一个永久脏的 `git status`；而一旦谁在 `autocrlf=false` 的环境里跑，就会得到整文件的行尾 diff。
+**21 个变异脚本全部受影响，只是没人看 `git status`。**
+
+修法：按字节读写，锚点在归一化后的文本上匹配，还原走 `path.write_bytes(orig_raw)` 逐字节回填。
+
+验证（这就是判据，不用"应该没问题"）：
+
+```
+改前：跑一次 mutate_task_exec.py  →  git status 多出 2 个 tasks/*.yaml
+改后：跑一次 mutate_task_exec.py  →  git status 只有 _runner.py 自己
+      md5(工作区 ret-003) == md5(git show HEAD:tasks/ret-003-...)
+      _runner.py --self-test → SELF_TEST_PASS=True（4 条：真变异/无断言/锚点不存在/节点名写错）
+      tests/test_mutation_runner.py → 37 passed
+```
+
+反证条件：⑥ 若跑完变异后 `git status` 又出现 `tasks/*.yaml` ⇒ 有人把 `write_bytes` 改回了
+`write_text`；⑦ 若某文件是 CRLF 仓库，`_write_like()` 会按原风格写回（不许把 CRLF 仓库整体翻成 LF）。
