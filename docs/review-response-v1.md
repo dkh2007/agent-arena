@@ -10558,3 +10558,113 @@ path.write_text(orig, encoding="utf-8")     # 文本模式 ⇒ LF 又按平台�
 
 反证条件：⑥ 若跑完变异后 `git status` 又出现 `tasks/*.yaml` ⇒ 有人把 `write_bytes` 改回了
 `write_text`；⑦ 若某文件是 CRLF 仓库，`_write_like()` 会按原风格写回（不许把 CRLF 仓库整体翻成 LF）。
+
+---
+
+## §111 round-109：外部复核核证——十二条事实全对，但它拿来论证的前提错了一半
+
+外部只读复核（`b03b-provenance-evidence-judgment.md`）对「甲 / 乙 / 丙 / 丁」四条路给了判断。
+它自己声明「只读源码、未运行测试、未改动仓库」，所以这轮的第一件事是**逐条核证它的事实**，
+第二件事是**核证它的论证**——后者比前者重要，因为它把一条错的当成了论证起点。
+
+### 111.1 结论先说
+
+| 它说的 | 核证 |
+|---|---|
+| F1–F12 十二条事实 | **全部为真**（逐条对过源码行号，见 111.2） |
+| 甲（原始行进 Agent 记录）已被结构性否掉，且理由是「出处退化成凑数」 | **真**，且这个论证比我们文档里写的更清楚 |
+| 「甲乙之争是空转，先要拍强制不强制」 | **真**：`capture_proxy` 没有生产调用方，默认路径仍是自报 |
+| 「最便宜的一步还没做：对账结论没落库」 | **真**：`compare_traces` 只出现在 `scripts/` 与 `tests/` |
+| **F2「重放需要 trace 里的原始行」** | **错**——原始行不必进 trace，实测可重建（111.3） |
+| **「丁要沙箱隔离，否则 write_report 会重复写」** | **错**——`mock_tools` 全模块零文件系统调用，`write_report` 只写内存字典 |
+| 第 1 步「缺代理时标 unverifiable 而非 pass」 | **方向对，落点错**：若做成 credit 断言，就是 §110.2 那个 20% 的税（111.4） |
+| §7「代理买到的是可重放」 | **与它自己 §5 冲突**：§5 明说"做完第 2 步才可称可重放" |
+
+### 111.2 十二条事实的核验（每条都能当场重跑）
+
+```
+F1  reconciliation.py:68-74    「不做启发式匹配…属 P3 的进阶形态」            ✔ 原文
+F2  reconciliation.py:27-32    「重放需要 trace 原始行 + 推导规则」            ✔ 有这句，但结论错（111.3）
+F3  reconciliation.py:30-32    「trace 只记形状是 round-70 定的，不是遗漏」     ✔
+F4  agent_trace.py:32-47       「金额进 trace 会让出处变成看运气」「不靠 Agent 自觉多写」✔
+F5  platform_capture.py:94-109 body 只取 error                                  ✔（record() 里 err = body.get("error")）
+F6  BACKLOG B-03b「边界」段     可选代理、默认自报、不强制则"不可伪造"不成立        ✔
+F7  全仓 grep                   compare_traces 只在 scripts/ + tests/            ✔ 且 capture_proxy 无生产调用方
+F8  mock_tools.py 分页/lookup   page = rows[start:start+limit]；lookup 按 key 取   ✔
+F9  BACKLOG B-03b ②            「真模型跑一次」仍未做                            ✔
+F10 fix-001.yaml:56-73         read_file / write_report                        ✔ 声明为真；副作用为假（111.3）
+F11 review-packet.md 决策 10    「保答案可对账…对账不通过 ≠ 答错」                  ✔
+F12 reconciliation.py:13-25    「连 raw-perfect 都 unverifiable」                ✔
+```
+
+### 111.3 两处要收窄的地方（一处影响方向，一处影响成本）
+
+**（一）F2 是错的，而错的那半句在我们自己的文档里。** 它写「要判聚合推导值，必须重放，
+而重放缺两样东西：trace 里的原始行 + 声明式推导规则」。实测（本轮新跑）：
+
+```
+真跑参考 Agent，记录平台实际转发的 4 条 (params, status, body)
+  → 新起一个干净服务，按原顺序用 svc.call(name, params) 重放
+  → 4/4 逐条 (status, body) 完全一致
+
+改一条金额（orders_fixture[0].amount → 999.99），同样参数重放
+  → 1/4 返回体发生变化（第 1 页那条）⇒ 数据版本确实有影响
+```
+
+原始行本来就在手里：任务数据内联在 `tasks/*.yaml`，mock 确定性，账本记了有序
+`(call_index, name, params)`。**所以 B-20a 只缺一样东西：一条可执行的推导规则。**
+这句话不改，下一个人会顺着 F2 去改 trace 契约——那正是甲，方向反了。
+
+顺带一个反例，说明"冻单次请求"不够：`failures[0].attempt: 1` + `match: {offset: 10}`
+的语义是「该 (tool, match) 的第 1 次调用失败」。所以同一组参数连调两次，第 1 次 500、第 2 次 200；
+而先用 `offset=0` 调一次，**不消耗** offset=10 的额度。**要冻的是有序序列，不是单次指纹。**
+
+**（二）「重放要沙箱隔离」这个成本在 mock 上是 0。** `grep -n "open(\|os\.\|Path(" src/arena/mock_tools.py`
+→ 零命中；`write_report` 写的是 `self._written` 这个内存字典。它把 F10 的「写副作用」当成了真实写盘，
+于是给丁加了一条不存在的成本。接真实/时变数据时才需要隔离。
+
+### 111.4 它最该改的一条：第 1 步的落点
+
+它建议「把 `compare_traces()` 的三态结论随提交入库，缺代理时标 `unverifiable` 而非 `pass`」。
+
+后半句如果做成 **credit 断言**，就精确复现了 §110.2 那个病：credit 分母恒为权重和（P4），
+一条"有代理才过得了"的断言 ⇒ 无代理部署的每份提交白扣 20% ⇒ **上界从 1.0 掉到 0.8**。
+而且它已经知道这件事（抄了 F12），只是把"税"归因给了对账器不会重放，没意识到**同样的税**
+也会由"缺代理"造成。
+
+正确落点我们已经有先例：**P2 的 `process_fact`**——「缺过程」被记成**流程事实**（`required/submitted/missing`），
+不计能力分、不计掌握度。缺代理是同一类东西：**流程事实，不是能力判断**。
+所以 B-20b 的硬约束写进了 BACKLOG：对账结论不许进 credit 断言，只能落流程事实或诊断字段。
+
+### 111.5 它漏掉的三件（都改变工作量估计）
+
+1. **数据版本锚点已经有**：fixture 内联 `tasks/*.yaml`，每次提交都存 `task_git_hash`（`repo_head()`）。
+   所以它估的第 2 步（"账本加数据哈希"）比它想的更便宜——**但也更没必要**，因为哈希已经在。
+2. **那个锚点有个缺口**：`repo_head()` 在有未提交改动时**照样返回 HEAD**。此时磁盘上的 YAML
+   与哈希不符，而评审包里没有任何标记。这才是数据版本真正会失锚的地方。**已登记，未修**（要拍）。
+3. **丁是新能力，不是配置**：它必须以被测 Agent 的**真实端点**重跑，而 `agent_endpoint_url`
+   现在只被 INSERT 进库，没有任何一行代码去调它。加上配额与 LLM 方差 ⇒ 只能抽样、只做证伪。
+
+### 111.6 本轮落的
+
+- `tests/test_replay_premise.py`（4 用例，1.5 秒）：重建一致 / 改数据必变 / 位置敏感 / mock 无文件系统调用；
+- `tools/mutations/mutate_replay_premise.py` **4/4 DETECTED**；
+- `reconciliation.py` 模块文档改掉 F2 那半句错话，并写清「甲为什么不是弱证据而是无效证据」。
+
+两个过程教训：
+
+- **`HTTPServer.shutdown()` 在没起过 `serve_forever` 时会永久阻塞**（等一个永不被 set 的事件）。
+  我第一版测试在重放时"起了服务但只调 `svc.call`、没起线程，然后 `shutdown()`" ⇒ 整个 pytest 进程挂住，
+  跑出来是 `SIGTERM` 而不是失败。重放不需要端口就不开端口，直接用 `MockToolService(task)`。
+- **变异报 MISSED 时先怀疑变异**：M3 原本把故障计数键 `(name, match_key)` 改成 `(name,)`，
+  期望额度被别的页吃掉——但 `_take_fault()` 的 match 过滤在前，不匹配的调用根本到不了计数器，
+  于是这个变异**行为等价**、不可能被抓。改成"删掉 match 过滤"才是真的。顺带说明：
+  当前只有一个 `failures` 条目时，键里的 `match_key` 观察不到差别，那条用例锁的是**过滤**，不是键的组成。
+
+### 111.7 反证条件
+
+① 若 `test_replay_premise.py` 的重建用例变红 ⇒ mock 引入了时间/随机依赖，或数据被挪出 YAML。
+② 若"改数据"用例变红在 `1 not in changed` ⇒ 第 1 页内容与 fixture 脱钩（缓存/常量）。
+③ 若"位置敏感"用例变红在 `still_first == 200` ⇒ 故障额度的计数键或过滤变了，重建输入描述要跟着改。
+④ 若有人把对账结论接成 credit 断言 ⇒ `test_task_executability.py` 会在 12 个任务上一起掉到 0.8。
+⑤ 若有人在 §7 那种场合对外说"代理买到的是可重放" ⇒ 与本文件 §111.4 和 §111.3 的实测矛盾。
