@@ -10169,3 +10169,73 @@ verify.bat（stdin 关掉）→ 仍打印 pause 提示，EOF 后继续，RC=0
 - **没给 `.bat` 加测试**：它是开发便利脚本，不是产品代码；加一条 `grep` 锁会让用例数 +1
   ⇒ 评审包必 STALE ⇒ 再烧一次全量重生成。收益不抵成本。防回归靠 106.5 ③④ 写在这里
   和 `verify.bat` 自带的 `rem` 注释里。
+
+---
+
+## §107 round-105：两条悬着的声明各自收口（B-22 / B-23）
+
+### 107.1 B-22：选删声明，不给它补执行者
+
+YAML 里那句「`error`/`result_summary` 仅对应 `status` 必填」自 round-59 起就是一条
+**没有消费者**的声明（TD-026）。两条路（删声明 / 补执行者）里选前者，判据是三个事实：
+
+| # | 事实 | 落点 |
+|---|---|---|
+| 1 | 判定链不读这两个字段 | `_ambiguous_step()` 只把 `params_match` 的键与 `http_status` 当匹配输入 |
+| 2 | 它们只作诊断线索 | `llm_judge` 投影、`reconciliation` 对账读它们，判定不读 |
+| 3 | 条件必填会稀释状态码 | 缺文案的失败步会被判 `unscored`，而那是"没写说明"，不是"判据缺输入" |
+
+第 3 条是本仓一贯口径：`unscored` 的含义是**有判据、没数据**。用它惩罚"没写错误文案"，
+等于把格式问题记成数据缺失——与 §99 那批（T3 那批人 P 冻住的原因正是状态码被借用）同源。
+
+还有一条本仓自己的先例：`trace.agent_id` 当初**没有**声明 required，理由就写在 YAML 里——
+「避免留下一条没有执行者的声明」。这轮只是把同一把尺子用到 `error`/`result_summary` 上。
+
+### 107.2 顺带纠正本条自己写错的代价
+
+BACKLOG 原文写：「要么补执行者（**并承认推翻 D2**）」。**这一半是错的。**
+
+D2 的内容是「仅执行器层，`trace_audit` 不补原因码、不置 `schema_valid=false`」——
+它要求的正是"校验放在执行器层、audit 不同步"。在 `_ambiguous_step()` 里加一个字段分支
+**完全合规**，不碰 audit、不碰结构层。
+
+补执行者的真代价是**它改变判定**：缺 `error` 的失败步从"按能力判 fail"变成
+`unscored / trace_invalid`。那才是需要人拍的东西（产品口径：缺文案算不算数据缺失）。
+
+不纠正这句的后果很具体：下一个人看到"补执行者会推翻已拍板的 D2"，就会**用一个不存在的理由
+否掉一个合法选项**，然后这条待办继续挂着——它已经这样挂了两轮。
+
+### 107.3 B-23：判据早就满足，一直挂着是没人核对
+
+`status_error_without_http_status` 的三项证据：
+
+```
+docs/diagnosis-report.schema.json  $defs.traceInvalidReason.description
+  → 「保留取值（reserved, no producer）：§28.6 D3 已拍板保留不产出」
+grep -rn status_error_without_http_status src/          → 0 命中
+tests/test_trace_pipeline.py::test_f3_td018_schema_reason_code_stays_reserved
+  → 枚举含该码 + 五夹具七变异一次都没产出 + R3 缺 http_status 时复用 trace_invalid
+```
+
+所以它**不是"等 B-22 做完才能做"**：B-22 这轮选的是"不做条件必填"，结论正好是
+这个码该一直保持 reserved。两条待办之间的依赖关系当初写反了。
+
+### 107.4 裁判
+
+```
+pytest tests/test_review_packet.py tests/test_task_variants.py \
+       tests/test_trace_pipeline.py tests/test_reference_agent.py -q   → 281 passed
+python src/arena/review_packet.py --check                             → OK (9071ffa7d049b829)
+```
+
+`--check` 仍 OK 是**预期**，不是漏检：改的 note 不在 `_core_fact_tokens()`（只锁计分模式 /
+credit 分母 / 非通过态枚举）与 `_task_struct()`（只读 scoring / rubric）的读取范围内。
+换句话说，这条 note 对外部评审包没有影响——它只影响读 YAML 的人。
+
+### 107.5 反证条件
+
+① 若 YAML note 里又出现"仅 `status` 必填"而不改执行器 ⇒ 空声明回来了。
+② 若给 `_ambiguous_step()` 加了 `error` 分支却没有任何任务 spec 声明它 ⇒ 反向的空执行者
+   （本轮刻意不做：一个没有数据的机制，比一条没有机制的声明更难发现）。
+③ 若有人把 `unscored` 用在"字段没填"上 ⇒ §107.1 第 3 条被推翻，B-04g 的暴露口径也会跟着歪。
+④ 若 B-23 又被标成"待做" ⇒ 说明只看了"与 B-22 同源"那句，没核 schema 与那条锁测试。

@@ -99,7 +99,8 @@ def test_trace_is_structurally_valid(task, tools_server):
             assert "result_summary" in call
 
     # 注：平台侧当前**只**校验 call_index / status / params 类型（`call_sequence_problems`），
-    # `status=error ⇒ http_status` 这一条结构层不校验，归 R3 执行器，属已登记 TD-026（B-22）。
+    # `status=error ⇒ http_status` 这一条结构层不校验，归 R3 执行器按失败步 spec 判定
+    # （B-22 已关：error/result_summary 不做条件必填，只作诊断线索）。
     # 所以上面这组断言锁的是「参考 Agent 自己合规」，不是「平台拦得住不合规的」。
 
 

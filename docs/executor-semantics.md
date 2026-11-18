@@ -20,7 +20,20 @@
 `unscored / trace_invalid`；`_trace_audit_issues()` 不读条件必填，`audit.schema_valid`
 不因此变 false（§28.6 D2「仅执行器层，audit 不同步」）。注意 note 的条件式表述与执行器
 实际口径不等价：执行器按**失败步 spec 声明的字段**取输入，不按 `status=error` 做全量
-条件必填。`error` / `result_summary` 的条件声明当前无消费者，登记 TD-026、保留不删。
+条件必填。
+
+**`error` / `result_summary` 不做条件必填（B-22，2026-11-18 关闭）**：原先 note 里那句
+「仅对应 `status` 必填」是一条**没有执行者**的声明（TD-026），两个选项里选了**删声明**：
+
+- 判定链不读这两个字段——`_ambiguous_step()` 只把 `params_match` 的键与 `http_status`
+  当匹配输入；这两个字段只进 `llm_judge` 的投影和 `reconciliation` 对账，属**诊断线索**。
+- 若改成条件必填，缺文案的失败步会被判 `unscored / trace_invalid`。那是「没写说明」，
+  不是「判据缺输入」——`unscored` 的定义是有判据没数据，强行借用会让这个状态码失真。
+- 顺带纠正一处记错的代价：**补执行者并不推翻 D2**（D2 要的正是校验放在执行器层、
+  audit 不同步）。真正的代价是它会改变「缺 `error` 的失败步」的判定——那才是要人拍的东西。
+
+重开条件：若将来某条断言真的需要读 `error` 文案（例如判错误信息是否含关键线索），
+应当在**断言的 expected 里声明**，而不是回到 trace 结构层做条件必填。
 
 ## 2. trace_param_schema_valid 的校验范围（R4）
 

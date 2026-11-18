@@ -746,7 +746,9 @@ def test_f1_new_allof_rules(inst, want):
 #   ② **P2**：失败步声明的 http_status 缺失/null → 同上；值写错仍判 fail，
 #      B1 / B2 在归因层可区分；audit 保持结构合规（§4 分层共存）。
 # 已销项：证据层原位保 null（TD-025，§54），序列不再被改短。
-# 仍存边界：条件必填仍无全局执行者（TD-026）、专用原因码仍无生产者（TD-027）。
+# 边界（B-22 关闭后）：http_status 的条件必填由 R3 按失败步 spec 承担，error/result_summary
+# 不做条件必填（判定不读它们）；专用原因码 status_error_without_http_status 仍无生产者，
+# 已在 DTO schema 标 reserved（TD-027）。
 # F3 判定层已闭合，不在本步扩 DTO。
 # ---------------------------------------------------------------------------
 

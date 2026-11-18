@@ -143,7 +143,11 @@ trace_requirements:
       status_enum: [success, error, timeout]
       # round-59 层错位改述：以下条件描述改述并指明执行层，不删、不补结构层
       # （§28.6 D2 已拍「仅执行器层，audit 不同步」）；夹具形状测试只校验自家样例，不算执行者。
-      note: 'call_index 平台侧编号（1 起），attempt 由平台从同名同参调用序列推导（平台侧行为，本仓不校验）；http_status 仅 status=error 必填——由 R3 执行器按失败步所需字段判定（docs/executor-semantics.md §1），结构层不校验；error/result_summary 仅对应 status 必填为待实现声明，登记 TD-026，当前无消费者'
+      # B-22（2026-11-18 关闭）：error / result_summary 的「仅对应 status 必填」**已删**，不是待实现。
+      # 判据：判定链（assertion_evaluator）不读这两个字段，只把 params_match 键与 http_status 当匹配输入。
+      # 它们只作诊断线索（llm_judge 投影、reconciliation 对账会读）。若改成条件必填，缺文案的失败步会被
+      # 判 unscored —— 那是「没写说明」而不是「判据缺输入」，与 unscored 的定义冲突。
+      note: 'call_index 平台侧编号（1 起），attempt 由平台从同名同参调用序列推导（平台侧行为，本仓不校验）；http_status 仅 status=error 必填——由 R3 执行器按失败步所需字段判定（docs/executor-semantics.md §1），结构层不校验；error/result_summary 仅作诊断线索，不做条件必填（判定不读它们，强制必填会把「没写说明」记成数据缺失并判 unscored；见 docs/executor-semantics.md §1）'
 
 # ============================================================================
 # 计分与归因口径（第 6 轮评审：把「判 0」和「判 unscored」拆成两件事写死）

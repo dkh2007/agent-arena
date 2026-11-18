@@ -4,6 +4,18 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-18（round-105：**B-22 / B-23 关闭——两条"悬着的声明"各自收口**。
+> ① B-22 选**删声明**（不给 `error`/`result_summary` 补执行者）：判定链不读这两个字段，
+>    它们只进 llm_judge 投影与对账，是诊断线索；一旦条件必填，缺文案的失败步会被判 `unscored`，
+>    而那是"没写说明"不是"判据缺输入"，会稀释这个状态码。本仓先例：`trace.agent_id` 就是"无消费者不声明"。
+> ② **纠正 B-22 自己写错的代价**：原文写"补执行者 ⇒ 推翻 D2"，这一半错了——D2 要的就是
+>    校验放执行器层、audit 不同步，补执行者恰恰合规；真代价是它**改变判定**（缺 `error` 的失败步
+>    从按能力判变 `unscored`）。不纠正的话，后人会拿一个不存在的理由否掉一个合法选项。
+> ③ B-23 **判据早就满足**：该码已是 `reserved`（D3 已拍）+ `grep src/` 0 生产者 +
+>    `test_f3_td018_schema_reason_code_stays_reserved` 锁着"五夹具七变异一次都没产出"。
+>    一直挂着是没人核对，不是没做完。
+> ④ 裁判：四个相关测试文件 **281 passed**；评审包 `--check` 仍 `OK`（note 不在生成器读取范围内，不触发 STALE）。
+>
 > 更新：2026-11-18（round-104：**C-01 关闭——一键脚本能无人值守跑完，并顺带修掉一处假绿**。
 > ① `verify.bat /nopause`：7 分 45 秒自己结束、`RC=0`、末行 `RESULT: ALL GREEN`；
 >    无参数（stdin 关掉模拟按键）仍走 `pause` 分支，输出与改前一致。
@@ -1118,23 +1130,44 @@
   变异 M1（改可选）/ M2（改回通用码）均 DETECTED。
 - **谁推**：我（已于 M1 随 B-02 完成）。
 
-### [~] B-22 TD-026：YAML 条件必填无执行者
+### [x] B-22 TD-026：YAML 条件必填无执行者 — 2026-11-18 关闭（round-105，选「删声明」）
 
-- **是什么**：`tasks/dbg-001-order-report.yaml:126` 声明「`status=error` ⇒ 需 `http_status`」，
-  执行器实际**不按这个条件**取输入（按失败步 spec 声明字段），即声明无消费者。
-- **做了一半**：round-59 已把 note 改述为"待实现声明 + 标 TD-026"，口径已澄清；**实现未做**。
-- **为什么现在不做**：补结构层校验会推翻 D2「仅执行器层」，是人拍板过的边界。
-- **做完判据**：要么删声明（并说明为什么不要），要么补执行者（并承认推翻 D2）。二选一，不能悬着。
-- **验证**：`grep -rn "http_status" src/arena/assertion_evaluator.py` → 看有无条件必填分支
-- **谁推**：**人要拍**（涉及已拍板 D2 的边界）。
+- **是什么**：`tasks/dbg-001-order-report.yaml` 的 `item_fields` note 声明「`error`/`result_summary`
+  仅对应 `status` 必填」，执行器不按这个条件取输入，即声明无消费者。
+- **选哪条**：两条路里选**删声明**（不给它补执行者）。判据是三个事实：
+  ① 判定链不读这两个字段——`_ambiguous_step()` 只把 `params_match` 的键与 `http_status` 当匹配输入；
+  ② 它们只进 `llm_judge` 投影与 `reconciliation` 对账，是**诊断线索**，不是判据输入；
+  ③ 一旦条件必填，缺文案的失败步会被判 `unscored / trace_invalid`——那是「没写说明」，
+     不是「判据缺输入」，会把这个状态码的含义稀释掉（与 B-04g 那条「判 unscored 只在判据缺输入」同一口径）。
+  另有本仓自己的先例：`trace.agent_id` 正是「无消费者就不声明」才被挡下来的（TD-020 ③）。
+- **顺手纠正本条写错的代价**：原写「补执行者 ⇒ 承认推翻 D2」。**这一半是错的**——D2 说的就是
+  「校验放在执行器层、audit 不同步」，补执行者恰恰合规；真正的代价是它会**改变判定**
+  （缺 `error` 的失败步从「按能力判」变 `unscored`），那才是要人拍的东西。
+  不纠正的话，下一个人会拿一个不存在的理由去否决一个合法选项。
+- **落地**：YAML note 删掉那句、写清为什么不做；`docs/executor-semantics.md` §1 补一节
+  「`error`/`result_summary` 不做条件必填」+ 重开条件（将来真要用，应在**断言的 expected 里声明**，
+  不许回到 trace 结构层做条件必填）。
+- **裁判**：`pytest tests/test_review_packet.py tests/test_task_variants.py tests/test_trace_pipeline.py
+  tests/test_reference_agent.py -q` → **281 passed**；评审包 `--check` 仍 `OK`（note 不在
+  `_core_fact_tokens()` 与 `_task_struct()` 的读取范围内，所以不触发 STALE）。
+- **反证条件**：① 若有人在 YAML note 里重新写「仅 `status` 必填」而不改执行器 ⇒ 又变成空声明；
+  ② 若给 `_ambiguous_step()` 加 `error` 分支却没改任何任务 spec ⇒ 反向的空执行者（本轮刻意不做）。
 
-### [ ] B-23 TD-027：死枚举 `status_error_without_http_status`
+### [x] B-23 TD-027：死枚举 `status_error_without_http_status` — 2026-11-18 关闭（round-105，判据早已满足）
 
 - **是什么**：`traceInvalidReason` 枚举里有这个码，但**没有任何生产者**。
-- **为什么现在不做**：与 B-22 同源；B-22 定了它才可能定。
-- **做完判据**：要么有生产者（且 B-22 落地），要么标 `reserved` 并在 schema description 写明。
-- **验证**：`grep -rn status_error_without_http_status src/` → 有生产者，或 schema 标 reserved
-- **谁推**：我（跟 B-22 同批）。
+- **结论：这一条一直是可以关的，只是没人核对。** 判据「要么有生产者，要么标 `reserved` 并在
+  schema description 写明」**早就满足了后者**：
+  - `docs/diagnosis-report.schema.json` `$defs.traceInvalidReason.description` 写着
+    「保留取值（reserved, no producer）：§28.6 D3 已拍板保留不产出」；
+  - `grep -rn status_error_without_http_status src/` → **0 命中**（确认无生产者）；
+  - `tests/test_trace_pipeline.py::test_f3_td018_schema_reason_code_stays_reserved` 把这件事
+    锁死了：枚举含该码、五夹具 + 七种变异**一次都没产出过**、R3 缺 `http_status` 时复用
+    `trace_invalid` 而不是造这个码。
+- **顺带记**：这条的「为什么现在不做」写的是"与 B-22 同源；B-22 定了它才可能定"。
+  B-22 已关闭且选的是「不做条件必填」，所以这个码**仍然没有生产者**，保持 reserved 才对——
+  不是"等 B-22"，是"B-22 的结论正好确认它该一直 reserved"。
+- **裁判**：上面那条锁测试 + `pytest tests/test_trace_pipeline.py -q` 全绿。
 
 ### [ ] B-24 TD-030 / TD-031：语义借码 + 多目标覆盖率谓词
 
