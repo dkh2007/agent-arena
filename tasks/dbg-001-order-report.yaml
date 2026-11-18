@@ -122,6 +122,23 @@ test_inputs:
     valid_count: 17
     total_amount: 1837.99
 
+# ── 推导规则（B-20a）：上面 scenario 第 2/3 条的**可执行版本** ───────────────
+# 为什么不能只写在 scenario 里：对账（P3）要拿「过程记录能推出什么」去比「答案写了什么」，
+# 中文没法执行。这份声明只吃「一组行」、不知道行从哪来 —— 同一份规则喂全量夹具就是
+# 期望答案，喂重放回来的行就是「这个 Agent 实际看到的能推出什么」。
+# 9 个变体经 `base_task` 继承本块；它们只换数据，不换口径，所以规则写在这里一处。
+# 口径必须与 `test_inputs.expected` 相等（同一件事写了两处）——`tests/test_derivation.py` 钉着。
+# 执行者：src/arena/derivation.py。未接入判定链（B-20b 的硬约束：不许做成 credit 断言）。
+derivation:
+  rows: test_inputs.orders_fixture
+  distinct_by: order_id        # 重放侧把多次分页拼起来时，同一页被拉两次会重复计数
+  valid_when:                  # 全部条件同时成立才算有效行；顺序即求值顺序
+    - {field: amount, rule: not_null}   # 缺字段 或 null ⇒ 无效行（只能由这条声明，比较谓词不替它吞）
+    - {field: amount, rule: gte, value: 0}   # 负数 ⇒ 无效行
+  outputs:
+    valid_count: {op: count}
+    total_amount: {op: sum, field: amount}
+
 # ============================================================================
 # 【第 6 轮评审修正 P0】原注释写「不上报 trace → 轨迹类断言判 0，且无诊断报告」，与既定规则
 # 「判 unscored 且不计入掌握度」直接冲突，属遗留错误，已删除。
