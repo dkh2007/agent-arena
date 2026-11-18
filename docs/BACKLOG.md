@@ -4,6 +4,16 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-18（round-108：**B-20 的判据自相矛盾，先补上"满分可达"这条闸门**。
+> ① 实测：五份夹具跑对账，**连 raw-perfect 都是 `unverifiable`**——条数与合计是推导值，
+>    对账器只找逐字出现的数；把它接成 credit 断言，满分就从 1.0 掉到 0.8（分母恒定 ⇒ 普遍税）。
+> ② 另有硬障碍：`assertion_evaluator` 根本没有 `reconciliation` 类型，接了会抛 `NotImplementedError`。
+> ③ 新增 `test_task_executability.py`：12 个任务各让参考 Agent **真跑一遍**，必须满分。
+>    此前只有 dbg-001 一份夹具验过这条，另外 11 个任务的 rubric 期望值从未被真实执行对撞过。
+> ④ `mutate_task_exec.py` 2/2 DETECTED：故障改打第 2 次调用（声明仍自洽但永不触发）、
+>    超时压到 1 毫秒（做完了也记成 timeout）——两条都只有真跑能看见。
+> ⑤ B-20 拆成 B-20a（让推导值可重放 / 换对账对象）与 B-20b（实现与接线）。
+>
 > 更新：2026-11-18（round-107：**B-03b ② 骨架落地——模型自己决策，框架不许代劳**。
 > ① `llm_agent.py`：每步一纸 JSON（`call_tool`/`finish`），本进程发调用、回填观察、写 trace；
 >    trace 字段拼装抽到 `agent_trace.py`，与参考 Agent **共用一份实现**（两处各写会静默漂移）。
@@ -1174,13 +1184,32 @@
 
 > 这些不是"遗漏"，是**登记过的决定**。每条都写清触发条件，避免下轮重新吵一遍。
 
-### [ ] B-20 TD-039：P3 对账接入 rubric
+### [ ] B-20 TD-039：P3 对账接入 rubric —— **原判据自相矛盾**，先补两项前置（round-108 实测）
 
-- **是什么**：`src/arena/reconciliation.py` 三态对账器已实现（7 条测试），但**刻意没接进 `dbg-001` 的 rubric**。
-- **为什么现在不做**：一旦成为 credit 断言，credit 分母就不是 4，五夹具分数序与已发布评审包全要动。
-- **做完判据**：`dbg-001` 的 `rubric_credit` 出现对账断言，分母更新为 5，五夹具新分数序登记，评审包重生成。
-- **验证**：`--fixture all` 分数序 + `tests/test_diagnosis_report.py` 的 `SCORE_ORDER` 一致
-- **谁推**：我（单开一批，不能并入其它步）。
+- **原判据（已作废）**：`dbg-001` 的 `rubric_credit` 出现对账断言、分母更新为 5、五夹具新分数序登记。
+- **实测结论：这个判据现在做不到**，两个硬障碍，都不是"多写一点代码"能绕过的：
+  1. **没有判定器类型**：`assertion_evaluator.evaluate_assertion()` 的分派里没有 `reconciliation`，
+     `SUPPORTED_TYPES` 也不含；直接写进 `rubric_credit` 会在判定时抛 `NotImplementedError`。
+  2. **写好了也没有任何提交能通过**：五份夹具逐个跑（round-108），连 `raw-perfect` 都是
+     `unverifiable`——条数与合计是**推导值**，`_numbers_in()` 只找逐字出现的数，
+     工具返回值里根本没有 `1837.99`。credit 分母恒定为权重和 ⇒ 一条谁都过不了的断言
+     等于给每份提交收 20% 的普遍税，**满分从 1.0 掉到 0.8，上界消失**。
+- **为什么以前没人发现**：`reconciliation.py` 的模块文档写的是「接入属下一批」，
+  读起来像"只差接线"；实际差的是**判定语义**。round-108 已把那段改成实测结论。
+- **本轮补的闸门**：`tests/test_task_executability.py` —— 12 个任务各让参考 Agent 真跑一遍，
+  必须 `ratio == 1.0` 且五条断言全 pass（`1 failed / 1.04s` 级别的成本）。
+  这条不变式**现在才第一次被钉住**：此前只有 `dbg-001` 一份夹具验过满分可达，
+  另外 11 个任务的 rubric 期望值从来没被真实执行对撞过。
+  `tools/mutations/mutate_task_exec.py` 2/2 DETECTED（故障改打第 2 次调用 / 超时压到 1 毫秒）。
+- **拆解**（谁推：我；但 B-20a 的第一个动作要人定"过程记录放哪"）：
+  - **B-20a 让推导值可重放**：需要 ① trace 里的**原始行**、② 一条**声明式推导规则**
+    （哪些行算有效、怎么聚合）。前者与 round-70「trace 只记形状」的口径冲突，
+    所以更该考虑的方向是**把对账对象换成平台账本**（round-106 已落地，账本本来就不可篡改，
+    Agent 改不动），代价是账本要携带响应体、并与提交一起落库。
+  - **B-20b 实现与接线**：`evaluate_reconciliation` + `SUPPORTED_TYPES` + 结果形状 + 分母调整。
+    前提是 B-20a 已让**完美提交**拿到 `verified`；否则会撞上 `test_task_executability.py`。
+- **验证**：`pytest tests/test_task_executability.py -q` 12 任务全绿；接线后再跑一次不许掉分。
+- **谁推**：我（B-20a 的第一步要人定方向）。
 
 ### [x] B-21 TD-038 宽松口：任务版本必填
 

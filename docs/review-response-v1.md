@@ -10427,3 +10427,103 @@ LLM_PROBE_OK=True
 
 B-03b ① 已关闭；② **骨架落地、真跑未做**，条目保持 `[~]`，不改成 `[x]`。
 C 线只剩 C-02（批次化包重生成，等真有 ≥3 步加用例的批次自动触发）。
+
+---
+
+## §110 round-108：B-20 的判据自相矛盾——先补"满分可达"这条闸门
+
+### 110.1 原判据照着做会得到什么
+
+B-20 写的是「`dbg-001` 的 `rubric_credit` 出现对账断言，分母更新为 5，五夹具新分数序登记」。
+照着做之前先量了一下——五份夹具逐个跑 `reconcile()`：
+
+| 夹具 | 对账状态 | 原因 |
+|---|---|---|
+| raw-empty / raw-no-file | —（无产物） | 没有答案可对 |
+| raw-no-trace | `unverifiable` | trace 里没有数值 |
+| raw-fake-retry | `unverifiable` | 推导值 9 / 861.24 逐字找不到出处 |
+| **raw-perfect** | **`unverifiable`** | 推导值 17 / 1837.99 逐字找不到出处 |
+
+`raw-perfect` 都过不了，这条断言就没有"通过"的可能。
+
+### 110.2 一条谁都过不了的断言 = 20% 的普遍税
+
+credit 的分母**恒定**为权重之和（YAML 的 `denominator: fixed_at_credit_total_weight`，P4 定的），
+这个设计本身是对的：不能因为断言缺数据就把分母缩小，否则"缺产物"反而虚高。但它有一个前提——
+**每条断言都必须有人能通过**。否则 `unscored` 贡献 0、分母照旧 +1，结果就是每份提交白扣 20%：
+
+```
+现在      R1 R5 | R2 R3 R4            → raw-perfect = 4/4 = 1.00
+接进去后  R1 R5 | R2 R3 R4 R6(无人能过) → raw-perfect = 4/5 = 0.80
+```
+
+上界从 1.0 掉到 0.8。这不是"多了一道检查"，是**给所有人加税**，而且税只会落在诚实提交身上
+（作弊者本来就拿不到 R2）。
+
+### 110.3 第二个障碍：连类型都没有
+
+`assertion_evaluator.evaluate_assertion()` 的分派只有五个类型（`trace_sequence` /
+`trace_final_status` / `file_exists` / `json_field_equals` / `trace_param_schema_valid`），
+写一个 `type: reconciliation` 进去会在判定时抛 `NotImplementedError`。
+所以 B-20 的"接线"实际是三件事：写执行器、登记类型、**先解决 110.1 的语义问题**。
+
+### 110.4 为什么以前没人发现
+
+`reconciliation.py` 的模块文档写的是「先做成独立判定器 + 测试，**接入属下一批**」——
+读起来像"只差接线"。差的是判定语义。本轮把那一段改成了实测结论（含上面这张表），
+免得下一轮有人照着"下一批"三个字直接接。
+
+### 110.5 补的闸门：每个任务都要能跑满分
+
+原来只有 `dbg-001` 一份夹具验过「满分可达」，另外 11 个任务（B-05 的变体 + 定位题）
+**没有任何夹具**，它们的 rubric 期望值（故障位、页大小上限、有效条数）从没被真实执行对撞过。
+
+`tests/test_task_executability.py` 把这条推广到全部 12 个任务：参考 Agent 真 socket 跑一遍 ⇒
+`final_status=completed`、trace 结构合法、五条断言全 pass、`ratio == 1.0`、未作废。
+13 条用例（12 任务 + 1 条"任务清单不为空"——参数化为 0 时 pytest 会全绿，那是安静的假绿）。
+
+这条闸门正好挡住 110.2：任何"谁都过不了"的断言加进去，12 个任务一起掉到 0.8。
+
+### 110.6 变异：两条只有真跑能看见
+
+```
+M1 ret-003 的 failures[0].attempt 1→2    ⇒ 故障永不触发 ⇒ R3 fail（9 条静态检查全绿）
+M2 fix-001 的 invoke_timeout_seconds 60→0.001 ⇒ 做完了也记 timeout ⇒ R5 fail
+2/2 DETECTED（M1 的报错逐字确认过：{'R3_retry_evidence': 'fail'}，不是碰巧崩）
+```
+
+M1 是这层存在的理由：`failures[].attempt=2` 本身**合法**，`test_fault_declaration_matches_retry_expectation`
+仍绿——静态检查看得见字段，看不见"故障到底触发了没有"。
+
+### 110.7 拆解：B-20 真正缺的东西
+
+要判 `valid_count=17` / `total_amount=1837.99`，只能**重放**（从原始行重算），
+重放需要两样当前都没有的东西：trace 里的**原始行**、一条**声明式推导规则**。
+
+trace 只记形状（`result_summary: {"orders": 10, "total": 20}`）是 round-70 刻意定的
+（不让答案与过程同时出现在 trace 里），不是遗漏。所以两条路：
+
+| 路线 | 好处 | 代价 |
+|---|---|---|
+| 把原始行进 trace | 改动小 | 与 round-70 的口径冲突；trace 变长；模型上下文里也会多出金额 |
+| **对账对象换成平台账本** | 账本本来就不可篡改（Agent 改不动），比自报强 | 账本要携带响应体、与提交一起落库（DTO 变更） |
+
+我倾向第二条：round-106 的结论本来就是「只有部署时强制走代理，'trace 不可伪造'才成立」，
+对账接在账本上才和那句话自洽；接在自报 trace 上，等于让被查的人自己提交证据。
+
+这条要人定方向（涉及"过程记录到底寄存在哪"这个对外可讲的口径），所以只登记，不擅自开工。
+
+### 110.8 反证条件
+
+① 若 `test_task_executability.py` 少于 12 条用例 ⇒ 任务清单空/读取失败，先看 `TASK_DIR`。
+② 若某任务掉分且 R2 失败 ⇒ 该变体的 `expected` 与 fixture 不一致（真 bug，不是测试问题）。
+③ 若某任务掉分且 R3 失败 ⇒ 故障注入没有真的触发（M1 那种），检查 `failures[].attempt` 与页序。
+④ 若有人把 `denominator` 改成"按可判定断言数"来自圆其说 ⇒ 那会打开"不报 trace 稳拿分"，
+   P4 明确否过（见 YAML 的 `contribution.unscored`）。
+⑤ 若将来给 `rubric_credit` 加断言而不跑这条测试 ⇒ 满分可能悄悄从 1.0 掉下来。
+
+### 110.9 状态变化
+
+B-20 保持 `[ ]`，但判据作废并拆分：**B-20a**（让推导值可重放 / 换对账对象，需人定向）＋
+**B-20b**（实现 `evaluate_reconciliation` 与接线）。本轮新增闸门
+`test_task_executability.py`（13 用例）与 `mutate_task_exec.py`（2 组）。
