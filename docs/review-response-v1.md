@@ -10094,3 +10094,78 @@ ARENA_PACKET_COUNT=1380 → 1 passed
 ### 105.7 状态变化
 
 C 线只剩 **C-01**（`verify.bat` 非交互入口）与 **C-02**（批次化包重生成）。
+
+---
+
+## §106 round-104：一键脚本能无人值守跑完，顺带修掉一处"不可能变红"的绿
+
+### 106.1 先修的是什么
+
+`verify.bat` 末尾 `pause` 挡着两件事：跑一次全程（51 轮从来没人整体跑过），以及接 CI。
+判据两条：`/nopause` 一口气跑完并返回退出码；无参数时行为不变。
+
+### 106.2 顺带查出的假绿（比原待办重要）
+
+`[2/5]` 上游 A2E 哨兵那段：
+
+```bat
+if exist "%A2EPY%" (
+    %A2EPY% -m pytest spike\test_a2e_semantics.py -v -p no:postgresql
+    set SPIKE_EXIT=%ERRORLEVEL%          ← 在这里是错的
+) else ( ... )
+```
+
+cmd 的 `( )` 块是**整体读入再执行**的，`%ERRORLEVEL%` 在**读块那一刻**就被替换成字面值，
+捕到的是这次 pytest **之前**的 ERRORLEVEL。后果：上游 A2E 的行为真变了、哨兵用例真红了，
+脚本照样打印 `RESULT: ALL GREEN`。**一条不可能变红的绿。**
+
+修法（不改语义，只改取值时刻）：
+
+```bat
+    set SPIKE_EXIT=0
+    if errorlevel 1 set SPIKE_EXIT=1
+```
+
+`if errorlevel N` 的条件在运行时求值，不经过变量展开。
+
+这与 §104 是同一类病：**判定在，读数错了**。§104 是"把 rc=4 当抓住"，这里是"rc 取的是上一句的"。
+两次都由"看起来绿"掩盖，都不报错。
+
+### 106.3 退出码口径
+
+```
+set RC=1 打底
+四条硬检查 PYEXIT / SPIKE_EXIT / DTO_EXIT / GATE_EXIT 全 0  →  RC=0
+评审包 REVIEW_EXIT 仍然软：只加 NOTE，不进 RC
+  （陈旧包坏的是交接，不是代码；把它变成硬失败会让"忘了重生成"变成"整脚本红"，
+    而红的人第一反应是去关检查）
+exit /b %RC%
+```
+
+### 106.4 实测
+
+```
+verify.bat /nopause   → 7m45s 自己结束，RC=0，末行 RESULT: ALL GREEN
+                        [1/5] 1390 passed（tests\ + spike jmespath 一起跑）
+                        [2/5] 3 passed（上游哨兵仍绿——这次是**真的**绿）
+                        [3/5] 五夹具全过  [4/5] OK  [5b] PUSH_GATE=CLEAN
+verify.bat（stdin 关掉）→ 仍打印 pause 提示，EOF 后继续，RC=0
+```
+
+注意 `[1/5]` 是 **1390** 而评审包里记的是 **1380**：包里那行只数 `tests/`，
+这条命令额外带上 `spike/test_jmespath_expressiveness.py`（10 条）。两个数都对，
+但**不要拿它们互相当裁判**——口径不同。
+
+### 106.5 反证条件
+
+① 若 `/nopause` 仍停住 ⇒ 参数没被识别（`%~1` 的大小写/斜杠）。
+② 若无参数时不再停 ⇒ 双击的人看不到结论。
+③ 若块内又出现 `set X=%ERRORLEVEL%` ⇒ 那条检查回到"不可能红"。
+④ 若删掉 `exit /b %RC%` ⇒ 退出码退回上一个命令的，`ALL GREEN` 变成猜的。
+⑤ 若有人把评审包那条改成硬失败 ⇒ "忘了重生成"会让整脚本红，人就会去关检查。
+
+### 106.6 没做的
+
+- **没给 `.bat` 加测试**：它是开发便利脚本，不是产品代码；加一条 `grep` 锁会让用例数 +1
+  ⇒ 评审包必 STALE ⇒ 再烧一次全量重生成。收益不抵成本。防回归靠 106.5 ③④ 写在这里
+  和 `verify.bat` 自带的 `rem` 注释里。
