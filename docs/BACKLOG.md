@@ -821,6 +821,44 @@
   只产出 `pending_sends` 清单。
 - **谁推**：① 人拍；②③ 已完成。
 
+### [ ] B-04i 缺过程的提交仍进掌握度 —— 分数轴 0、掌握度轴满分证据（round-115 外部回件核证）
+
+- **是什么（一句话）**：`raw-no-trace`（答案对、缺过程）**分数是 0，却在掌握度上记了一次"做对了"的证据**（`c=1.0`）。
+  于是"不交过程"在分数上吃亏、在长期掌握度上反而比"交了但做错"更安全——正是 A-02 的 R2 所问的方向。
+- **证据（外部回件实测 + 我方复核，不是推测）**：
+  ① `docs/diagnosis-report-schema.md:301` 白纸黑字写「`process_fact.missing=true` ⇒ 不计能力分、**不计掌握度**」；
+  ② `mastery.skill_evidence()` 只认 `score.voided`（整份排除）与 `score.disqualified`（照记），
+     `process_fact` 在 `mastery.py` **零命中**；
+  ③ `tests/test_mastery.py::test_unscored_and_blocked_are_dropped_from_both_sides`
+     **明确断言 `skill_evidence(raw-no-trace, MSP).c == 1.0`**，本轮实跑 `2 passed`；
+  ④ 报告侧两处声明"不计掌握度"（`report_attribution.counts_toward_mastery=False` + 学生 note）都没有执行者。
+- **一处必须纠正外件的措辞（否则误导后人）**：回件称"全库搜不到任何登记、这是遗漏"——**不准确**。
+  这条行为在 `tests/test_mastery.py` 里被**明确写为期望**（决策 7："unscored 不记 0 分"的副产品，
+  同一份报告里 `failure_retry` 因 `unscored` 而无证据）。所以不是"无人发现"，
+  而是**决策 7 的测试与决策 9 的"不计掌握度"承诺各自成立、从未对撞过**。
+  这正是 round-89 给 `voided` 治过的同一种病（派生布尔开关没有执行者），那次只治了"作废"一支。
+- **与 B-07b ③ 是两件事，不要合并**：B-07b ③ 是"**门禁不合格**（`disqualified`）要不要吸收"——已拍 A 口径（照记）；
+  本条是"**缺过程**（`process_fact.missing`）要不要吸收"——从未拍过。两者触发位不同、处置可不同。
+- **三个候选口径（归人拍，我不代拍）**：
+  - **甲（回件倾向）**：`skill_evidence()` 对缺过程提交**整份排除**，与 `voided` 同款。
+    与 `data-model.md` 现有文字一致、与 `voided` 处理对称；代价＝缺过程的人长期拿不到 P 更新
+    （注意：这不删证据，报告与提交都保留）。
+  - **乙**：维持现状（证据照记），**改文档**承认"缺过程在掌握度上不吃亏"是一条设计选择。
+    诚实，但等于公开承认可被利用；进排名前必须按 B-07b 的 C 口径 / A3 防刷处理。
+  - **丙**：降权（`B-07b` 备好的乘子 `k`），证据照记但按较小系数计入、不计展示性指标。
+- **我的倾向**：甲。理由：文档与 `report_attribution` 都已经这么承诺，实现跟上最省事，
+  且"分数归零、掌握度给满分"这个不对称最容易被评委抓住。
+  **落在目标边界内**：改的是**计入层**，不是分数计算——`ratio` 仍 0，报告与断言一字不动。
+- **做完判据**：`skill_evidence()` 对 `process_fact.missing` 的提交按拍板口径处理，
+  `test_mastery.py` 里那条 `c==1.0` 的断言按结论改写（不许只改实现不改测试），
+  学生 note 与 `report_attribution` 与实现三者一致。
+- **十分钟验证**：`grep -n "process_fact" src/arena/mastery.py` → 当前零命中；
+  `pytest tests/test_mastery.py::test_unscored_and_blocked_are_dropped_from_both_sides -q` → 当前 `1 passed`（断言 `c==1.0`）。
+  两行并排就是"文档说不计、实现记满分"的证据。
+- **谁推**：人拍甲/乙/丙；拍完我落实现 + 改测试 + 改文档。
+- **反证条件**：若人认为"缺过程的人也该靠答案对积累 P（能力证据与过程合规分开看）"⇒ 选乙，
+  但必须同时把 `diagnosis-report-schema.md:301` 的"不计掌握度"改成真实口径，不许留假声明。
+
 ### [x] B-05 任务库 1 → 10 + 变体模板 — 2026-11-15 关闭
 
 - **是什么**：计划书 M2 要 10 个任务、3 技能 × 2–3 变体。现在 1 个（`dbg-001`），`variant_template_id: null`。
