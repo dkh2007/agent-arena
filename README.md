@@ -25,4 +25,6 @@ copy .env.example .env        # 填入 API key，勿提交 .env
 
 ## 开发流程
 
-见《协作规范 v1》：小步迭代，一步一验，main 受保护，feat/* 短命分支 + PR。
+见 `docs/COLLABORATION.md`（协作规范 v2）：小步迭代，一步一验，main 受保护，feat/* 短命分支 + PR。
+两人协作的分支/提交/合并/验收规则、文件所有权表、AI 代码质量清单都在那里；开 PR 时模板会自动带出验收清单。
+交接说明见 `HANDOFF.md`，润色范围见 `docs/peer-brief-mvp-polish.md`。
