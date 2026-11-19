@@ -34,7 +34,7 @@ round-108 实测后，这句"接入只是下一批的事"要改成更准确的�
 `tests/test_replay_premise.py` 把这条钉住了（真跑一遍 → 用参数序列重放 → 逐条一致；改一条金额
 返回体必须变；同一参数连调两次结果可以不同 ⇒ 要冻的是**有序序列**而不是单次请求）。
 
-所以真正缺的原本是两样东西里的**一样**，现在两样都有了，缺的变成了**接线**：
+所以真正缺的东西一件一件补完了，现在只剩「结果落哪儿」这一件没定：
 
 1. ~~原始行~~ 已有 —— 账本参数序列 + 任务数据（后者由提交里的 `task_git_hash` 锚定）；
 2. ~~声明式推导规则~~ **已有（round-110）** —— `src/arena/derivation.py`：任务 YAML 里的
@@ -42,12 +42,22 @@ round-108 实测后，这句"接入只是下一批的事"要改成更准确的�
    已与答案键逐一相等（`tests/test_derivation.py`，7/7 变异 DETECTED）。
    它只吃「一组行」，不知道行从哪来：喂全量夹具就是期望答案，喂重放回来的行就是
    「这个 Agent 实际看到的能推出什么」。
+3. ~~行集怎么拼~~ **已有（round-111）** —— `src/arena/replay.py`：按账本里的
+   `call_index` 顺序重放、只取成功页（失败页记进 `skipped`，不替 Agent 重试）、
+   按 `mock.pagination.response_shape` 的键拼行。10 个汇报类任务重放出的推导值
+   逐个等于答案键（`tests/test_replay_rows.py`，6/6 变异 DETECTED）。
 
 **但本模块还没有调用它**，这条缺口没变：`reconcile()` 仍然只找逐字出现的数，
-推导值仍归 `unverifiable(derived_not_replayable)`。要接成「重放 → 推导 → 比答案」，
-还差两件事，都在 B-20b：① 「行集」怎么拼（从账本按 `call_index` 重放、只取成功页、
-按 `derivation.rows` 的形状展开）；② 结果落哪儿（**不能是 credit 断言**——分母恒定，
-一条"有代理才过得了"的断言等于给每份提交收税）。
+推导值仍归 `unverifiable(derived_not_replayable)`。接成「重放 → 推导 → 比答案」原本差两件事，
+现在只剩一件：
+
+1. ~~「行集」怎么拼~~ **已有（round-111）** —— `src/arena/replay.py`：按账本里的
+   `call_index` 顺序重放、只取成功页（失败页记进 `skipped`，不替 Agent 重试）、
+   按 `mock.pagination.response_shape` 的键拼行。10 个汇报类任务重放出的推导值
+   逐个等于答案键（`tests/test_replay_rows.py`，6/6 变异 DETECTED）。
+2. **结果落哪儿** —— 仍未定（**不能是 credit 断言**：分母恒定，一条"有代理才过得了"
+   的断言等于给每份提交收税；也不能复用 `process_fact.missing`：那个字段一为真，
+   无代理部署全员 0 分）。这是 B-20b 剩下的全部。
 
 ```text
 trace 只记形状（result_summary: {"orders": 10, "total": 20}）

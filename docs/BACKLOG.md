@@ -1253,6 +1253,13 @@
     （`suppressed = disqualified or voided or missing_process`）⇒ 无代理部署**全员 0 分**，
     比 20% 的税更糟。正确落点是**新增一个中性流程事实字段**，或只落诊断区。
     接线前后必须跑 `test_task_executability.py`。
+    **round-111 进展：「行集怎么拼」已落地**（`src/arena/replay.py`），剩下只有「结果落哪儿」。
+    它做的事就一段：账本 `(call_index, name, params)` → 新服务按序重放 → 只取成功页
+    （失败页记进 `skipped`、**不替 Agent 重试**）→ 按 `mock.pagination.response_shape` 的键
+    拼行 → 交给 `derive()`。10 个汇报类任务重放出的推导值逐个等于答案键；
+    只拉一页会算小、重复页靠 `distinct_by` 不翻倍、`call_index` 有洞直接拒跑；
+    `tests/test_replay_rows.py` 20 用例 + `mutate_replay_rows.py` 6/6 DETECTED。
+    仍然**没有调用 `reconcile()`**：落点没定，接线一步没动，分数一个都没变。
   - **甲（原始行进 Agent 记录）已结构性否掉，不是偏好**：答案与原始行同处一份 Agent 可控内容里，
     「出处」就退化成「能不能凑出一个相等的数」——诚实的和伪造的都能凑，那不是弱证据，是**无效证据**
     （`agent_trace.summary` 原文：看运气）。**只有一种残骸值得保留**：Agent 交**主张**
