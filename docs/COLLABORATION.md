@@ -59,12 +59,13 @@ ruleset 没有 branch protection 那个 "Do not allow bypassing" 勾选项，**�
 | Restrict deletions（= Allow deletions ❌） | ✅ | 防止误删 main |
 | Block force pushes（= Allow force pushes ❌） | ✅ | force push 会改写历史、让别人的分支对不上 |
 
-> 三条说明：
-> - **任何带 "code owner" 字样的选项都不要勾**：仓库没有 CODEOWNERS 文件，勾了 `Require review from
->   code owners` / `Require code owner review` 会让 PR 因为没有 owner 可批准而**永远无法合并**。
+> 两条说明：
 > - "Require status checks" 先**不勾**：仓库还没有 GitHub Actions CI，勾了会永远卡住不能合并。
 >   等将来把 `verify.bat` 搬成 CI 再加。现在验证靠 PR 模板里的手动清单（见 §5）。
 > - `Require signed commits` / `Require linear history` 先不勾，避免无谓的复杂度。
+>
+> 注：2026-11-19 实测 GitHub ruleset 页面（`settings/rules`）并无 "code owner review" 勾选项，
+> 只有 "Require review from specific teams"（与 CODEOWNERS 文件是两回事），故删除原先的相关提示。
 
 ### 1.3 让自己及时收到提交
 
