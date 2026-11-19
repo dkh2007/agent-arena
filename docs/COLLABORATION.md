@@ -13,12 +13,15 @@
 
 ## 0. 开工前先确认的一件事（决定后面三件设置能不能用）
 
-GitHub Free 的**分支保护**与 **CODEOWNERS** 对**公开仓库**可用；**私有仓库**要 Pro / Team 付费档。
-所以先在仓库 Settings 里看一眼可见性：
+GitHub Free 的 **rulesets / 分支保护**与 **CODEOWNERS** 只对**公开仓库**可用；
+**私有仓库**要 Pro / Team 付费档（官方文档确认：rulesets 在 GitHub Free 下仅 public 可用）。
+所以先在仓库 Settings 里看一眼可见性；建 ruleset 时页面顶部若出现黄字警告
+"won't be enforced on this private repository"，就是命中了这条，保存了也不生效：
 
 - **公开仓库**：下面 1.1 / 1.2 / 1.3 全部照做。
-- **私有仓库 + 免费账号**：分支保护用不了 ⇒ 退而求其次，靠"PR 流程 + 本清单"约束，
-  并把仓库可见性改成公开后补上分支保护。**不要假设自己有分支保护却没设**——那是假安全感。
+- **私有仓库 + 免费账号**：ruleset / 分支保护都用不了 ⇒ 退而求其次，靠"PR 流程 + 本清单"约束。
+  要么把可见性改成公开后补上保护（注意比赛是否要求提交前保密），要么升 Team，
+  要么接受"没有强制力、只有流程约束"。**不要以为建了 ruleset 就安全——黄字警告就是假安全感的证据**。
 
 ---
 
@@ -33,7 +36,19 @@ Settings → Collaborators → Add people，把学生B 的 GitHub 账号加进�
 
 ### 1.2 保护 main（防冲突的核心机制）
 
-Settings → Branches → Add branch ruleset（或 Add branch protection rule），目标分支填 `main`，勾这些：
+Settings → Branches → Add branch ruleset，按下面逐步设。**先确认页面顶部没有黄字警告**——
+出现 "ruleset won't be enforced on this private repository" 就是命中了 §0 的私有免费限制，
+此时下面的设置保存了也不生效（先改公开或升 Team，或退而靠 PR 流程约束）。
+
+**第一步（最容易漏）**：Ruleset Name 填 `Protect main`；Enforcement status 选 `Active`；
+Target branches 点 **Add target → Include branch → `main`**。
+*没有 target 的规则对任何分支都不起作用*——这是空转的头号原因。
+
+**第二步**：Bypass list 保持 **empty**。不要把自己加进 bypass——
+ruleset 没有 branch protection 那个 "Do not allow bypassing" 勾选项，**靠 bypass 列表为空**实现
+"连建仓库的人都不许绕过"。一旦把自己加进去，规则对你自己无效。
+
+**第三步**：Rules 勾选如下（两套页面措辞不同，下面括号里是 branch protection 的说法）：
 
 | 设置项 | 勾不勾 | 为什么 |
 |---|:---:|---|
@@ -41,14 +56,15 @@ Settings → Branches → Add branch ruleset（或 Add branch protection rule）
 | Required approvals = 1 | ✅ | 至少一个人看过才能合 |
 | Dismiss stale approvals when new commits are pushed | ✅ | 批完之后又改代码，批准自动作废，防止"批完偷换" |
 | Require conversation resolution before merging | ✅ | 评论里的疑问必须逐条回复/resolve |
-| Do not allow bypassing the above settings | ✅ | **关键**：建仓库的人默认能绕过保护，不勾这条 protection 对自己无效 |
-| Allow force pushes | ❌ | force push 会改写历史、让别人的分支对不上 |
-| Allow deletions | ❌ | 防止误删 main |
+| Restrict deletions（= Allow deletions ❌） | ✅ | 防止误删 main |
+| Block force pushes（= Allow force pushes ❌） | ✅ | force push 会改写历史、让别人的分支对不上 |
 
-> 两条说明：
+> 三条说明：
+> - **任何带 "code owner" 字样的选项都不要勾**：仓库没有 CODEOWNERS 文件，勾了 `Require review from
+>   code owners` / `Require code owner review` 会让 PR 因为没有 owner 可批准而**永远无法合并**。
 > - "Require status checks" 先**不勾**：仓库还没有 GitHub Actions CI，勾了会永远卡住不能合并。
 >   等将来把 `verify.bat` 搬成 CI 再加。现在验证靠 PR 模板里的手动清单（见 §5）。
-> - 如果网页上这些选项找不到，说明命中了 §0 的私有仓库限制。
+> - `Require signed commits` / `Require linear history` 先不勾，避免无谓的复杂度。
 
 ### 1.3 让自己及时收到提交
 
