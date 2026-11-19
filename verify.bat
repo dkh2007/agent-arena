@@ -8,7 +8,8 @@ rem   [2] pytest spike\        - upstream A2E defect sentinel (skips if A2E sour
 rem   [3] DTO + full pipeline - 5 fixtures, schema, all 5 assertions recomputed from raw
 rem   [4] review packet        - is docs/review-packet.md still true to the repo? (soft check)
 rem   [5] git + push gate      - commits, tree state, pre-push content gate (rule 11)
-rem Path note: uses the isolated venv (pytest/fsrs/pyyaml/jsonschema live only there), never the system Python.
+rem Path note: prefers the project-local .venv from README, then this machine's
+rem shared WorkBuddy venv, then PATH python. Fails early if deps are missing.
 rem Encoding note: this file is ASCII-only and every check it calls prints ASCII verdicts.
 rem   cmd.exe parses UTF-8 CJK bytes as GBK and can even turn them into redirections.
 
@@ -19,7 +20,24 @@ rem Why it exists: without it this script cannot be run by CI or by another scri
 rem (the pause blocks forever), so "did anyone ever run the whole thing?" stayed open.
 if /i "%~1"=="/nopause" set NOPAUSE=1
 
-set PY="%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+rem --- Python discovery (portable) ------------------------------------------
+rem A fresh collaborator follows README and gets .venv\Scripts\python.exe.
+rem Hard-coding one author's path here made every check red on every other
+rem machine - including the collaborator who just pulled this repo.
+set PY=
+if exist ".venv\Scripts\python.exe" set PY=".venv\Scripts\python.exe"
+if not defined PY if exist "%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe" set PY="%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+if not defined PY set PY=python
+rem Early fail with plain ASCII: a wrong interpreter or missing deps otherwise
+rem paints all five checks red for the wrong reason.
+%PY% -c "import pytest, fsrs, yaml, jsonschema, jmespath" >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Python at %PY% cannot import required packages.
+    echo        Fix: python -m venv .venv
+    echo        Then: .venv\Scripts\python.exe -m pip install -r requirements.txt
+    if not defined NOPAUSE pause
+    exit /b 1
+)
 rem A2E lives one level up from this repo (repo itself stays free of the 80MB upstream tree)
 set A2EPY=..\tools\A2E-main\server\.venv\Scripts\python.exe
 
