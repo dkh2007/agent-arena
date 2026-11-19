@@ -450,9 +450,18 @@
   `submissions` / `user_skill_states` / `review_items`）+ 2 个索引；外键真开启；建库幂等；
   技能/模式/任务种子导入；`save_submission` / `load_submission` / `list_submissions`；
   五份 fixture 落库后**关连接重开仍读回**，且与现算报告逐字段相等；16 条约束锁 + 8 组字节级变异全 DETECTED。
-- **还剩什么**：`user_skill_states` / `review_items` 只有表、没有任何代码读写（属 B-07/B-08）；
-  掌握度 P 与热度统计要等 M3 才有消费者；`trace` 列目前由调用方传，接真采集属 B-03。
+- **还剩什么（2026-11-19 订正——原文是过期声明，勿再引用）**：原写「`user_skill_states` /
+  `review_items` 只有表、没有任何代码读写」「掌握度 P 与热度统计要等 M3 才有消费者」——**均已不成立**：
+  - `user_skill_states`：`save_fsrs_cards()` 写（store.py:1455）、`load_fsrs_cards()` 读（1472），
+    被 `scheduler.py` / `schedule_advisor.py` 消费；`mastery_snapshots`（第八张表，B-07c）另存 P 快照。
+  - `review_items`：`save_review_items()` 写（1478）、`list_review_items()` 读（1515）、
+    `mark_review_done()` 更新 status（1572），被 `schedule_advisor.py:704` 等消费。
+  - 热度统计：`detected_patterns` 已被 `schedule_advisor.py` / `scheduler.py` 读取参与排程。
+  - `trace` 列仍由调用方传；**真采集的骨架**已随 B-03b round-106/107 落地（② 真跑待配额）。
+  - 真实仍缺：难度归一 / 参数标定（B-05c、B-07b，卡真实数据）、真实复习事件回写（B-08c，卡 B-10 前端）。
 - **做完判据**：状态层能读历史（至少一处 `SELECT ... FROM submissions WHERE user_id=?` 参与判定）。
+  已满足：`mastery.build_series()` 的 `_user_reports` 读 `submissions`，经 `mastery_snapshot` / `schedule_advisor` / `reappraisal` 参与判定；
+  65 条 mastery 相关测试实证。标 `[~]` 仅因 B-03b ② 真跑待配额，非"地基未成"。
 - **验证**：`pytest tests/test_store.py -q` → 16 passed；`grep -rn "INSERT INTO review_items\|FROM user_skill_states" src/`
 - **谁推**：我（M1 已完成地基；M3 接读写）。
 
@@ -984,6 +993,10 @@
 
 > **关闭时的边界（写清楚，免得被当成"学习者画像已就绪"）**：
 > ① P **只活在内存里**，`user_skill_states` 仍没有承接字段 → B-07c；
+>    **（2026-11-19 订正）此边界已被 B-07c 兑现**：P 落进**新建的第八张表 `mastery_snapshots`**
+>    （每 (user, skill) 一行），`user_skill_states` 一个字段没动——B-07c 明确记载这是"字面偏离
+>    data-model.md §0 原则 2"的刻意选择。**别把这句读成"P 至今没落库"**，也别读成"P 落进了
+>    user_skill_states"——两者都是失真。
 > ② **衰减未实现**（依赖 ReviewItem 的复习间隔，属 B-08）⇒ 当前 P 不随自然时间下降，
 >    测试 `test_decay_is_not_implemented_yet` 是现状锁，B-08 落地时反转它；
 > ③ **λ=0.3 与「首次观测播种」都是假设**，没有答题数据可标定 → B-07b；
