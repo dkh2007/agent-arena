@@ -338,6 +338,18 @@
       "items": { "type": "string" },
       "description": "报告不自洽或有未覆盖情况时的显式说明（例如『两态同时成立』不允许静默）"
     },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checked"],
+      "description": "P3 对账结论（2026-11-19 人拍：三态标记进报告 JSON，notes 只写人话）。字段缺失表示『未做对账』，不表示『对账通过』。**不进 score、不进断言、不计掌握度**——分母恒定，做成断言等于给每份提交收普遍税。",
+      "properties": {
+        "status": { "enum": ["verified", "unverifiable", "mismatch"], "description": "verified=每个值都有过程出处；unverifiable=推导值/记录不足（数据不足，不是答错）；mismatch=有值对不上（疑似编造，交人复核）" },
+        "checked": { "type": "array", "items": { "type": "object" } },
+        "counts_as_evidence": { "type": "boolean" },
+        "reason": { "type": "string" }
+      }
+    },
     "judge_scores": {
       "type": "array",
       "description": "B-04b：双评的逐次原始记录。**只有跑了 judge 才出现**；字段缺失表示『未评价』，不表示『评了 0 次』。judge 是软分侧证：它不参与 score / assertions / report_attribution / detected_patterns 的任何计算。",
