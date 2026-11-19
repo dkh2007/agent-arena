@@ -62,6 +62,19 @@
    不必回头改已积累的历史，也**不必**把报告里的 credit 断言改标 `blocked`
    （那会用评分逻辑吞掉诊断数据，是多份文档明确禁止的实现方式）。
 
+6. **缺过程（`process_fact.missing`）⇒ 整份不计入 P**（2026-11-19 人拍板「甲」，B-04i）。
+   与 `voided` 同款排除，但**是另一件事**：`voided` 是版本错位（这次不算数），
+   `missing` 是题要过程而这次没收到（这次也不算数）；`disqualified` 仍照记（A 口径）。
+   此前 `report_attribution.counts_toward_mastery=False` 与
+   `diagnosis-report-schema.md` 都白纸黑字写着「缺过程不计掌握度」，
+   但 `skill_evidence()` 从未读 `process_fact`，于是答案对、过程缺的那份
+   照样在 `multi_step_planning` 上记 `c=1.0`——文档承诺没有执行者。
+   本次把执行者补在**计入层**：分数、断言状态、报告与提交行一个字不动。
+   留痕分两路：`gate_status` 仍是三态门禁词表（排程层依赖它，不塞第四态），
+   另设 `process_missing` 布尔字段记在 `Evidence` 上并进序列化；
+   `ignored` 里每条断言标 `process_missing:state=...`，`skipped` 记 `process_missing`。
+   缺过程那次不产生 `Step`（它没推动 P），所以 `Step` 不加恒假的字段。
+
 ## P 落在哪（round-88 / B-07c 更新）
 
 **本模块仍然一行库都不写**：`build_series()` / `replay()` / `decayed_at()` 全是纯读，
@@ -115,7 +128,8 @@ class Evidence:
     """一次提交对**一个**技能给出的证据。
 
     `counts=False` 表示这份提交在该技能上没有可用证据（全 `unscored` / `blocked` /
-    门禁零权重）。这时**不许**把它当成 0 分——那是决策 7 明令禁止的换算。
+    门禁零权重，或整份被 `voided` / 缺过程排除）。这时**不许**把它当成 0 分——
+    那是决策 7 明令禁止的换算。
     """
 
     submission_id: str
@@ -129,6 +143,9 @@ class Evidence:
     # `disqualified` ⇒ 仍照记（B-07b 的 A 口径），留它是为了将来切 C（降权）/ B（排除）
     # 只需在计入层加一条过滤，而不必回头改已积累的历史。
     gate_status: str = "ok"
+    # 缺过程（B-04i 甲）：题要过程而这次没收到 ⇒ 整份不计入。
+    # **不塞进 gate_status**：那是门禁三态词表，排程层按它读；缺过程不是门禁判定。
+    process_missing: bool = False
 
     @property
     def counts(self) -> bool:
@@ -160,6 +177,7 @@ class Evidence:
             "passed_weight": _round(self.passed_weight),
             "counted_weight": _round(self.counted_weight),
             "gate_status": self.gate_status,
+            "process_missing": self.process_missing,
             "ignored": [i.to_dict() for i in self.ignored],
         }
 
@@ -176,9 +194,15 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
     否则口径会分叉成"代码说 pass/fail 算"与"任务 YAML 说 counts_toward_mastery"
     两套，将来改 YAML 时报告变了而 P 不变。
 
-    **唯一的整份级例外是 `score.voided`**：作废的提交一条都不计入（2026-11-16 人拍板）。
-    它来自报告的门禁层而不是 `attribution_policy`，因为"这次不算数"是提交级的判定，
+    **整份级例外有两个**：`score.voided`（版本错位，2026-11-16 人拍板）与
+    `process_fact.missing`（题要过程却没收到，2026-11-19 人拍板甲，B-04i）。
+    两者都让这份提交一条都不计入，但分别留痕，不能并成一个布尔：
+    它们来自提交层而不是 `attribution_policy`，因为「这次不算数」是提交级判定，
     不是某种断言状态的性质——写成 per-state 规则就得给每个状态都复制一遍。
+
+    `process_fact.missing` 缺失或不是布尔时**报错**，不默认 false：
+    默认 false 会把「没记过程事实」当成「过程齐全」，恰好抹掉本次要执行的那个信号，
+    与 `score.disqualified` 缺字段时的处理同款。
     """
     if not isinstance(report, dict):
         raise MasteryError(f"report 应是 dict，收到 {type(report).__name__}")
@@ -212,6 +236,13 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
     # 作废 = 这次不算数（版本对不上），不是"不会"，也不该抬高任何技能的状态量。
     exclude_voided = gate_status == "voided"
 
+    # 缺过程（B-04i 甲）：报告自己已经算出 `missing`，这里只负责执行它。
+    # 手写最小报告也必须带这个字段——缺了就报错，理由见本函数 docstring。
+    process = report.get("process_fact")
+    if not isinstance(process, dict) or not isinstance(process.get("missing"), bool):
+        raise MasteryError(f"{submission_id} 缺 process_fact.missing（布尔），无法判断过程是否收到")
+    process_missing = process["missing"]
+
     passed = counted = 0.0
     ignored: list[Ignored] = []
     for a in report.get("assertions") or []:
@@ -226,9 +257,12 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
         weight = a.get("weight", 0)
         if isinstance(weight, bool) or not isinstance(weight, (int, float)):
             raise MasteryError(f"{submission_id} 的断言 {a.get('id')} 权重非数值：{weight!r}")
-        if exclude_voided:
-            # 校验照做（口径/权重非法仍要炸），但一条都不计入：P 不能被作废的提交推动。
-            ignored.append(Ignored(str(a.get("id")), f"voided:state={state}"))
+        if exclude_voided or process_missing:
+            # 校验照做（口径/权重非法仍要炸），但一条都不计入：P 不能被"这次不算数"推动。
+            # 两者同时成立（旧版提交又没交过程）时只标 `voided`，避免同一条断言
+            # 在 ignored 里计两次；`Evidence.process_missing` 仍为 True，审计信息不丢。
+            reason = "voided" if exclude_voided else "process_missing"
+            ignored.append(Ignored(str(a.get("id")), f"{reason}:state={state}"))
             continue
         if not rule["counts_toward_mastery"]:
             ignored.append(Ignored(str(a.get("id")), f"not_counted:state={state}"))
@@ -251,6 +285,7 @@ def skill_evidence(report: dict, skill_id: str, *, at: str | None = None) -> Evi
         counted_weight=counted,
         ignored=tuple(ignored),
         gate_status=gate_status,
+        process_missing=process_missing,
     )
 
 
@@ -399,8 +434,17 @@ def replay(
                 f"{ev.submission_id} 的 gate_status={ev.gate_status!r} 不在 {GATE_STATUSES}"
                 "——拼错的状态名会让将来的降权/排除过滤漏掉这一条"
             )
+        if not isinstance(ev.process_missing, bool):
+            raise MasteryError(f"{ev.submission_id} 的 process_missing 非布尔：{ev.process_missing!r}")
+        if ev.process_missing and ev.counts:
+            # 矛盾证据：标记了「整份不算数」却带着正权重进来。静默跳过哪一种都会
+            # 让口径分叉（调用方以为排除了，实际 P 被推动），所以在这里炸掉。
+            raise MasteryError(
+                f"{ev.submission_id} 标记缺过程却有 {ev.counted_weight} 计入权重——口径冲突"
+            )
         if not ev.counts:
-            skipped.append(Skipped(ev.submission_id, ev.at, "no_counted_assertion"))
+            reason = "process_missing" if ev.process_missing else "no_counted_assertion"
+            skipped.append(Skipped(ev.submission_id, ev.at, reason))
             continue
         c = ev.c
         if p is None:

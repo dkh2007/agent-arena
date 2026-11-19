@@ -217,7 +217,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["required", "submitted", "missing"],
-      "description": "流程事实（P2 / Q5-D1）：这道题要不要过程、这次交没交。中性记录，不是能力判断——缺过程只在 required=true 时压制分数与归因，**不改写断言状态、不写进 error_patterns / skill_gaps**。required 来自任务 YAML 的 submission_requirements.requires_process；submitted = trace 通过结构校验 或 submission.process_note 非空（写『没思路』也算交了）；missing = required 且未 submitted",
+      "description": "流程事实（P2 / Q5-D1）：这道题要不要过程、这次交没交。中性记录，不是能力判断——缺过程只在 required=true 时压制分数与归因，**不改写断言状态、不写进 error_patterns / skill_gaps**。required 来自任务 YAML 的 submission_requirements.requires_process；submitted = trace 通过结构校验 或 submission.process_note 非空（写『没思路』也算交了）；missing = required 且未 submitted。执行者（2026-11-19 人拍甲 / B-04i）：mastery.skill_evidence() 读 missing=true ⇒ 该提交整份不计掌握度（与 voided 同款排除，提交行与报告照留）；字段缺失或非布尔时报错，不默认 false",
       "properties": {
         "required": { "type": "boolean" },
         "submitted": { "type": "boolean" },

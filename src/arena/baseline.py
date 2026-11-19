@@ -337,6 +337,12 @@ def classify_blocked(rows: Iterable[dict], skill_ids: Iterable[str], *, total: i
     所以它的 `positive_skills` 为空；这是刻意的，不作废单列一档——作废的含义就是
     "这次不算数"，它既没有分要解释，也没有证据需要撤回。
 
+    **缺过程（`process_fact.missing`）同理落 T2**（B-04i 人拍甲，2026-11-19）：
+    整份排除后 `passed_weight=0`，不满足 T3 的「0 分但正向证据进过 P」，
+    于是 `pending_mastery` 也不再适用。这不是新增分档规则，是 T3 现有定义在
+    甲口径下的推论；由 `tests/test_rule_exposure.py::
+    test_missing_process_submission_falls_into_t2_not_t3` 钉住。
+
     反过来说清一件事：**T2 不等于"完全没影响"**。它没有*分数*可解释，但它的失败证据
     （`state=fail` 且权重 > 0）照样在 P 里，而且因为补不上，那份证据**永远停在旧判据上**。
     这一点写在这里是为了不要有人把 T2 读成"这些人跟我们改标准无关"。

@@ -821,7 +821,7 @@
   只产出 `pending_sends` 清单。
 - **谁推**：① 人拍；②③ 已完成。
 
-### [ ] B-04i 缺过程的提交仍进掌握度 —— 分数轴 0、掌握度轴满分证据（round-115 外部回件核证）
+### [x] B-04i 缺过程的提交仍进掌握度 —— 人拍「甲」整份排除，2026-11-19 关闭（round-115 外部回件核证）
 
 - **是什么（一句话）**：`raw-no-trace`（答案对、缺过程）**分数是 0，却在掌握度上记了一次"做对了"的证据**（`c=1.0`）。
   于是"不交过程"在分数上吃亏、在长期掌握度上反而比"交了但做错"更安全——正是 A-02 的 R2 所问的方向。
@@ -858,6 +858,33 @@
 - **谁推**：人拍甲/乙/丙；拍完我落实现 + 改测试 + 改文档。
 - **反证条件**：若人认为"缺过程的人也该靠答案对积累 P（能力证据与过程合规分开看）"⇒ 选乙，
   但必须同时把 `diagnosis-report-schema.md:301` 的"不计掌握度"改成真实口径，不许留假声明。
+
+**人拍结论（2026-11-19）：甲。** 缺过程提交整份排除，与 `voided` 同款；乙/丙不采用。
+上文「三个候选口径」「十分钟验证」是**拍板前的证据与备选项**，保留作历史——
+其中 `c==1.0` 的复现命令现已反转，别再拿它当现状。
+
+- **落地（round-118）**：
+  ① `mastery.skill_evidence()` 读 `process_fact.missing`，为真时整份不计入，
+     每条断言标 `process_missing:state=...`；字段缺失或非布尔**报错**，不默认 false
+     （默认 false 会把「没记」当「过程齐全」，正好抹掉要执行的信号）。
+  ② `Evidence` 加 `process_missing` 留痕字段并进 `to_dict()`；`replay()` 的 `skipped`
+     区分 `process_missing` 与 `no_counted_assertion`；标缺过程却带正权重 ⇒ 报错。
+  ③ `gate_status` **仍是三态**（排程层依赖），不塞第四态；`disqualified` 仍按 A 口径照记。
+  ④ 分数、断言状态、报告、提交行**一行未动**——改的是计入层，符合外发报告 §3 第 3 条的边界。
+- **测试按结论改写（没有放宽）**：原 `c==1.0` 断言改成 `counts=False` +
+  `ignored_reasons()=={"process_missing":1}`；新增 5 条：P is None / 不推动 P /
+  提交行保留且快照不动 / 与 `disqualified` 分维 / 缺字段与矛盾证据报错。
+- **验证**：`pytest tests/test_mastery.py -q` → **48 passed**（拍板前 42）。
+  三处文档（`diagnosis-report-schema.md` §8 表后订正、`schema.json` 的 `process_fact`
+  描述、`data-model.md` §5.2）与 `report_attribution` 的实现口径现已一致。
+  `tools/mutations/mutate_mastery.py` → **22/22 DETECTED**（含新增 M18–M22）。
+- **全量连锁（首次 4 红已处置）**：三份测试拿 `raw-no-trace` 当「非作废仍有证据」
+  和 T3 样本，甲之后它 `passed_weight=0` ⇒ 按 T3 定义落 T2、`pending_mastery` 消失。
+  素材换成 `raw-no-file`（门禁不合格但过程证据照记），作废反面对照跳过缺过程夹具，
+  并补 `test_missing_process_submission_falls_into_t2_not_t3` 钉住推论。
+  变异还暴露 M2（决策 7）被整份排除遮住变 MISSED，已补过程齐全的独立样本恢复守卫。
+  详见 `docs/review-response-v1.md` §117.5。
+- **谁推**：已完成。
 
 ### [x] B-05 任务库 1 → 10 + 变体模板 — 2026-11-15 关闭
 

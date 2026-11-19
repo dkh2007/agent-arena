@@ -32,16 +32,20 @@ MUTATIONS = [
 
     ("M2 unscored/blocked 也计入（决策 7 被破）",
      M, '        if not rule["counts_toward_mastery"]:', "        if False:",
-     f"{T}::test_unscored_and_blocked_are_dropped_from_both_sides"),
+     # B-04i 后不能撞 raw-no-trace 那条：它整份排除，会挡在规则判断前面
+     # （实测 MISSED）。改撞过程齐全的独立样本，决策 7 与 B-04i 各有守卫。
+     f"{T}::test_unscored_and_blocked_are_dropped_even_with_process_present"),
 
     ("M3 无证据当成 0 分（决策 7 被破，另一路）",
      M,
      "        if not ev.counts:\n"
-     "            skipped.append(Skipped(ev.submission_id, ev.at, \"no_counted_assertion\"))\n"
+     "            reason = \"process_missing\" if ev.process_missing else \"no_counted_assertion\"\n"
+     "            skipped.append(Skipped(ev.submission_id, ev.at, reason))\n"
      "            continue\n"
      "        c = ev.c",
      "        if not ev.counts:\n"
-     "            skipped.append(Skipped(ev.submission_id, ev.at, \"no_counted_assertion\"))\n"
+     "            reason = \"process_missing\" if ev.process_missing else \"no_counted_assertion\"\n"
+     "            skipped.append(Skipped(ev.submission_id, ev.at, reason))\n"
      "            c = 0.0\n"
      "        else:\n"
      "            c = ev.c",
@@ -128,6 +132,36 @@ MUTATIONS = [
      '    elif score["voided"]:\n'
      '        gate_status = "voided"',
      "tests/test_diagnosis_report.py::test_td038_voided_never_counts_toward_mastery"),
+
+    # --- B-04i：2026-11-19 人拍「甲」缺过程整份排除 -------------------------------
+    ("M18 缺过程也计入（人拍甲被推翻，回到 c=1.0）",
+     M, "        if exclude_voided or process_missing:", "        if exclude_voided:",
+     f"{T}::test_unscored_and_blocked_are_dropped_from_both_sides"),
+
+    ("M19 缺 process_fact 默认 false（没记当成过程齐全）",
+     M,
+     '    process = report.get("process_fact")\n'
+     '    if not isinstance(process, dict) or not isinstance(process.get("missing"), bool):\n'
+     '        raise MasteryError(f"{submission_id} 缺 process_fact.missing（布尔），无法判断过程是否收到")\n'
+     '    process_missing = process["missing"]',
+     '    process = report.get("process_fact") or {}\n'
+     '    process_missing = bool(process.get("missing"))',
+     f"{T}::test_missing_process_fact_is_loud_not_defaulted_to_false"),
+
+    ("M20 skipped 不区分缺过程与无证据（留痕失效）",
+     M,
+     '            reason = "process_missing" if ev.process_missing else "no_counted_assertion"',
+     '            reason = "no_counted_assertion"',
+     f"{T}::test_missing_process_evidence_is_excluded_not_scored_as_zero"),
+
+    ("M21 缺过程与门禁不合格混成一格（把 A 口径顺手改了）",
+     M, '    process_missing = process["missing"]',
+     '    process_missing = bool(process["missing"] or score["disqualified"])',
+     f"{T}::test_missing_process_and_disqualified_are_different_dimensions"),
+
+    ("M22 标了缺过程却带权重的矛盾证据不报错",
+     M, "        if ev.process_missing and ev.counts:", "        if False:",
+     f"{T}::test_contradictory_process_missing_evidence_is_loud"),
 ]
 
 def main() -> int:

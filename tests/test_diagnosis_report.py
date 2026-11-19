@@ -670,6 +670,10 @@ def test_td038_voided_never_counts_toward_mastery():
             assert not ev.counts, f"{name} 作废后 {skill} 仍有计入证据"
             assert ev.gate_status == "voided"
         # 反面对照：同一份夹具不动作废时，至少有一个技能能给出证据——防止上面的循环恒真。
+        # B-04i 后 `raw-no-trace` 缺过程，不动作废也没有证据（整份排除），
+        # 它不再是这条作废测试的有效对照；跳过它，其余夹具仍证明"排除不是恒真"。
+        if _build(name)["process_fact"]["missing"]:
+            continue
         assert any(
             m.skill_evidence(_build(name), s).counts
             for s in ("multi_step_planning", "failure_retry", "tool_param_validation")

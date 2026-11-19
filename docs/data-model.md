@@ -250,6 +250,13 @@
 >   口径改动会让旧快照的 `mastery_p` 与重放不符 ⇒ 旧库上线后必须跑
 >   `mastery_snapshot.recompute_all()`；`verify_all()` 会把不一致报成 `stale_value`，
 >   不会静默混进读路径。
+> - **缺过程提交不计入 P（round-118 / 2026-11-19 人拍板「甲」，B-04i 已落地）**：
+>   `process_fact.missing=true`（题要过程而这次没收到）⇒ `skill_evidence()` 整份排除，
+>   每条断言标 `process_missing:state=...`，`skipped` 记 `process_missing`；提交行与报告照留，
+>   只有这类提交时 `p is None`。这与 `voided` 是**两种**排除（版本错位 / 缺过程），
+>   与 `disqualified` 更是两件事——后者仍按 A 口径照记，别顺手扩大排除范围。
+>   `gate_status` 仍是 `ok / disqualified / voided` 三态（排程层依赖），
+>   另设 `Evidence.process_missing` 布尔字段留痕，不往门禁词表塞第四态。
 > - **P 不落库这件事不影响"给自己看"（2026-11-15 口径，仍成立）**：产品定位是
 >   「成绩先给自己看、用于督促」，而"看进步曲线"不需要快照——每份报告都在 `submissions` 里，
 >   `mastery.build_series()` 随时重放（`scripts/mastery_scorecard.py` 就是这一形态，

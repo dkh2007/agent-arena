@@ -118,6 +118,8 @@ def test_partial_pass_within_one_skill_is_fractional():
         # 门禁状态是必填项（缺了会报错，见 test_missing_score_is_loud_not_defaulted_to_ok）：
         # 手搭最小报告时也得带上，否则测的就不是"权重累计"而是"缺字段必炸"。
         "score": {"disqualified": False, "voided": False},
+        # 手搭报告也要带 process_fact：缺字段报错（不许默认「过程齐全」，见 B-04i）。
+        "process_fact": {"required": False, "submitted": True, "missing": False},
         "attribution_policy": {
             "pass": {"counts_toward_mastery": True},
             "fail": {"counts_toward_mastery": True},
@@ -139,18 +141,54 @@ def test_partial_pass_within_one_skill_is_fractional():
 # --- ② 决策 7：unscored / blocked 不记 0 分 --------------------------------------
 
 def test_unscored_and_blocked_are_dropped_from_both_sides():
-    """`raw-no-trace`：答案对、过程全缺。
+    """`raw-no-trace`：答案对、过程全缺 ⇒ 甲口径下**整份**不入 P。
 
-    multi_step_planning 是 pass(2) ⇒ c=1.0；failure_retry / tool_param_validation
-    各有一条 `unscored` ⇒ **没有证据**。若把 unscored 记 0 分，
-    这两个技能会被判成"完全不会"，而事实是"没上报过程，无法判定"。
+    拍板前这里断言 `multi_step_planning` 的 pass(2) ⇒ c=1.0，
+    即「不交过程在分数上吃亏、掌握度上反而记一次做对」（B-04i 的病灶）。
+    2026-11-19 人拍甲后，这条 pass 随整份排除；FR/TPV 的 `unscored` 同样
+    不再被当 0 分——两者都用 `counts=False` 表达，而不是 c=0。
     """
     report = _report("raw-no-trace")
-    assert m.skill_evidence(report, MSP).c == 1.0
+    msp = m.skill_evidence(report, MSP)
+    assert not msp.counts and msp.process_missing is True
+    assert (msp.passed_weight, msp.counted_weight) == (0.0, 0.0)
+    assert msp.ignored_reasons() == {"process_missing": 1}
     for skill in (FR, TPV):
         ev = m.skill_evidence(report, skill)
-        assert not ev.counts
-        assert ev.ignored_reasons() == {"not_counted": 1}
+        assert not ev.counts and ev.process_missing is True
+        assert ev.ignored_reasons() == {"process_missing": 1}
+
+
+def test_unscored_and_blocked_are_dropped_even_with_process_present():
+    """决策 7 的独立守卫：**过程齐全**时 unscored/blocked 仍从分子分母一起剔除。
+
+    为什么要有这条：B-04i 后 `raw-no-trace` 整份排除，原来的
+    `test_unscored_and_blocked_are_dropped_from_both_sides` 用它做材料，
+    unscored 那条规则被整份排除挡在前面——变异 M2（把
+    `counts_toward_mastery` 判断改成恒真）因此变成 MISSED，决策 7 没人管了。
+    这里手搭一份**过程齐全**的最小报告，让决策 7 与 B-04i 各有各的守卫，
+    互不遮挡。
+    """
+    report = {
+        "submission": {"submission_id": "mini-with-process", "evaluated_at": "2026-11-01T00:00:00Z"},
+        "score": {"disqualified": False, "voided": False},
+        "process_fact": {"required": True, "submitted": True, "missing": False},
+        "attribution_policy": {
+            "pass": {"counts_toward_mastery": True},
+            "fail": {"counts_toward_mastery": True},
+            "blocked": {"counts_toward_mastery": False},
+            "unscored": {"counts_toward_mastery": False},
+        },
+        "assertions": [
+            {"id": "A", "state": "pass", "weight": 1, "skill_id": MSP},
+            {"id": "B", "state": "unscored", "weight": 1, "skill_id": MSP},
+            {"id": "C", "state": "blocked", "weight": 1, "skill_id": FR},
+        ],
+    }
+    msp = m.skill_evidence(report, MSP)
+    assert (msp.passed_weight, msp.counted_weight) == (1.0, 1.0)
+    assert msp.ignored_reasons() == {"not_counted": 1}, "unscored 不许进分子分母"
+    assert not m.skill_evidence(report, FR).counts, "blocked 也不许进证据"
 
 
 def test_blocked_skill_gets_no_evidence_not_zero():
@@ -304,6 +342,100 @@ def test_voided_submission_stays_in_history_but_never_lifts_p(db):
     assert snap is not None and snap["mastery_p"] == p_good
     assert snap["evidence_count"] == 1, "快照只数计入的那一条"
     assert snap["last_submission_id"] == "s-good", "最后一条**计入**证据仍是 s-good"
+
+
+# --- B-04i：缺过程整份排除（2026-11-19 人拍甲）------------------------------------
+
+def test_missing_process_evidence_is_excluded_not_scored_as_zero():
+    """缺过程是**排除**，不是 c=0；不推动 P，但 `skipped` 写明为什么。
+
+    三点分开锁：① 只有缺过程提交时 P is None（与 voided、决策 7 同形状）；
+    ② 夹在正常提交之间时 P 原封不动；③ 序列化后能查到 `process_missing`。
+    """
+    missing = m.skill_evidence(
+        _report("raw-no-trace", submission_id="nt-1", at="2026-11-02T00:00:00+00:00"), MSP
+    )
+    assert missing.process_missing is True
+    assert not missing.counts and missing.counted_weight == 0.0
+    assert missing.ignored_reasons() == {"process_missing": 1}
+    payload = missing.to_dict()
+    assert payload["process_missing"] is True and payload["c"] is None
+    with pytest.raises(m.MasteryError, match="不构成证据"):
+        _ = missing.c
+
+    only = m.replay([missing], user_id=USER, skill_id=MSP)
+    assert only.p is None and len(only.steps) == 0 and len(only.skipped) == 1
+    assert only.skipped[0].reason == "process_missing"
+
+    normal = m.skill_evidence(
+        _report("raw-perfect", submission_id="ok-1", at="2026-11-01T00:00:00+00:00"), MSP
+    )
+    mixed = m.replay([normal, missing], user_id=USER, skill_id=MSP)
+    assert mixed.p == m.replay([normal], user_id=USER, skill_id=MSP).p == 1.0
+    assert len(mixed.steps) == 1 and len(mixed.skipped) == 1
+
+
+def test_missing_process_submission_stays_in_history_but_never_lifts_p(db):
+    """「排除」不等于「删掉」：提交行照留，快照不跟着动。"""
+    good = _report("raw-perfect", submission_id="s-good", at="2026-11-01T00:00:00+00:00")
+    store.save_submission(db, good, user_id=USER, refresh_mastery=True)
+    p_good = m.build_series(db, USER, MSP).p
+    assert p_good == 1.0
+
+    store.save_submission(
+        db,
+        _report("raw-no-trace", submission_id="s-nt", at="2026-11-02T00:00:00+00:00"),
+        user_id=USER, refresh_mastery=True,
+    )
+    rows = [r[0] for r in db.execute("SELECT submission_id FROM submissions ORDER BY created_at")]
+    assert rows == ["s-good", "s-nt"], "缺过程的提交必须留在历史里"
+
+    series = m.build_series(db, USER, MSP)
+    assert series.p == p_good, "缺过程提交不许抬高掌握度"
+    assert [s.submission_id for s in series.skipped] == ["s-nt"]
+    snap = store.load_mastery_snapshot(db, USER, MSP)
+    assert snap is not None and snap["mastery_p"] == p_good
+    assert snap["evidence_count"] == 1 and snap["last_submission_id"] == "s-good"
+
+
+def test_missing_process_and_disqualified_are_different_dimensions():
+    """两个排除/照记口径不能混：`disqualified` 照记（A），`process_missing` 排除（甲）。
+
+    `raw-no-file` 是门禁不合格但过程齐全 ⇒ 仍抬高 P；
+    `raw-no-trace` 是过程缺失但门禁没挂 ⇒ 整份排除。
+    若把它们并成一格，白卷与缺过程会互相污染，B-07b 的 A 口径也就被悄悄改了。
+    """
+    dq = _report("raw-no-file", submission_id="dq", at="2026-11-01T00:00:00Z")
+    nt = _report("raw-no-trace", submission_id="nt", at="2026-11-02T00:00:00Z")
+    assert dq["score"]["disqualified"] is True and dq["process_fact"]["missing"] is False
+    assert nt["score"]["disqualified"] is False and nt["process_fact"]["missing"] is True
+
+    ev_dq = m.skill_evidence(dq, FR)
+    ev_nt = m.skill_evidence(nt, FR)
+    assert ev_dq.gate_status == "disqualified" and ev_dq.process_missing is False
+    assert ev_dq.counts and ev_dq.c == 1.0, "A 口径没被顺手改掉"
+    assert ev_nt.gate_status == "ok" and ev_nt.process_missing is True
+    assert not ev_nt.counts
+
+
+def test_missing_process_fact_is_loud_not_defaulted_to_false():
+    """缺 `process_fact.missing` 不许默认 false——那等于把「没记」当「过程齐全」。"""
+    report = _report("raw-perfect")
+    report.pop("process_fact")
+    with pytest.raises(m.MasteryError, match="process_fact.missing"):
+        m.skill_evidence(report, MSP)
+
+    report = _report("raw-perfect")
+    report["process_fact"]["missing"] = "false"  # 字符串真值会骗过 bool() 兜底
+    with pytest.raises(m.MasteryError, match="process_fact.missing"):
+        m.skill_evidence(report, MSP)
+
+
+def test_contradictory_process_missing_evidence_is_loud():
+    """标了缺过程却带正权重进来是口径冲突，必须炸，不能静默选一种解释。"""
+    bad = m.Evidence("s-bad", MSP, "2026-11-01T00:00:00Z", 1.0, 1.0, process_missing=True)
+    with pytest.raises(m.MasteryError, match="口径冲突"):
+        m.replay([bad], user_id=USER, skill_id=MSP)
 
 
 def test_missing_score_is_loud_not_defaulted_to_ok():
@@ -569,13 +701,13 @@ def test_build_series_ignores_other_users(db):
 
 
 def test_skill_without_any_counted_history_returns_none(db):
-    """`raw-no-trace` 在 failure_retry 上只有 unscored：系列为空、P 为 None。"""
+    """`raw-no-trace` 在 failure_retry 上整份排除：系列为空、P 为 None。"""
     store.save_submission(db, _report("raw-no-trace", submission_id="nt", at="2026-11-01T00:00:00Z"),
                           user_id=USER)
     series = m.build_series(db, USER, FR, lam=0.3)
     assert series.p is None
     assert len(series.skipped) == 1
-    assert series.ignored == {"not_counted": 1}
+    assert series.ignored == {"process_missing": 1}
 
 
 def test_replay_never_writes_to_the_fsrs_card_table(db):

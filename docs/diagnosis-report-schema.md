@@ -298,12 +298,21 @@ schema 管结构（能表达的），builder 管语义（schema 表达不了的�
 | `raw-empty` | 0 次工具调用就正常退出 | **0.333** | 0（DQ） | **0（DQ）** | R1 门禁拦下。R4 空集平凡 pass 的漏洞已堵（round-32 F5）：无目标工具受检调用 → `unscored`，不再计掌握度 |
 | `raw-no-file` | 过程全对，产物没写 | 0.500 | 0（DQ） | **0（DQ）** | R1 门禁拦下；`counterfactual_credit=2` 仍照算，`unattributed_patterns=[no_output_file]` |
 | `raw-fake-retry` | 游标退回 offset=0 的假重试 | 0.500 | 0.25 | **0.25** | credit 只拿 R4 的 1 分；`skill_gaps` 两个（R2 的 2 分 + R3 的 1 分） |
-| `raw-no-trace` | 结果对，但没报 trace | 0.500 | 0.500 | **0** | **本题要求过程（决策 9）**：`process_fact.missing=true` ⇒ 不计能力分、不计掌握度；断言照旧（R2 仍 `pass`，`counterfactual_credit=2`），门禁 R5 `unscored` 不拦 |
+| `raw-no-trace` | 结果对，但没报 trace | 0.500 | 0.500 | **0** | **本题要求过程（决策 9）**：`process_fact.missing=true` ⇒ 不计能力分、不计掌握度（计入层已落地，见本表后订正）；断言照旧（R2 仍 `pass`，`counterfactual_credit=2`），门禁 R5 `unscored` 不拦 |
 | `raw-perfect` | 全对 | — | 1.000 | **1.000** | 上界锚点 |
 
 **分数序（round-70）`0 / 0 / 0.25 / 0 / 1.00`**：不再是全序单调——`raw-no-trace` 落回 0，与 `raw-empty`、`raw-no-file` 并列。这是决策 9 的直接后果，不是回归：**分数不区分"没做"与"做了没交过程"，过程门槛本身由 `process_fact` 区分**。`raw-perfect` 仍是上端锚点，`raw-fake-retry` 仍证明"过门槛后按正确性排序"（0.25 < 1.00）。
 
 `test_score_orders_by_process_gate_then_accuracy` 锁住这张表；`test_process_missing_suppresses_score_but_keeps_observations` 锁住"断言不被改写"。
+
+> **计入层的执行情况（round-118 / 2026-11-19 订正，B-04i 人拍「甲」）**：上面 `raw-no-trace`
+> 那行的「不计掌握度」此前与 `voided` 是同一种假声明——只有 `report_attribution` 的派生布尔
+> 在表达，`mastery.skill_evidence()` 却把 R2 的 `pass(2)` 记成 `c=1.0`。
+> 现已补上执行者：`skill_evidence()` 读 `process_fact.missing=true` ⇒ 整份排除，
+> 每条断言标 `process_missing:state=...`，`skipped` 记 `process_missing`；提交行与报告照留。
+> **分数轴一个字未动**（`ratio` 仍 0，断言状态仍 `pass`），改的只是计入层。
+> `disqualified` 不受影响，仍是 A 口径（照记）；详见 `data-model.md` §5.2 与
+> `docs/review-response-v1.md` §117.5。
 
 ### 8.1 v2 保留的两个已知取舍
 

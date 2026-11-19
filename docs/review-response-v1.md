@@ -11145,3 +11145,39 @@ A-01 / A-03 / B-04h 三个条目转 `[x]`；`docs/peer-brief-mvp-polish.md` 是�
    不是靠外部裁判，正好对上"什么该找人拍"的边界。
 ④ 若 `raw-no-trace` 的 `c==1.0` 其实是刻意设计（答案对就该给证据、过程合规分开算）⇒ 选乙，
    但必须同步改 `diagnosis-report-schema.md:301` 的假声明。
+
+### 117.5 B-04i 人拍「甲」并落地（2026-11-19，round-118）
+
+上节是当时的历史记录（三条口径待人拍），此处只追加结论，不改写它。
+
+- **人拍结论**：甲——缺过程提交整份排除，与 `voided` 同款；乙（改文档承认可占便宜）
+  与丙（降权）不采用。理由：`report_attribution.counts_toward_mastery=False` 与
+  `diagnosis-report-schema.md` 早就这么承诺，实现跟上最省事；「分数归零、掌握度给满分」
+  这个不对称最容易被评委抓住。
+- **改了什么**：`mastery.skill_evidence()` 读 `process_fact.missing`（缺字段/非布尔报错，
+  不默认 false），为真时整份不计入并逐断言标 `process_missing:state=...`；
+  `Evidence` 加 `process_missing` 留痕字段，`replay()` 的 `skipped` 区分
+  `process_missing` 与 `no_counted_assertion`，标了缺过程却带正权重则报错。
+  **`gate_status` 三态没动**（排程层依赖它）；分数、断言状态、报告与提交行都没动。
+- **测试按结论改写，没有放宽**：原 `c==1.0` 断言改成 `counts=False` +
+  `ignored_reasons()=={"process_missing":1}`；新增 5 条判定性用例（P is None /
+  不推动 P / 提交行保留 / 与 `disqualified` 分维 / 缺字段与矛盾证据报错）。
+  `pytest tests/test_mastery.py -q` → **47 passed**。
+- **反证条件②（上节）已兑现**：只改实现不改断言会立刻红——本轮是先列出 3 条红点，
+  再按拍板口径逐条改写断言与补字段，最后复跑全绿。
+- **全量实跑暴露的下游推论（必须记，不能当噪音抹掉）**：首次全量 `4 failed / 1514 passed`。
+  ① `test_diagnosis_report` 的作废反面对照拿 `raw-no-trace` 做「非作废仍有证据」样本，
+  甲之后它整份排除、不再有效——跳过缺过程夹具，其余夹具仍证明排除不是恒真。
+  ② `test_notices` 与 ③ `test_rule_exposure` 把 `raw-no-trace` 当 T3（0 分但证据进过 P）。
+  T3 的定义就是 `ratio==0` 且某技能 `passed_weight>0`；甲让缺过程那份
+  `passed_weight=0`，所以它**按定义落 T2**，`pending_mastery` 也随之消失。
+  这是甲口径的正确推论，不是缺陷：素材换成 `raw-no-file`（门禁不合格但过程证据照记），
+  并补 `test_missing_process_submission_falls_into_t2_not_t3` 把推论钉住。
+  ④ 评审包用例数过期，随本轮重生成。
+- **变异暴露的守卫回归**：新增 M18–M22（缺过程也计入 / 缺字段默认 false / 留痕失效 /
+  与 `disqualified` 混格 / 矛盾证据不报错）全 DETECTED；但 M2（决策 7：
+  unscored 也计入）一度 **MISSED**——原测试材料换成 `raw-no-trace` 后，
+  整份排除挡在规则判断前面，决策 7 没人管了。补一份**过程齐全**的独立最小报告
+  `test_unscored_and_blocked_are_dropped_even_with_process_present` 恢复守卫，
+  并把 M2 的目标节点改指它。**两个口径各有各的守卫，不互相遮挡。**
+  最终 `mutate_mastery.py` → **22/22 DETECTED**，`test_mastery.py` → **48 passed**。

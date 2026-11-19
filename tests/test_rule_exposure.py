@@ -329,7 +329,9 @@ def test_zero_score_submissions_are_reported_too_not_only_the_scored_ones(env):
     "分数 0、掌握度被抬过"的那批从视野里彻底消失。
     """
     _seed_lost_artifacts(env, "s-scored")
-    _submit(env, _payload(submission_id="s-t3", fixture="raw-no-trace"))
+    # B-04i（甲）后 raw-no-trace 缺过程、passed_weight=0 ⇒ 按定义落 T2，
+    # 不再是 T3 的样本；raw-no-file 是门禁不合格但过程证据照记，仍落 T3。
+    _submit(env, _payload(submission_id="s-t3", fixture="raw-no-file"))
     c = env["conn"]()
     try:
         c.execute("UPDATE submissions SET artifacts = NULL WHERE submission_id = ?",
@@ -337,7 +339,26 @@ def test_zero_score_submissions_are_reported_too_not_only_the_scored_ones(env):
         c.commit()
         split = bl.exposure_split(c, _edit_task(lambda t: _bump(t, "R2_report_correct")))
         tiers = {row.submission_id: row.tier for row in split.rows}
-        assert tiers["s-t3"] == "T3", "raw-no-trace 当年 0 分但有过程证据 ⇒ 应在 T3"
+        assert tiers["s-t3"] == "T3", "raw-no-file 当年 0 分但过程证据照记 ⇒ 应在 T3"
         assert "T3" in {row.tier for row in split.rows}
+    finally:
+        c.close()
+
+
+def test_missing_process_submission_falls_into_t2_not_t3(env):
+    """B-04i 甲的下游推论：缺过程提交落 T2，不再挂「掌握度待拍」。
+
+    不是新口径：T3 的定义就是 `ratio==0` 且某技能 `passed_weight>0`，
+    而甲口径让缺过程那份 `passed_weight=0`。若有人日后把缺过程证据放回 P，
+    这条会红，正好提醒 T3 与 notices 的 `pending_mastery` 要一起改。
+    """
+    _submit(env, _payload(submission_id="s-t2", fixture="raw-no-trace"))
+    c = env["conn"]()
+    try:
+        c.execute("UPDATE submissions SET artifacts = NULL WHERE submission_id = ?", ("s-t2",))
+        c.commit()
+        split = bl.exposure_split(c, _edit_task(lambda t: _bump(t, "R2_report_correct")))
+        tiers = {row.submission_id: row.tier for row in split.rows}
+        assert tiers["s-t2"] == "T2"
     finally:
         c.close()

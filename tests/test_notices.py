@@ -159,8 +159,13 @@ def test_evidence_only_record_is_pending_not_folded_into_unscored(env):
     """0 分但过程证据进过 P（T3）：标成待定，**不许**并进"当年没分、不用管"。
 
     并进去等于替人拍了"掌握度那侧不用管"，而那是 B-07b 的口径。
+
+    B-04i（2026-11-19 甲）后素材从 `raw-no-trace` 换成 `raw-no-file`：
+    前者缺过程，整份不入 P ⇒ `passed_weight=0` ⇒ 按 T3 的定义落 T2，
+    不再有"掌握度那侧待拍"这回事。后者是门禁不合格但过程齐全，
+    仍按 A 口径把 FR/TPV 的证据照记，才是真正需要待定的那种。
     """
-    _seed_lost_artifacts(env, "s-evidence", fixture="raw-no-trace")
+    _seed_lost_artifacts(env, "s-evidence", fixture="raw-no-file")
     plan = _plan(env)
     notice = plan.notices[0]
 
