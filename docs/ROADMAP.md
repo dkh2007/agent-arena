@@ -50,7 +50,7 @@
 | **3 状态层** | 技能掌握度 D/S/R；错误模式热度；**错误模式 → 技能缺口映射表（自研核心）** | 报告内一次性聚合 `skill_gaps`：**优先断言自带 `skill_id`，缺了才查词表 `mapped_skill_ids` 兜底**（round-78 / B-06，`attributed_by` 标明来源）；**掌握度 P 可算、可衰减、已落库**（round-80 / B-07 公式；round-87 / B-08b 借 FSRS `R(t,S)`，显式 `as_of` 才生效；round-88 / B-07c v2 新表 `mastery_snapshots` 存 `P_raw` 缓存，`build_series()` 重放仍是唯一权威，`PRAGMA user_version=2` 有幂等迁移）——**λ/初值未标定（B-07b）、排名未开（B-25）**；**「标准待复核」标记已落地**（round-91 / B-04d：judge 双评不一致的提交照算 P、照排复习，但其成绩默认不进正式榜；标记从 `arbitration_queue` 现算、裁决后自动消失）；错误模式热度仍零代码；持久化地基 10 表 + 重启读回逐位对账 | **有肉（含一处主动降级）** | `src/arena/mastery.py` / `decay.py` / `mastery_snapshot.py`；`python scripts/snapshot_walk.py`；`src/arena/diagnosis_report.py`（`load_pattern_skills` / `_attribute`）；`src/arena/store.py`（`user_reports` / `migrate`） |
 | **4 复习层** | ReviewItem 四形态（变体/故障注入/限时/重放）+ FSRS due + 每日上限 | **调度已落地**（round-84 / B-08）：`scheduler.py` 纯函数层（rating 映射 → 卡更新 → 复习项草案 → 队列排序与每日截断）+ `store` 六个落库函数；一份失败提交自动产出 `pending` 项，`due` 由 py-fsrs 给出（关 fuzz 保可复现）；`daily_review_cap` 只截断视图不删数据；做过的到期项标 `done`。**边界**：只自动产出 `variant` / `fault_injection` 两种形态（`timed`/`replay` 需人工）；不挑题（留给 B-09）；rating 阈值是假设；**P 的衰减仍未实现**（B-08b） | **有肉** | `src/arena/scheduler.py`；`store.py` 的 `save_schedule` / `close_due_reviews`；`tests/test_scheduler.py`（46 条 + 14 组变异）；`scripts/schedule_walk.py`；`scripts/demo_decision.py 3` → PASS |
 | **5 排程层** | 四因子建议排期 + 动态避让 + 用户可一键调整 | **三因子已接入真数据 + 第四因子显式弃权**（round-85 / B-09）：`schedule_advisor.py` 纯函数层（四因子求值 → 加权综合分 → 排序 + 人话理由 + 改序审计）；掌握度缺口（P）、遗忘风险（FSRS 的 R）、错误热度（近 7 天按**提交**计数的模式命中）都有真数据源；**项目截止在库里没有任何字段 ⇒ 一律弃权、只留接口**（B-09b）。**边界**：权重 8:4:2:1 / 平手格 0.02 / 窗口 7 天 / 视界 7 天全是假设（B-09c）；改序审计落本地 JSONL，不防篡改；只读不写库 | **有肉（三缺一）** | `src/arena/schedule_advisor.py`；`store.pattern_skill_map`；`tests/test_schedule_advisor.py`（43 条 + 13 组变异）；`python scripts/advice_walk.py` |
-| **端** | Web 提交 + Android/Kotlin Compose 四页 | **协议层已就位**（round-76：`submission_api.py`，标准库 `http.server`，3 端点：提交/读回/探活）；**UI 侧零**（无 Web 页、无 Android 工程） | **半有肉（只有 API，没有界面）** | `src/arena/submission_api.py`；`grep -rli "kotlin\|compose" .` → 空 |
+| **端** | Web 提交 + 移动端四页（Android/Compose 或移动优先 Web，**形态待定**） | **协议层已就位**（round-76：`submission_api.py`，标准库 `http.server`，3 端点：提交/读回/探活）；**UI 侧零**（无 Web 页、无 Android 工程） | **半有肉（只有 API，没有界面）** | `src/arena/submission_api.py`；`grep -rli "kotlin\|compose" .` → 空 |
 | **云** | FastAPI + PostgreSQL + 任务队列 | 零；只有本机 SQLite（`store.py`），无 HTTP 框架、无独立数据库进程、无队列 | **空** | `grep -rl "fastapi\|postgres\|celery" src/` → 空 |
 | **治理（不算产品层）** | — | 评审包生成器 + 推送闸门 + 三支只读探针 + 变异实证 | **有肉** | `src/arena/review_packet.py`、`scripts/{push_gate,demo_decision,q2_gate_probe,td040_compare,equivalence_probe}.py` |
 
@@ -89,7 +89,7 @@
 | **M2** 任务库+分类学 | 10 个任务；错误分类学 v1（5–8 模式 + 映射表）；变体模板 | ✅ **达成并加厚**（round-83 建库 / round-86 第二套骨架）：12 个任务、2 套骨架（汇报族 + 定位族）；17 个错误模式（14 个汇报族 + 3 个定位族） + 映射表；变体模板＝`base_task` 继承（合并规则三条、成环/拼错 id/跨骨架继承都报错） | 难度归一（B-05c）；定位族扩题（B-05b 边界③）；计划书「≤10」这句要人确认 |
 | **M3** 状态层 | 掌握度 + 映射表 + 规则推荐 + AUC 回测 | 🟡 **掌握度 P 可算、可衰减、已落库**（round-80：`mastery.py`；round-87：`decay.py` 借 FSRS `R(t,S)`，显式 `as_of` 才生效；round-88 / B-07c：`mastery_snapshot.py` + v2 新表，重放仍是唯一权威）；映射表已接成兜底（round-78，因反证条件触发而降级）；**规则推荐已落地**（round-85：`schedule_advisor.py` 三因子 + 截止弃权）；**AUC 回测 0 代码** | λ/初值标定（B-07b）、排程参数标定（B-09c）、排名（B-25，未开且开榜前须先切 C） |
 | **M4** 复习层 | FSRS 调度 + 三种形态 + 每日上限 | ✅ **达成**（round-84）：调度 + `variant`/`fault_injection` 两形态自动产出 + 每日上限。`timed`/`replay` 未自动产出（需人工介入，非调度能决定） | 可选加强：B-08b 衰减、B-08c 真实复习事件 |
-| **M5** 排程+端 | 四因子排期 + Android 四页 | 🟡 **排程侧达成三缺一**（round-85 / B-09：三因子接真数据、截止因子弃权留接口、改序留痕）；**端侧仍零代码**（无 Web 页、无 Android 工程） | 截止数据源与口径措辞（B-09b，需人拍）、排程参数标定（B-09c）、端四页（B-10） |
+| **M5** 排程+端 | 四因子排期 + 移动端四页（形态待定） | 🟡 **排程侧达成三缺一**（round-85 / B-09：三因子接真数据、截止因子弃权留接口、改序留痕）；**端侧仍零代码**（无 Web 页、无 Android 工程） | 截止数据源与口径措辞（B-09b，需人拍）、排程参数标定（B-09c）、端四页（B-10） |
 | **M6** 定稿提交 | 外部证据包 + 匿名 + 提交 | ❌ | 见 BACKLOG A 线 |
 
 **排期判据（我方判断，标假设）**：M1 是唯一的硬闸门——它同时卡住 M2（任务库要能提交）、M3（掌握度要跨提交）、M5（端要调 API）。
@@ -114,7 +114,7 @@ M3/M4 的顺序不能反：没有持久化就没有"上一次表现"，掌握度
 | **B 线 实现** | 评测层收尾 + 状态/复习/排程（M1→M5） | **技术实现我自己定** | 评测层收尾只剩技术债（TD-039 等） |
 | **C 线 治理** | 评审包、闸门、演示台、证据纪律 | 我自己定 | 基本齐备，剩非交互入口与批次化 |
 
-**顺序判据**：初赛只交计划书 ⇒ A 线决定能否进复赛，B 线决定复赛能不能演示。
+**顺序判据**：初赛提交范围〔待核，见 `docs/contest-package-20261120-analysis.md` 风险 A〕⇒ A 线决定能否进复赛，B 线决定复赛能不能演示。
 所以**A 线不应等 B 线**；B 线里只有"M1 闸门"是硬前置，其余可以并行。
 （这条在 round-57 已定，round-73 复核仍成立。）
 

@@ -18,5 +18,10 @@ Thumbs.db
 *.sqlite3
 .pytest_cache/
 
+# pytest 临时目录（`--basetemp=.pytest-tmp-xxx` 与 pytest 自建 cache 目录的产物）
+# 里面是各轮测试生成的 arena.db，可随时重建，不该留在工作区里给评审看到
+.pytest-tmp-*/
+pytest-cache-files-*/
+
 # 外部红队测试的隔离运行目录（未核证前不进 tests/，也不该被提交）
 .redteam-tmp/
