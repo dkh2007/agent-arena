@@ -3,7 +3,7 @@
 演示台的价值全部押在一件事上：**它会不会红**。一个从不报红的检查表，和没有检查表
 是一回事。所以这里不测"演示台输出好看"，只测两件事：
 
-1. 现状下 11 条都不得为 FAIL（否则等于宣称作废）；
+1. 现状下 12 条都不得为 FAIL（否则等于宣称作废）；
 2. 对实现做**定向破坏**后，对应演示必须变红。
 
 第 2 类才是真正的外部裁判：破坏点由我挑，但"变红"不是我说的，是断言说的。
@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -110,6 +111,21 @@ def test_mutation_ignore_process_gate_turns_demo9_red(monkeypatch, _mute_prints)
                                                      "submitted": True,
                                                      "missing": False})
     verdict, _ = dd.demo_9()
+    assert verdict == dd.FAIL
+
+
+def test_mutation_merge_two_sides_turns_demo12_red(monkeypatch, _mute_prints):
+    """M：把「过程完整但产物缺失」也整份排除（与缺过程同一处置）= §4.2-11 被合成一句。"""
+    real = dd.m.skill_evidence
+
+    def fake(report, skill_id, **kw):
+        ev = real(report, skill_id, **kw)
+        if ev.gate_status == "disqualified":
+            return dataclasses.replace(ev, counted_weight=0.0)
+        return ev
+
+    monkeypatch.setattr(dd.m, "skill_evidence", fake)
+    verdict, _ = dd.demo_12()
     assert verdict == dd.FAIL
 
 

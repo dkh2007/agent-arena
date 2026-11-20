@@ -1,15 +1,15 @@
-"""决策演示台（round-72）：11 条已定决策，问哪条就当场跑哪条。
+"""决策演示台（round-72；2026-11-20 增至 12 条）：12 条已定决策，问哪条就当场跑哪条。
 
 用法
 ----
-    python scripts/demo_decision.py            # 总表：11 条各自属于哪一档
+    python scripts/demo_decision.py            # 总表：12 条各自属于哪一档
     python scripts/demo_decision.py 4          # 只演示决策 4
     python scripts/demo_decision.py 4 9 10 11  # 多条
     python scripts/demo_decision.py --all      # 全跑（退出码 0 = 无 FAIL）
 
 为什么要有这个脚本
 ------------------
-评审包第 3 节有 11 条「已定决策」。读者（评委）能做的只有一件事：信，或者不信。
+评审包第 3 节有 12 条「已定决策」。读者（评委）能做的只有一件事：信，或者不信。
 "这条已经实现了"是一句自评，不是证据。所以这里把每条决策翻成一个**现场可执行的
 动作**，输出的是命令跑出来的东西，不是我的复述。
 
@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from arena import diagnosis_report as dr  # noqa: E402
+from arena import mastery as m  # noqa: E402
 from arena import reconciliation as rc  # noqa: E402
 from arena import scheduler as sched  # noqa: E402
 from arena import store  # noqa: E402
@@ -705,21 +706,64 @@ def demo_11() -> tuple[str, list[str]]:
     return PASS, lines
 
 
+# ---------------------------------------------------------------------------
+# 决策 12：两处「缺东西」处置相反（正文 §4.2-11）
+# ---------------------------------------------------------------------------
+
+
+def demo_12() -> tuple[str, list[str]]:
+    lines = ["两侧各取一份夹具，走真实 build_report + skill_evidence，看处置是否真的相反。"]
+
+    # 侧 A：缺过程（raw-no-trace 没上报 trace，题要求过程）
+    a = build(raw("raw-no-trace"))
+    a_pf = a.get("process_fact") or {}
+    a_ev = m.skill_evidence(a, "failure_retry")
+    # 侧 B：过程完整但产物没交（raw-no-file：trace 在、报告文件没写）
+    b = build(raw("raw-no-file"))
+    b_ratio = b["score"]["ratio"]
+    b_ev = m.skill_evidence(b, "failure_retry")
+    # 上界：正常通过的同技能证据权重（用来验证「同权重」这条已知代价）
+    good = build(raw("raw-perfect"))
+    good_ev = m.skill_evidence(good, "failure_retry")
+
+    checks = [
+        ("侧A 识别为「缺过程」", a_pf.get("missing") is True and a_ev.process_missing,
+         f"process_fact.missing={a_pf.get('missing')}, ev.process_missing={a_ev.process_missing}"),
+        ("侧A 整份排除（counts=False）", a_ev.counts is False, str(a_ev.counts)),
+        ("侧B 完成分记 0", b_ratio == 0, str(b_ratio)),
+        ("侧B 门禁状态为 disqualified", b_ev.gate_status == "disqualified", b_ev.gate_status),
+        ("侧B 过程习惯照记（counts=True）", b_ev.counts is True, str(b_ev.counts)),
+        ("侧B 过程证据与正常通过同权重", b_ev.counted_weight == good_ev.counted_weight,
+         f"no-file={b_ev.counted_weight} vs perfect={good_ev.counted_weight}"),
+        ("两侧字段分开、未合成一句", a_ev.process_missing and not b_ev.process_missing
+         and b_ev.gate_status == "disqualified",
+         f"A(pm={a_ev.process_missing}) / B(gate={b_ev.gate_status},pm={b_ev.process_missing})"),
+    ]
+    ok_l, detail = _verdict(checks)
+    lines += detail
+    if not ok_l:
+        return FAIL, lines + ["反证条件：任一条不成立 ⇒ §4.2-11 的两侧处置被合并或未执行。"]
+    lines.append("  已知代价：侧B 的过程证据与正常通过同权重——现在只对本人可见故不是漏洞；"
+                 "开排名前必须先降权。")
+    lines.append("  反证条件：把侧B 也改成整份排除（与侧A 同处置），或让缺过程照记证据 ⇒ FAIL。")
+    return PASS, lines
+
+
 DEMOS = {
     1: demo_1, 2: demo_2, 3: demo_3, 4: demo_4, 5: demo_5, 6: demo_6,
-    7: demo_7, 8: demo_8, 9: demo_9, 10: demo_10, 11: demo_11,
+    7: demo_7, 8: demo_8, 9: demo_9, 10: demo_10, 11: demo_11, 12: demo_12,
 }
 
 # 总表用的粗分类（真正判定仍由各 demo 现算；这张表只决定默认看点）
 GROUPS = {
-    "强可判定（跑代码就得结论）": (4, 5, 6, 7, 9, 10, 11),
+    "强可判定（跑代码就得结论）": (4, 5, 6, 7, 9, 10, 11, 12),
     "部分可判定（一半靠材料/未实现）": (1, 2, 8),
     "当前无可执行载体（阶段未到）": (3,),
 }
 
 
 def listing() -> int:
-    say("决策演示台 —— 11 条已定决策，按可演示性分三档")
+    say(f"决策演示台 —— {len(DEMOS)} 条已定决策，按可演示性分三档")
     say("=" * 78)
     for group, ids in GROUPS.items():
         say(f"\n【{group}】{len(ids)} 条")
