@@ -10,15 +10,19 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from arena.diagnosis_report import (  # noqa: E402
     ReportError,
+    _display_labels,
     build_report,
+    load_pattern_labels,
     load_pattern_skills,
     load_schema,
+    load_skill_labels,
     load_task,
     load_vocabulary,
     rubric_layers,
@@ -822,3 +826,87 @@ def test_b06_every_failure_is_accounted_exactly_once():
         assert in_gaps | in_unattr == fails, name
         assert not (in_gaps & in_unattr), name
         assert sum(g["weight_lost"] for g in report["skill_gaps"]) <= CREDIT_TOTAL, name
+
+
+# ---------------------------------------------------------------------------
+# B-11 展示名单一来源：中文只许出自词表，随报告下发
+#
+# 起因（2026-11-20）：做 Android 界面时手写了「技能 id → 中文」「错误模式 id → 中文」两张表，
+# 与 docs/ 下两份词表逐条不一致；而 scripts/mastery_scorecard.py 里还有第三张。
+# 四份映射表意味着改一处不会同步其余三处。以下四条守的是同一件事：
+# 中文的产出点只有一个（词表），消费侧只许「读字符串」。
+# ---------------------------------------------------------------------------
+
+
+def test_display_labels_cover_every_id_that_appears():
+    """键集合必须恰好等于报告里出现的 id：多一个说明翻了没用到的东西，少一个前端就只能显示机器码。
+
+    skill_ids 要连**通过项**一起算：页面在通过项上也写「归因 X」，
+    只翻缺口会让 pass 的 R4 露出 `tool_param_validation`（2026-11-20 实测踩到）。
+    """
+    for name in NAMES:
+        report = _build(name)
+        labels = report["display_labels"]
+        expected_skills = {g["skill_id"] for g in report["skill_gaps"]} | {
+            a["skill_id"] for a in report["assertions"] if a.get("skill_id")
+        }
+        assert set(labels["skills"]) == expected_skills, name
+        patterns = {p for a in report["assertions"] for p in (a.get("error_patterns") or ())}
+        assert set(labels["patterns"]) == patterns, name
+        assert all(v.strip() for v in labels["skills"].values()), name
+        assert all(v.strip() for v in labels["patterns"].values()), name
+
+
+def test_display_labels_equal_vocabulary():
+    """值必须逐字等于词表。这条挡住「代码里另存一份中文」——只要两边不同就炸。"""
+    skills = load_skill_labels()
+    patterns = load_pattern_labels()
+    for name in NAMES:
+        labels = _build(name)["display_labels"]
+        for key, value in labels["skills"].items():
+            assert value == skills[key], (name, key)
+        for key, value in labels["patterns"].items():
+            assert value == patterns[key], (name, key)
+
+
+def test_display_labels_follow_vocabulary_edits(tmp_path):
+    """变异：改词表里的中文，产出必须跟着变。
+
+    上面两条挡不住「常量和词表碰巧一致」的情形——那种实现只要词表一改就会原地漂移。
+    这条把词表换成改了名的临时文件，若产出仍是被测代码里的常量，测试立刻失败。
+    """
+    vocab = tmp_path / "vocab.yaml"
+    vocab.write_text(
+        yaml.safe_dump(
+            {"patterns": [{"pattern_id": "wrong_total_amount", "label": "改了名的错误模式"}]},
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    taxonomy = tmp_path / "taxonomy.yaml"
+    taxonomy.write_text(
+        yaml.safe_dump(
+            {"skills": [{"skill_id": "multi_step_planning", "name": "改了名的技能"}]},
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    got = _display_labels(
+        skill_ids={"multi_step_planning"},
+        pattern_ids={"wrong_total_amount"},
+        skill_labels=load_skill_labels(taxonomy),
+        pattern_labels=load_pattern_labels(vocab),
+    )
+    assert got == {
+        "skills": {"multi_step_planning": "改了名的技能"},
+        "patterns": {"wrong_total_amount": "改了名的错误模式"},
+    }
+    assert "总额算错" not in got["patterns"].values()
+
+
+def test_display_labels_reject_id_missing_from_vocabulary():
+    """词表里没有的 id 必须停下来报错，不许静默退回机器码——那等于回到「界面显示英文代号」。"""
+    with pytest.raises(ReportError, match="没有对应的 name"):
+        _display_labels({"skill_id_that_does_not_exist"}, set())
+    with pytest.raises(ReportError, match="没有对应的 label"):
+        _display_labels(set(), {"pattern_that_does_not_exist"})

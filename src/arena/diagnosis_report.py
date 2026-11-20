@@ -49,6 +49,7 @@ CREDIT_CONTRIBUTION = {"pass": "weight", "fail": 0, "blocked": 0, "unscored": 0}
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "docs" / "diagnosis-report.schema.json"
 VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
+TAXONOMY_PATH = ROOT / "docs" / "skill-taxonomy-v0.yaml"
 
 
 class ReportError(ValueError):
@@ -158,6 +159,62 @@ def load_pattern_skills(path: str | Path = VOCAB_PATH) -> dict[str, tuple[str, .
     for pattern in yaml.safe_load(Path(path).read_text(encoding="utf-8"))["patterns"]:
         out[pattern["pattern_id"]] = tuple(pattern.get("mapped_skill_ids") or ())
     return out
+
+
+def load_pattern_labels(path: str | Path = VOCAB_PATH) -> dict[str, str]:
+    """`pattern_id -> 中文 label`。词表头写明「label：中文展示名，可改」，可改的前提是只此一份。"""
+    out: dict[str, str] = {}
+    for pattern in yaml.safe_load(Path(path).read_text(encoding="utf-8"))["patterns"]:
+        label = (pattern.get("label") or "").strip()
+        if not label:
+            raise ReportError(f"错误模式 {pattern['pattern_id']} 在词表里没有 label，界面会只能显示机器码")
+        out[pattern["pattern_id"]] = label
+    return out
+
+
+def load_skill_labels(path: str | Path = TAXONOMY_PATH) -> dict[str, str]:
+    """`skill_id -> 中文 name`。技能词表用 `name` 而不是 `label`，字段名不同但语义相同。"""
+    out: dict[str, str] = {}
+    for skill in yaml.safe_load(Path(path).read_text(encoding="utf-8"))["skills"]:
+        name = (skill.get("name") or "").strip()
+        if not name:
+            raise ReportError(f"技能 {skill['skill_id']} 在词表里没有 name，界面会只能显示机器码")
+        out[skill["skill_id"]] = name
+    return out
+
+
+def _display_labels(
+    skill_ids: set[str],
+    pattern_ids: set[str],
+    skill_labels: dict[str, str] | None = None,
+    pattern_labels: dict[str, str] | None = None,
+) -> dict[str, dict[str, str]]:
+    """把本报告实际用到的 id 翻成中文，随报告一起下发。
+
+    为什么放在报告里而不是让前端读词表：前端读词表就意味着前端要带一份 YAML 解析器和
+    「词表在哪」的知识；一旦词表改路径或改字段，坏的不是一处而是各处。让产的这一侧翻一次，
+    消费侧就永远只有"读字符串"一个动作。
+
+    只翻**用到的** id，不整本下发：报告是逐份归档的，塞进全量词表会让历史报告看起来像
+    「当时就有这些标签」，而实际新增标签的时间点会被抹掉。
+    """
+    skill_labels = load_skill_labels() if skill_labels is None else skill_labels
+    pattern_labels = load_pattern_labels() if pattern_labels is None else pattern_labels
+
+    missing_skills = sorted(skill_ids - set(skill_labels))
+    if missing_skills:
+        raise ReportError(
+            f"技能 {missing_skills} 出现在缺口里，但 {TAXONOMY_PATH.name} 里没有对应的 name"
+        )
+    missing_patterns = sorted(pattern_ids - set(pattern_labels))
+    if missing_patterns:
+        raise ReportError(
+            f"错误模式 {missing_patterns} 出现在断言里，但 {VOCAB_PATH.name} 里没有对应的 label"
+        )
+    return {
+        "skills": {k: skill_labels[k] for k in sorted(skill_ids)},
+        "patterns": {k: pattern_labels[k] for k in sorted(pattern_ids)},
+    }
 
 
 def _clean_number(value: float) -> int | float:
@@ -811,6 +868,18 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
         "skill_gaps": sorted(gaps.values(), key=lambda g: (-g["weight_lost"], g["skill_id"])),
         "unattributed_patterns": unattributed,
     }
+    # 中文展示名随报告下发，词表是唯一真相源。
+    # 起因：2026-11-20 盘点发现同一个技能有四种写法（两份词表各一份、mastery_scorecard 一份、
+    # Android 一份），页面上的「合计金额算错」在词表里其实叫「总额算错」。四处各写一遍，
+    # 改一处不会同步其余三处——这正是项目一直在防的「两处真相源」，只是这次发生在文案上。
+    # 无条件写：缺这个键的报告，只可能是生成它的那天还没有这个概念。
+    # skill_ids 取「缺口里的」∪「断言自带的」：断言归因不只在失败项上显示，
+    # 通过项也要写「这条归因于哪个技能」，只翻缺口会让通过项在页面上露出英文 id
+    # （2026-11-20 实测：R4 pass 时页面显示 tool_param_validation）。
+    report["display_labels"] = _display_labels(
+        skill_ids=set(gaps) | {a["skill_id"] for a in assertions if a.get("skill_id")},
+        pattern_ids={code for a in assertions for code in (a.get("error_patterns") or ())},
+    )
     # B-04e：把「这份报告按哪版判据判的」压进报告本身。**无条件写**——只要走了
     # build_report()，就一定有一份 rubric 在起作用，没有"有时有指纹"的情形。
     # 反过来说：缺这个键的报告，只可能是"生成它的那一天还没有这个概念"。

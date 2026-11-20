@@ -47,18 +47,17 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from arena import mastery as m  # noqa: E402
 from arena import store  # noqa: E402
+from arena.diagnosis_report import load_skill_labels  # noqa: E402
 from arena.trace_pipeline import run_fixture  # noqa: E402
 
 TASK_YAML = ROOT / "tasks" / "dbg-001-order-report.yaml"
 DEMO_DB = ROOT / ".git" / "scorecard-demo.db"
 USER = "demo-user"
 
-# 技能 id → 学生看得懂的名字。技能词表在 docs/skill-taxonomy-v0.yaml，这里只是展示名。
-SKILL_LABELS = {
-    "multi_step_planning": "多步任务规划",
-    "failure_retry": "失败后重试",
-    "tool_param_validation": "工具参数不瞎猜",
-}
+# 技能 id → 学生看得懂的名字，直接从 docs/skill-taxonomy-v0.yaml 的 `name` 读。
+# 曾经这里手写过一份（"多步任务规划"/"失败后重试"/"工具参数不瞎猜"），与词表逐条不同；
+# 中文展示名只允许一个来源，见 diagnosis_report.display_labels 的说明。
+SKILL_LABELS = load_skill_labels()
 
 PLAN = [
     ("raw-perfect", "满分"),

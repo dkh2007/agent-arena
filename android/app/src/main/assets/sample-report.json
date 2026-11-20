@@ -236,6 +236,18 @@
     }
   ],
   "unattributed_patterns": [],
+  "display_labels": {
+    "skills": {
+      "failure_retry": "失败重试策略",
+      "multi_step_planning": "多步任务分解",
+      "tool_param_validation": "工具参数校验"
+    },
+    "patterns": {
+      "retry_wrong_params": "重试参数错误",
+      "wrong_total_amount": "总额算错",
+      "wrong_valid_count": "有效数算错"
+    }
+  },
   "rubric_fingerprint": "c7235a2f803744d3f386ba40525aaeee28c31f922e9b8aac8b745e68fe65431e",
   "rubric_rule_fingerprints": {
     "R1_file_exists": "b068cbadf32a836052f35f7438ad43f3bbf22260de916e2a11a3447d7459970d",

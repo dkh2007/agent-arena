@@ -333,6 +333,24 @@
         }
       }
     },
+    "display_labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skills", "patterns"],
+      "description": "本报告实际用到的 id 对应的中文展示名，取自 docs/skill-taxonomy-v0.yaml 的 name 与 docs/error-patterns-v0.yaml 的 label。任何前端（Android / 报表 / Web）都必须读这里的值，不允许自己维护「id → 中文」映射表——2026-11-20 曾同时存在四份这样的表，同一个技能出现三种写法。只含用到的 id，不整本下发：否则历史报告会看起来像「当时就有这些标签」，新增标签的时间点被抹掉。旧报告可能没有本字段（生成时尚未引入），故不列入 required；新报告一律写。",
+      "properties": {
+        "skills": {
+          "type": "object",
+          "description": "skill_id → 中文名。键集合 = skill_gaps 里的 skill_id ∪ assertions[].skill_id 出现过的全部值（通过项也要翻：页面在通过项上同样显示「归因 X」，只翻缺口会让 pass 项露出英文 id）。",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "patterns": {
+          "type": "object",
+          "description": "pattern_id → 中文名。键集合 = assertions[].error_patterns 出现过的全部 pattern_id。",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "notes": {
       "type": "array",
       "items": { "type": "string" },
