@@ -14,9 +14,9 @@
 | 项 | 结果 | 说明 |
 |---|---|---|
 | JDK | **有**，`C:\Program Files\Java\jdk-21`（21.0.9） | `JAVA_HOME` 已指向它 |
-| Android SDK | **有**（本机新装），`C:\Users\<你>\AppData\Local\Android\Sdk` | 路径写在 `android/local.properties`，该文件**不进版本库** |
+| Android SDK | **有**（本机新装），`%LOCALAPPDATA%\Android\Sdk` | 路径写在 `android/local.properties`，该文件**不进版本库** |
 | 已装 SDK 组件 | `platforms/android-35`、`platforms/android-36`、`build-tools/35.0.1`、`build-tools/36.0.0`、`platform-tools 37.0.3` | |
-| Gradle | **有**（本机新装），`C:\Users\<你>\tools\gradle-8.9` | 只用来生成 wrapper，日常用 `gradlew` |
+| Gradle | **有**（本机新装），`%USERPROFILE%\tools\gradle-8.9` | 只用来生成 wrapper，日常用 `gradlew` |
 | Android Studio | **没有**，也不需要 | 见第 2 节 |
 | Android 模拟器 | **没有** | 用真机，见第 4 节 |
 
@@ -50,7 +50,7 @@ sdkmanager（装平台与构建工具） + gradle wrapper（编 APK） + adb（�
    → wrapper 的 `distributionUrl` 用 `https://mirrors.cloud.tencent.com/gradle/gradle-8.9-bin.zip`。
 3. **坑：wrapper 的 Java 下载会被代理截断**，下回来是 987 字节的 HTML，报 `zip END header not found`。
    → 用 `curl` 手动下一个完整包（130MB），放进
-   `C:\Users\<你>\.gradle\wrapper\dists\gradle-8.9-bin\<hash>\gradle-8.9-bin.zip`，再跑 `gradlew`。
+   `%USERPROFILE%\.gradle\wrapper\dists\gradle-8.9-bin\<hash>\gradle-8.9-bin.zip`，再跑 `gradlew`。
    校验：`unzip -t gradle-8.9-bin.zip` 无报错。
 4. **坑：`sdkmanager.bat` 的包名里带分号会被 cmd 当命令分隔符切开**（报 `Package platforms not found`）。
    → 改用新的原生 CLI：`cmdline-tools/latest/bin/android.exe sdk install "platforms/android-35"`（用斜杠，不用分号）。
@@ -63,7 +63,7 @@ SDK="$LOCALAPPDATA/Android/Sdk"
 "$SDK/cmdline-tools/latest/bin/android.exe" sdk install "platforms/android-35" "build-tools/35.0.1"
 
 # ② 写 local.properties（只需一次，不进版本库）
-#    sdk.dir=C\:\\Users\\<你>\\AppData\\Local\\Android\\Sdk
+#    sdk.dir=<你的 SDK 绝对路径；Windows 下反斜杠要写成双反斜杠>
 
 # ③ 编译
 cd android && ./gradlew.bat assembleDebug
