@@ -89,10 +89,83 @@ adb reverse tcp:8080 tcp:8080      # 手机访问 127.0.0.1:8080 就转到电脑
 - 需要手机允许「安装未知来源应用」。
 - 这种装法**连不上后端**（除非手机和电脑同一个局域网且后端绑了 `0.0.0.0`），演示时用「离线样例」模式。
 
+## 6.5 荣耀手机 USB 调试的实测记录（2026-11-20）
+
+设备：荣耀 400 Pro（VID `339B`）。开启「USB 调试」后，设备管理器里的复合设备变成三个接口：
+
+| 接口 | 类/子类/协议 | 驱动 | 说明 |
+|---|---|---|---|
+| MI_00 | MTP | WUDFWpdMtp | 文件传输，正常 |
+| MI_01 | `ff / 42 / 01` | WINUSB | **ADB Interface**，这正是 adb 要的接口 |
+| MI_02 | `ff / 48 / 01` | 缺驱动（Error） | HDB，HiSuite 通道，与 adb 无关 |
+
+**结果：`adb devices` 仍然是空列表。** platform-tools 37.0.3 与 33.0.3 都试过，都不认。
+
+**已排除**：数据线（MTP 正常）、USB 调试开关（ADB 接口已出现）、adb 版本（新旧都试）、`kill-server` 重启、`reconnect offline`。
+
+**判断**（未逐条验证，标为待确认）：MI_01 绑的是 Windows 自带的通用 `WinUsb Device` 驱动，它只注册 WinUSB 自己的设备接口 GUID；adb 枚举时按 USB 设备接口 GUID 找节点，通用驱动不注册这个 GUID，所以 adb 看不见。Google 的 `android_winusb.inf` 会额外声明该 GUID，因此官方驱动下能用。
+
+**如果要走 USB，两条路**（都需要管理员权限，尚未执行）：
+
+1. 给 MI_01 的 `Device Parameters\DeviceInterfaceGUIDs` 追加 `{A5DCBF10-6530-11D2-901F-00C04FB951ED}`，然后拔插一次；
+2. 或用 `android_winusb.inf` 加一行 `VID_339B&PID_107D&MI_01` 后安装（要处理驱动签名）。
+
+**当前采用的绕法：无线调试**（`adb pair` + `adb connect`），完全不依赖 USB 驱动。
+
+## 6.6 模拟器（开发期首选，2026-11-20 实测可用）
+
+真机只用于最终验收；界面开发与截图回归一律走模拟器，理由是能自己截图看、能反复装、不依赖 USB 驱动。
+
+**前置条件（本机已满足）**：Hyper-V 在运行（`HypervisorPresent=True`，存在 `C:\Windows\System32\WinHvPlatform.dll`）⇒ 可用 WHPX 硬件加速。
+
+**装（注意锁坑）**：
+
+```bash
+SDK="$LOCALAPPDATA/Android/Sdk"
+rm -f "$HOME/.android/cli/bundles/lock"     # 每次安装前必删，否则报 os error 5
+"$SDK/cmdline-tools/latest/bin/android.exe" sdk install "emulator"
+rm -f "$HOME/.android/cli/bundles/lock"
+"$SDK/cmdline-tools/latest/bin/android.exe" sdk install "system-images/android-35/google_apis/x86_64"
+```
+
+`android.exe sdk install` **每装完一个包就留一个未释放的 `lock` 文件**，下一次安装直接 `拒绝访问 (os error 5)`。这不是权限问题，删掉即可。
+
+**建与启动**：
+
+```bash
+echo no | "$SDK/cmdline-tools/latest/bin/avdmanager.bat" create avd \
+  -n arena35 -k "system-images;android-35;google_apis;x86_64" -d pixel_6 --force
+
+"$SDK/emulator/emulator.exe" -avd arena35 -no-window -no-audio -no-boot-anim \
+  -no-snapshot -gpu swiftshader_indirect -accel on
+```
+
+实测冷启动 58 秒。`-no-window` 不弹窗，不干扰桌面。
+
+**装包 + 截图（必须一条命令内做完）**：
+
+```bash
+ADB="$SDK/platform-tools/adb.exe"
+"$ADB" start-server
+"$ADB" -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
+"$ADB" -s emulator-5554 shell am start -n com.arena.companion/.MainActivity
+sleep 6
+"$ADB" -s emulator-5554 exec-out screencap -p > /tmp/shot.png
+```
+
+两个坑：
+
+1. **adb 服务会随 shell 退出被杀**，下一次调用要重新 `start-server`；期间设备会短暂显示 `offline`，所以要轮询 `get-state` 到 `device` 再操作。
+2. **`/sdcard/...` 会被 Git Bash 改写成 Windows 路径**，别用 `screencap` + `pull`，用 `exec-out` 直接重定向。
+3. 截图后 6 秒内可能还停在启动图（Android 12+ 的 splash），第二次截才拿到真实界面。
+
+当前报告页截图存档：`docs/images/android-report-page.png`。
+
 ## 7. 怎么算这一步做完了（判据）
 
 1. `./gradlew.bat assembleDebug` 输出 `BUILD SUCCESSFUL`，且 `app-debug.apk` 存在。
-2. 手机上能看到应用图标，点开显示「Agent 演武场 · 学习伴侣」。
-3. 点「探活后端」按钮，在 `adb reverse` 已建立的前提下，显示 `HTTP 200` 与后端返回体。
+2. **模拟器**上装得上、打得开，报告页渲染出真实字段（得分率 0.25、有效得分 1/权重合计 4、2 个技能缺口、5 条断言）。截图见 `docs/images/android-report-page.png`。
+3. **真机**（荣耀 400 Pro）能装上、点开不崩 —— 这一步与第 2 条分开：界面正确性由模拟器证明，安装可行性由真机证明。
+4. 可选：`adb reverse tcp:8080 tcp:8080` 后点「探活后端」返回 `HTTP 200`（离线演示不依赖它）。
 
-三条全过，第 1 步才算完成；只过第 1 条就是「能编译但没验过真机」，不算。
+状态（2026-11-20）：第 1、2 条已过；第 3 条因荣耀 WinUSB 驱动问题暂无法用 adb 装，改用「直接传 APK 手动安装」验收；第 4 条待后端联调时验。
