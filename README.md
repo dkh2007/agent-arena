@@ -45,4 +45,14 @@ python scripts/test_evidence.py      # 跑一遍 pytest，把结果写成档案
 - `<日期>-<sha7>.json`——同一份数据的机器可读版。
 
 档案由脚本生成、不手改；工作区有未提交改动时会显式标注「对应工作区状态而非干净提交树」。
+判定「干净」时排除 `docs/test-evidence/` 自身——否则每份档案都会因为「要写这份档案」而自称不干净。
+最近一次干净树运行：`1580 passed / 1580 total`，被测提交 `d911000`（见 `INDEX.md`）。
+
+两点实话，免得复核时误会：
+
+- 全量跑一次约 10 分钟（605 秒），不是秒级命令；
+- 跑完可能看到一段 `atexit cleanup_numbered_dir` 的 traceback——那是 pytest 收尾时删自己的临时目录，
+  被本机沙箱的批量删除保护拦下了。它发生在**测试结束之后**，不影响用例结果；档案里的数字取自 junit。
+- 只改了档案模板、不想再等十分钟时：`python scripts/test_evidence.py --rerender docs/test-evidence/<档案>.json`，
+  按同一份运行数据重排 `.md`（不重算、不追加索引行）。
 

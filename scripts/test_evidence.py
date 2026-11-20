@@ -17,6 +17,7 @@
     python scripts/test_evidence.py                     # 跑全量并归档
     python scripts/test_evidence.py --reuse out.xml     # 用已有 junit 归档（不重跑）
     python scripts/test_evidence.py --no-run --note "..."  # 只记录环境，不跑（不推荐）
+    python scripts/test_evidence.py --rerender docs/test-evidence/xxx.json  # 改了模板只重排 md
 
 产物：
     docs/test-evidence/<日期>-<sha7>.md
@@ -230,6 +231,12 @@ def render_markdown(meta: dict[str, object]) -> str:
             f"（本档案自身写在 `{OWN_OUTPUT_PREFIX}` 下，共 {len(own_output)} 个改动，"
             "不计入脏树判定——否则每份档案都会因为「要写这份档案」而自称不干净。）"
         )
+    note = str(meta.get("note") or "").strip()
+    if note:
+        lines.append("")
+        lines.append("## 备注（运行者所加，不是自动测出来的）")
+        lines.append("")
+        lines.append(note)
     lines.append("")
     lines.append("## 运行身份")
     lines.append("")
@@ -296,12 +303,31 @@ def render_markdown(meta: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def rerender(json_path: Path) -> int:
+    """按归档 JSON 重排同一份运行的 Markdown（模板改了不必重跑十分钟）。
+
+    只重排、不重算：所有数字都来自 JSON 里记录的那一次运行，
+    所以文首「未经手工编辑」的声明仍然成立。它**不追加**索引行。
+    """
+    if not json_path.exists():
+        raise SystemExit(f"档案 JSON 不存在：{json_path}")
+    meta = json.loads(json_path.read_text(encoding="utf-8"))
+    md_path = json_path.with_suffix(".md")
+    md_path.write_text(render_markdown(meta), encoding="utf-8")
+    print(f"重排 {md_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="跑全量测试并归档成证据")
     parser.add_argument("--reuse", help="复用已有 junit xml，不重新跑测试")
+    parser.add_argument("--rerender", help="按已有档案 JSON 重排同名 .md，不跑测试、不写索引")
     parser.add_argument("--out-dir", default=str(EVIDENCE_DIR), help="归档目录")
     parser.add_argument("--note", default="", help="本次运行的备注，写进档案")
     args = parser.parse_args(argv)
+
+    if args.rerender:
+        return rerender(Path(args.rerender))
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
