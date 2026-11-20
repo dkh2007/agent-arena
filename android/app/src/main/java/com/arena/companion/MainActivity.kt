@@ -14,8 +14,8 @@ import androidx.core.view.WindowCompat
  * 把「训练 / 提醒」两页挂进来。
  *
  * 页面只读 `assets/sample-report.json`，不发任何网络请求。
- * 联调后端（`adb reverse tcp:8080 tcp:8080` + `curl`）在电脑侧完成，
- * 不在学习者界面里留调试入口——评委看到 `127.0.0.1` 是硬伤。
+ * 联调后端在电脑侧完成（端口转发 + `curl`），不在学习者界面里留调试入口——
+ * 页面上出现本机回环地址，评委看到的就是「没做完」。
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

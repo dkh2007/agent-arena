@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 后端在电脑上（演示用 adb reverse 或局域网），只跑明文 HTTP，故放开 cleartext -->
+    <!-- 预留接入评测服务：演示期走本机端口转发，只跑明文 HTTP，故放开 cleartext。
+         当前页面只读内置样例，不发任何请求（见 ReportScreen.kt）。 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
