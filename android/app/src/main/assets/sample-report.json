@@ -1,0 +1,247 @@
+{
+  "report_version": "v2",
+  "submission": {
+    "submission_id": "sub-demo-fake-retry",
+    "task_id": "dbg-001-order-report",
+    "task_git_hash": "ac23954",
+    "agent_id": "demo-agent-fake-retry",
+    "evaluated_at": "2026-11-07T06:10:00Z",
+    "invoke": {
+      "duration_ms": 12400,
+      "timeout_seconds": 60,
+      "platform_retries": 0
+    }
+  },
+  "trace_audit": {
+    "reported": true,
+    "schema_valid": true,
+    "invalid_reasons": [],
+    "call_count": 4,
+    "final_status": "completed"
+  },
+  "score": {
+    "weighted_sum": 1,
+    "counterfactual_credit": 1,
+    "total_weight": 4,
+    "ratio": 0.25,
+    "denominator_policy": "fixed_at_credit_total_weight",
+    "disqualified": false,
+    "disqualifying_assertions": [],
+    "by_state": {
+      "pass": 3,
+      "fail": 2,
+      "blocked": 0,
+      "unscored": 0
+    },
+    "voided": false
+  },
+  "attribution_policy": {
+    "pass": {
+      "counts_toward_mastery": true,
+      "emit_error_patterns": false
+    },
+    "fail": {
+      "counts_toward_mastery": true,
+      "emit_error_patterns": true
+    },
+    "blocked": {
+      "counts_toward_mastery": false,
+      "emit_error_patterns": false
+    },
+    "unscored": {
+      "counts_toward_mastery": false,
+      "emit_error_patterns": false
+    }
+  },
+  "report_attribution": {
+    "counts_toward_mastery": true,
+    "emit_error_patterns": true
+  },
+  "process_fact": {
+    "required": true,
+    "submitted": true,
+    "missing": false
+  },
+  "assertions": [
+    {
+      "id": "R1_file_exists",
+      "layer": "gate",
+      "type": "file_exists",
+      "weight": 0,
+      "state": "pass",
+      "skill_id": null,
+      "error_patterns": [],
+      "evidence": {
+        "observed": {
+          "exists": true,
+          "size_bytes": 58
+        },
+        "expected": {
+          "exists": true,
+          "non_empty": true
+        }
+      }
+    },
+    {
+      "id": "R5_clean_exit",
+      "layer": "gate",
+      "type": "trace_final_status",
+      "weight": 0,
+      "state": "pass",
+      "skill_id": null,
+      "error_patterns": [],
+      "evidence": {
+        "observed": "completed",
+        "expected": "completed"
+      }
+    },
+    {
+      "id": "R2_report_correct",
+      "layer": "credit",
+      "type": "json_field_equals",
+      "weight": 2,
+      "state": "fail",
+      "skill_id": "multi_step_planning",
+      "error_patterns": [
+        "wrong_total_amount",
+        "wrong_valid_count"
+      ],
+      "evidence": {
+        "observed": {
+          "valid_count": 9,
+          "total_amount": 861.24
+        },
+        "expected": {
+          "valid_count": 17,
+          "total_amount": 1837.99
+        },
+        "extra": {
+          "diffs": [
+            {
+              "field": "valid_count",
+              "expected": 17,
+              "actual": 9
+            },
+            {
+              "field": "total_amount",
+              "expected": 1837.99,
+              "actual": 861.24,
+              "tolerance": 0.01
+            }
+          ]
+        }
+      },
+      "note": "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取"
+    },
+    {
+      "id": "R3_retry_evidence",
+      "layer": "credit",
+      "type": "trace_sequence",
+      "weight": 1,
+      "state": "fail",
+      "skill_id": "failure_retry",
+      "error_patterns": [
+        "retry_wrong_params"
+      ],
+      "evidence": {
+        "observed": {
+          "offsets": [
+            0,
+            10,
+            0,
+            0
+          ],
+          "statuses": [
+            "success",
+            "error",
+            "success",
+            "success"
+          ],
+          "http_statuses": [
+            200,
+            500,
+            200,
+            200
+          ]
+        },
+        "expected": {
+          "ordered": true,
+          "calls": [
+            {
+              "name": "fetch_orders",
+              "params_match": {
+                "offset": 10
+              },
+              "status": "error",
+              "http_status": 500
+            },
+            {
+              "name": "fetch_orders",
+              "params_match": {
+                "offset": 10
+              },
+              "status": "success"
+            }
+          ]
+        },
+        "extra": {
+          "probe": "calls[?name=='fetch_orders'].params.offset",
+          "matched_pairs": 0,
+          "why": "offset=10 失败后所有重试都退回 offset=0，游标没有向前推进"
+        }
+      }
+    },
+    {
+      "id": "R4_no_param_hallucination",
+      "layer": "credit",
+      "type": "trace_param_schema_valid",
+      "weight": 1,
+      "state": "pass",
+      "skill_id": "tool_param_validation",
+      "error_patterns": [],
+      "evidence": {
+        "observed": {
+          "violations": [],
+          "checked_calls": 4
+        },
+        "expected": {
+          "mode": "all_calls_must_be_valid"
+        }
+      }
+    }
+  ],
+  "skill_gaps": [
+    {
+      "skill_id": "multi_step_planning",
+      "failed_assertions": [
+        "R2_report_correct"
+      ],
+      "patterns": [
+        "wrong_total_amount",
+        "wrong_valid_count"
+      ],
+      "weight_lost": 2,
+      "attributed_by": "assertion"
+    },
+    {
+      "skill_id": "failure_retry",
+      "failed_assertions": [
+        "R3_retry_evidence"
+      ],
+      "patterns": [
+        "retry_wrong_params"
+      ],
+      "weight_lost": 1,
+      "attributed_by": "assertion"
+    }
+  ],
+  "unattributed_patterns": [],
+  "rubric_fingerprint": "c7235a2f803744d3f386ba40525aaeee28c31f922e9b8aac8b745e68fe65431e",
+  "rubric_rule_fingerprints": {
+    "R1_file_exists": "b068cbadf32a836052f35f7438ad43f3bbf22260de916e2a11a3447d7459970d",
+    "R2_report_correct": "e601fcd7c0444b82b57e0b664118ca75a9a31e6a906feeedd6b42e448b0c0e43",
+    "R3_retry_evidence": "edf85ffbfa3b193033d0f9bbc1b13a8573f50abc60d3de2d39de56574d443f73",
+    "R4_no_param_hallucination": "3785659afb050f8cd32f392c23f2afec50d51831c5ec43d3ab6ecf969ff026f7",
+    "R5_clean_exit": "c6c87dcdc52ea4ed985444cbf06da6d3e7c6502f14715b8d7a14eedf6dad1d1e"
+  }
+}
