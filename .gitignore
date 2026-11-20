@@ -25,3 +25,14 @@ pytest-cache-files-*/
 
 # 外部红队测试的隔离运行目录（未核证前不进 tests/，也不该被提交）
 .redteam-tmp/
+
+# Android（android/ 目录）
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/.kotlin/
+*.apk
+*.aab
+*.jks
+*.keystore
