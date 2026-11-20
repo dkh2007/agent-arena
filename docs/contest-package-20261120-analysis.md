@@ -230,4 +230,8 @@
 | `tests/test_demo_decision.py` | 新增变异测试：把侧 B 也整份排除 ⇒ demo_12 必须变红 |
 | `docs/review-packet.md` | 由生成器重生（脚本扫描段 + 手工段合并），带新 SHA |
 
-**验证状态**：待生成器跑完完整 pytest 后补记（本文件在提交前更新为实测结果，不先写"全绿"）。
+**验证状态（2026-11-20 实测，不是自评）**：
+- `pytest tests/ -q` → **1522 passed / 1522 total**（684s）。
+- `pytest tests/test_demo_decision.py -q` → **24 passed**。
+- `python scripts/demo_decision.py 12` → 7 项检查全 ok，`>> 12: PASS`。
+- 评审包重生：`packet-sha256=90cef3f83d450435`，实测行写入 **1522 passed / 1522 total**；`scripts/review_packet.py --check` → **OK**。
