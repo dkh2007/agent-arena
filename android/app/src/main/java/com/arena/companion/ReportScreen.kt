@@ -3,7 +3,6 @@ package com.arena.companion
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,10 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,7 +39,6 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.concurrent.thread
 
 /**
  * 诊断报告页（结构版）。
@@ -66,9 +61,6 @@ fun ReportScreen(modifier: Modifier = Modifier) {
         }
         return
     }
-
-    var probe by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(Bg),
@@ -96,16 +88,6 @@ fun ReportScreen(modifier: Modifier = Modifier) {
         item { ProcessBanner(report.processMissing) }
         item { NotesCard(report.notes) }
         item { ProvenanceCard(report) }
-        item {
-            DevCard(busy, probe) {
-                busy = true
-                probe = "正在请求 /healthz …"
-                thread {
-                    probe = probeHealth(DEFAULT_BASE)
-                    busy = false
-                }
-            }
-        }
     }
 }
 
@@ -493,35 +475,6 @@ private fun ProvenanceCard(r: Report) {
             style = TMicro,
             color = Ink2,
         )
-    }
-}
-
-@Composable
-private fun DevCard(busy: Boolean, probe: String, onProbe: () -> Unit) {
-    SurfaceCard {
-        Text("联调（演示时可跳过）", style = TEyebrow)
-        Spacer(Modifier.height(6.dp))
-        Text("先执行 adb reverse tcp:8080 tcp:8080，手机即可访问电脑上的评测服务。", style = TSmall)
-        if (probe.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(probe, style = TMicro, color = Ink2)
-        }
-        Spacer(Modifier.height(10.dp))
-        Row(
-            modifier = Modifier
-                .clip(PillShape)
-                .border(1.dp, Line, PillShape)
-                .clickable(enabled = !busy, onClick = onProbe)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                if (busy) "请求中…" else "探活后端",
-                fontSize = 12.5.sp,
-                color = if (busy) Ink3 else Brand,
-                fontWeight = FontWeight.Medium,
-            )
-        }
     }
 }
 
