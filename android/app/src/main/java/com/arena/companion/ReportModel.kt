@@ -52,6 +52,12 @@ data class Report(
     val gaps: List<Gap>,
     val assertions: List<AssertionRow>,
     val processMissing: Boolean,
+    /**
+     * 评测管线写下的判定说明（`notes`）。这些句子是**判定的一部分**，不是装饰：
+     * 例如「本次不计能力分、不计入掌握度，**不视为能力不足**」——缺了它，
+     * 学生只会看到 0 分，以为自己被判了死刑。页面必须原样显示，不许改写措辞。
+     */
+    val notes: List<String>,
 ) {
     val awarded: Double get() = weightedSum
     val lost: Double get() = (totalWeight - weightedSum).coerceAtLeast(0.0)
@@ -130,6 +136,7 @@ fun parseReport(text: String): Report {
         gaps = gaps,
         assertions = assertions,
         processMissing = pf?.optBoolean("missing", false) ?: false,
+        notes = root.optJSONArray("notes").toStringList(),
     )
 }
 

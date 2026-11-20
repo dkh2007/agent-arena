@@ -35,7 +35,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -90,6 +94,7 @@ fun ReportScreen(modifier: Modifier = Modifier) {
         item { AssertionListCard(report.assertions) }
 
         item { ProcessBanner(report.processMissing) }
+        item { NotesCard(report.notes) }
         item { ProvenanceCard(report) }
         item {
             DevCard(busy, probe) {
@@ -420,6 +425,53 @@ private fun ProcessBanner(missing: Boolean) {
                 style = TMicro,
                 color = tone.copy(alpha = 0.85f),
             )
+        }
+    }
+}
+
+/**
+ * 判定说明。有才显示，没有就整块不出现——不留空卡、不写「暂无」。
+ *
+ * 这些句子由评测管线产出（`notes`），属于判定的一部分：作废、缺过程、门禁不过时，
+ * 学生看到的 0 分配一句「这意味着什么」，才不至于读成「你不行」。此前页面把它们整段丢了，
+ * 只剩数字。措辞不许改写——「不视为能力不足」这种话改了性质就变了。
+ */
+@Composable
+private fun NotesCard(notes: List<String>) {
+    if (notes.isEmpty()) return
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(CardShape)
+            .background(LineSoft)
+            .padding(15.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Text("判定说明", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = Ink2)
+        notes.forEach { note ->
+            Row(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier
+                        .padding(top = 6.dp)
+                        .size(4.dp)
+                        .clip(PillShape)
+                        .background(Ink2.copy(alpha = 0.45f)),
+                )
+                Spacer(Modifier.width(9.dp))
+                Text(boldEmphasis(note), style = TMicro, color = Ink2)
+            }
+        }
+    }
+}
+
+/** 把 `**xxx**` 渲染成加粗。管线用这两个星号标出判定关键词，直接显示会露出星号本身。 */
+private fun boldEmphasis(text: String): AnnotatedString = buildAnnotatedString {
+    var bold = false
+    text.split("**").forEachIndexed { index, part ->
+        if (index > 0) bold = !bold
+        if (part.isEmpty()) return@forEachIndexed
+        withStyle(if (bold) SpanStyle(fontWeight = FontWeight.SemiBold) else SpanStyle()) {
+            append(part)
         }
     }
 }
