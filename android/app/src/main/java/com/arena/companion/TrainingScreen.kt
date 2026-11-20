@@ -51,7 +51,7 @@ fun TrainingScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(ListGap),
     ) {
-        item { BackRow(onBack) }
+        item { BackRow("返回报告", onBack) }
         item {
             Column {
                 Text("TRAINING", style = TEyebrow)
@@ -85,21 +85,6 @@ fun TrainingScreen(
         item { CriterionCard(plan.criterion) }
         item { FocusCard(plan.focusAssertions) }
         item { SourceCard(plan) }
-    }
-}
-
-@Composable
-private fun BackRow(onBack: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .clip(PillShape)
-                .border(1.dp, Line, PillShape)
-                .clickable(onClick = onBack)
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Text("← 返回报告", fontSize = 12.5.sp, color = Ink2, fontWeight = FontWeight.Medium)
-        }
     }
 }
 
@@ -232,33 +217,5 @@ private fun SourceCard(p: TrainingPlan) {
                 "没有一条建议是手写的；改任务定义后重新生成 training-plan.json 即可。",
             style = TMicro,
         )
-    }
-}
-
-@Composable
-private fun NoticeCard(title: String, body: String, tone: androidx.compose.ui.graphics.Color) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(BannerShape)
-            .background(tone.copy(alpha = 0.06f))
-            .border(1.dp, tone.copy(alpha = 0.25f), BannerShape)
-            .padding(CardPad),
-    ) {
-        Text(title, style = TH2, color = tone)
-        Spacer(Modifier.height(6.dp))
-        Text(body, style = TSmall)
-    }
-}
-
-@Composable
-private fun Tag(text: String, tone: androidx.compose.ui.graphics.Color) {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(tone.copy(alpha = 0.08f))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-    ) {
-        Text(text, fontSize = 11.sp, color = tone, fontWeight = FontWeight.Medium)
     }
 }

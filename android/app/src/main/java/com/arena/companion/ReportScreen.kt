@@ -55,6 +55,7 @@ fun ReportScreen(
     modifier: Modifier = Modifier,
     plan: TrainingPlan? = null,
     onOpenTraining: () -> Unit = {},
+    onOpenFeynman: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val report = remember { loadSampleReport(ctx) }
@@ -95,7 +96,7 @@ fun ReportScreen(
 
         item { ProcessBanner(report.processMissing) }
         item { NotesCard(report.notes) }
-        plan?.let { item { NextStepCard(it, onOpenTraining) } }
+        plan?.let { item { NextStepCard(it, onOpenTraining, onOpenFeynman) } }
         item { ProvenanceCard(report) }
     }
 }
@@ -472,9 +473,12 @@ private fun boldEmphasis(text: String): AnnotatedString = buildAnnotatedString {
  *
  * 三种状态都要显式：有下一档 / 已到本族最高档 / 没有训练单数据。
  * 只有第一种才给按钮——另外两种点进去也没有内容，给了按钮等于骗一次点击。
+ *
+ * 「复述这题」是第二个动作，只在有训练单时一起给：讲的对象是**这次判的题**，
+ * 不是下一档。没训练单时这一块整块不出现，避免页尾变成一排没人点的按钮。
  */
 @Composable
-private fun NextStepCard(p: TrainingPlan, onOpen: () -> Unit) {
+private fun NextStepCard(p: TrainingPlan, onOpen: () -> Unit, onSpeak: () -> Unit) {
     SurfaceCard {
         Text("下一步", style = TEyebrow)
         Spacer(Modifier.height(8.dp))
@@ -487,15 +491,28 @@ private fun NextStepCard(p: TrainingPlan, onOpen: () -> Unit) {
                     style = TSmall,
                 )
                 Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier
-                        .clip(PillShape)
-                        .background(Brand.copy(alpha = 0.08f))
-                        .clickable(onClick = onOpen)
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("看训练单 →", fontSize = 12.5.sp, color = Brand, fontWeight = FontWeight.Medium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier
+                            .clip(PillShape)
+                            .background(Brand.copy(alpha = 0.08f))
+                            .clickable(onClick = onOpen)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("看训练单 →", fontSize = 12.5.sp, color = Brand, fontWeight = FontWeight.Medium)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(PillShape)
+                            .border(1.dp, Line, PillShape)
+                            .clickable(onClick = onSpeak)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("复述这题", fontSize = 12.5.sp, color = Ink2, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
             p.status == "top_of_family" -> {

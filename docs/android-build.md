@@ -1,4 +1,4 @@
-# Android 端构建说明（2026-11-20 实测）
+# Android 端构建说明（2026-11-21 更新）
 
 > 目的：让人在**不装 Android Studio** 的前提下，从零把它编成一个能装到手机上的 APK。
 > 所有版本号与路径都是本机实测结果，不是推测；有坑的地方标了「坑」和绕法。
@@ -6,11 +6,12 @@
 ## 0. 这套东西现在是什么状态
 
 - 交付形态（2026-11-20 定）：**Android 原生**，Kotlin + Jetpack Compose。
-- 现在已有**第 2 步**：报告页能跑（数据来自 `assets/sample-report.json`，离线可渲染）。
+- 现在已有**三页**：报告页、训练单页、费曼复述页（数据全部来自 `assets/` 下三个 JSON，离线可渲染）。
   界面上不留任何调试入口——2026-11-20 曾有一张「探活后端」卡（点一下打印 `127.0.0.1:8080`），
   外部评审指出这会让评委翻到最后一屏时看到开发者信息，已删除，探活改到电脑侧用 `curl`。
-- **第 3 步**：训练单页（报告页「下一步 → 看训练单」进入）。
-- 费曼复述 / 复习提醒两页**还没写**——按"一小步一验证"往下加。
+- 费曼复述页的三种输入：文字（键盘）、语音（调系统识别器）、手写（画板 + 存 PNG，不做文字识别）。
+  截图见 `docs/images/feynman-text.png`、`feynman-input-modes.png`、`feynman-ink.png`、`feynman-hints.png`。
+- 复习提醒页**还没写**——按"一小步一验证"往下加。
 
 ## 1. 环境（本机实测，单位：真的有/真的没有）
 
@@ -164,11 +165,41 @@ sleep 6
 
 当前报告页截图存档：`docs/images/android-report-page.png`。
 
+## 6.7 模拟器把应用冻结：所有 `tap` 无响应（2026-11-21 实测）
+
+**症状**：应用在前台、界面正常、`input swipe` 能滚动页面，但 `input tap` 全部没反应——
+按钮不开菜单、`BACK` 也不回上一页。`logcat` 里只有一行
+`IPCThreadState: Sending oneway calls to frozen process`，没有 ANR。
+
+**原因**：Android 11+ 的 cached app freezer 把这个进程冻住了。自动化（uiautomator）能读到界面，
+触摸事件却送不进被冻结的进程。
+
+**处置**（一次性写进系统设置，重启模拟器后仍有效）：
+
+```bash
+adb -s emulator-5554 shell settings put global cached_apps_freezer disabled
+adb -s emulator-5554 shell settings get global cached_apps_freezer   # 应输出 disabled
+```
+
+**顺带的两条操作经验**：
+
+1. 每次 `force-stop` + `am start` 后应用要 30–60 秒才渲染完（debug 包 + 模拟器无 GPU 加速），
+   这期间截图只拍到启动图。不要据此判断"崩了"。
+2. 取点击坐标别拿截图比例换算——用 `uiautomator dump` 读 `bounds` 再点，最稳：
+
+```bash
+adb shell "uiautomator dump /sdcard/u.xml" && adb shell "cat /sdcard/u.xml" > u.xml
+# 在里面找 text="复述这题" 的 bounds="[x1,y1][x2,y2]"，点中心
+```
+
 ## 7. 怎么算这一步做完了（判据）
 
 1. `./gradlew.bat assembleDebug` 输出 `BUILD SUCCESSFUL`，且 `app-debug.apk` 存在。
 2. **模拟器**上装得上、打得开，报告页渲染出真实字段（得分率 0.25、有效得分 1/权重合计 4、2 个技能缺口、5 条断言）。截图见 `docs/images/android-report-page.png`。
-3. **真机**（荣耀 400 Pro）能装上、点开不崩 —— 这一步与第 2 条分开：界面正确性由模拟器证明，安装可行性由真机证明。
-4. 可选（**命令行为准**）：电脑侧 `adb reverse tcp:8080 tcp:8080` 后 `curl http://127.0.0.1:8080/healthz` 返回 200（离线演示不依赖它）。App 内不设探活按钮。
+3. 三页都能进：报告 →「下一步」两个按钮分别进训练单 / 费曼复述；费曼页三种输入方式各截一张（文字 / 语音降级提示 / 手写笔迹），提示弹层能展开。存档见 `docs/images/feynman-*.png`。
+4. **真机**（荣耀 400 Pro）能装上、点开不崩 —— 这一步与第 3 条分开：界面正确性由模拟器证明，安装可行性由真机证明。
+5. 可选（**命令行为准**）：电脑侧 `adb reverse tcp:8080 tcp:8080` 后 `curl http://127.0.0.1:8080/healthz` 返回 200（离线演示不依赖它）。App 内不设探活按钮。
 
-状态（2026-11-20）：第 1、2 条已过；第 3 条因荣耀 WinUSB 驱动问题暂无法用 adb 装，改用「直接传 APK 手动安装」验收；第 4 条待后端联调时验。
+状态（2026-11-21）：第 1、2、3 条已过（模拟器 arena35，实拍见 `docs/images/`）；
+第 4 条因荣耀 WinUSB 驱动问题暂无法用 adb 装，改用「直接传 APK 手动安装」验收；
+第 5 条待后端联调时验。语音只验证到「系统识别器被正确唤起」，模拟器无麦克风。

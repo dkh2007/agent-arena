@@ -1,0 +1,125 @@
+{
+  "task_id": "dbg-001-order-report",
+  "submission_id": "sub-demo-fake-retry",
+  "task_title": "订单数据核对报告（调试向）",
+  "asks": [
+    "使用工具 fetch_orders 分页拉取全部订单（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 20 条订单）",
+    "剔除无效订单：amount 字段缺失、为 null 或为负数",
+    "统计有效订单数量与总金额",
+    "调用 write_report 将结果写入 /workspace/report.json，内容为 JSON：{\"valid_count\": <有效订单数>, \"total_amount\": <总金额, 浮点>}"
+  ],
+  "questions": [
+    {
+      "key": "task",
+      "text": "这题要你交什么？用你自己的话说，不要念题目。"
+    },
+    {
+      "key": "gap",
+      "text": "你这次卡在哪一步？说清「本来应该是什么、你实际做了什么」。"
+    },
+    {
+      "key": "fix",
+      "text": "下次具体改哪一处？给一个能照着做的动作，别写「更仔细一点」。"
+    }
+  ],
+  "gaps": [
+    {
+      "skill_label": "多步任务分解",
+      "failed_assertions": [
+        "R2_report_correct"
+      ],
+      "weight_lost": 2,
+      "patterns": [
+        {
+          "id": "wrong_total_amount",
+          "label": "总额算错",
+          "description": "total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算"
+        },
+        {
+          "id": "wrong_valid_count",
+          "label": "有效数算错",
+          "description": "valid_count 与依据 fixture 剔除规则现算的条数不符（漏剔或多剔）；具体条数见各任务的 test_inputs.expected"
+        }
+      ]
+    },
+    {
+      "skill_label": "失败重试策略",
+      "failed_assertions": [
+        "R3_retry_evidence"
+      ],
+      "weight_lost": 1,
+      "patterns": [
+        {
+          "id": "retry_wrong_params",
+          "label": "重试参数错误",
+          "description": "确实重试了，但游标退回首页（偏移序列在故障页之后又出现 0）；耗时增加且分页永不收敛"
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "assertion_id": "R2_report_correct",
+      "diffs": [
+        {
+          "field": "valid_count",
+          "expected": "17",
+          "actual": "9"
+        },
+        {
+          "field": "total_amount",
+          "expected": "1837.99",
+          "actual": "861.24"
+        }
+      ],
+      "scene": [
+        "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取"
+      ]
+    },
+    {
+      "assertion_id": "R3_retry_evidence",
+      "diffs": [],
+      "scene": [
+        "offset=10 失败后所有重试都退回 offset=0，游标没有向前推进"
+      ]
+    }
+  ],
+  "hints": [
+    {
+      "key": "asks",
+      "label": "题目到底要几步",
+      "lines": [
+        "1. 使用工具 fetch_orders 分页拉取全部订单（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 20 条订单）",
+        "2. 剔除无效订单：amount 字段缺失、为 null 或为负数",
+        "3. 统计有效订单数量与总金额",
+        "4. 调用 write_report 将结果写入 /workspace/report.json，内容为 JSON：{\"valid_count\": <有效订单数>, \"total_amount\": <总金额, 浮点>}"
+      ]
+    },
+    {
+      "key": "diffs",
+      "label": "把期望和实际念一遍",
+      "lines": [
+        "R2_report_correct · valid_count：期望 17，实际 9",
+        "R2_report_correct · total_amount：期望 1837.99，实际 861.24"
+      ]
+    },
+    {
+      "key": "patterns",
+      "label": "这个错法叫什么",
+      "lines": [
+        "总额算错：total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算",
+        "有效数算错：valid_count 与依据 fixture 剔除规则现算的条数不符（漏剔或多剔）；具体条数见各任务的 test_inputs.expected",
+        "重试参数错误：确实重试了，但游标退回首页（偏移序列在故障页之后又出现 0）；耗时增加且分页永不收敛"
+      ]
+    },
+    {
+      "key": "scene",
+      "label": "当时现场是什么样",
+      "lines": [
+        "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取",
+        "offset=10 失败后所有重试都退回 offset=0，游标没有向前推进"
+      ]
+    }
+  ],
+  "source_note": "本页材料由本地评测管线产出：要求清单逐字取自任务定义，对照项与差异取自这份诊断报告，错法解释取自错误模式词表。页面不生成任何新判断。"
+}

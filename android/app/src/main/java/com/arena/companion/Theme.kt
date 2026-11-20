@@ -71,13 +71,29 @@ fun ratioTone(ratio: Double, dq: Boolean, voided: Boolean): Color = when {
 @Composable
 fun ArenaTheme(content: @Composable () -> Unit) {
     MaterialTheme(
+        // 每个槽位都要给值：只写 primary/background 时，Material 组件（下拉菜单、底部弹层、
+        // 输入框光标）会退回库里自带的紫粉默认色。2026-11-20 实测：输入方式菜单弹出是淡紫色，
+        // 在整页浅灰白里像一块没上色的控件。这里是唯一可以一次性堵住的口子。
         colorScheme = lightColorScheme(
             primary = Brand,
+            onPrimary = CardBg,
+            primaryContainer = Brand.copy(alpha = 0.08f),
+            onPrimaryContainer = Brand,
             background = Bg,
+            onBackground = Ink,
             surface = CardBg,
             onSurface = Ink,
-            onBackground = Ink,
+            surfaceVariant = LineSoft,
+            onSurfaceVariant = Ink2,
+            surfaceContainerLowest = CardBg,
+            surfaceContainerLow = CardBg,
+            surfaceContainer = CardBg,
+            surfaceContainerHigh = CardBg,
+            surfaceContainerHighest = LineSoft,
+            outline = Line,
+            outlineVariant = LineSoft,
             error = Fail,
+            onError = CardBg,
         ),
         typography = Typography(bodyLarge = TBody, bodyMedium = TBody, bodySmall = TSmall),
         content = content,
