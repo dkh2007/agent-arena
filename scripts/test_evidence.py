@@ -184,7 +184,14 @@ def render_markdown(meta: dict[str, object]) -> str:
         lines.append("")
         lines.append(
             f"⚠️ 运行时刻工作区有 {len(git['dirty_files'])} 个未提交改动，"
-            "本档案对应的是「工作区状态」，不是干净的提交树。"
+            "本档案对应的是「工作区状态」，不是干净的提交树。未提交的文件："
+        )
+        for item in git["dirty_files"]:  # type: ignore[union-attr]
+            lines.append(f"- `{item}`")
+        lines.append("")
+        lines.append(
+            "若这些文件只是文档或证据产物，测试结论不受影响；若是 `src/` 或 `tests/` 下的代码，"
+            "这份档案就不能代表该提交——先提交再重跑。"
         )
     lines.append("")
     lines.append("## 运行身份")
