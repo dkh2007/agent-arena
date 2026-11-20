@@ -41,11 +41,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_DIR = ROOT / "docs" / "test-evidence"
 
+# 本脚本自己的输出目录。判定「工作区是否干净」时要把它排除掉：
+# 否则这份档案永远在描述一个「因为要写这份档案而变脏」的工作区，
+# 等于自己给自己抹黑，也和事实不符（跑测试时真正该干净的是代码）。
+OWN_OUTPUT_PREFIX = "docs/test-evidence/"
+
 
 def _run(cmd: list[str], cwd: Path = ROOT) -> str:
     return subprocess.run(
         cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
     ).stdout.strip()
+
+
+def split_status(lines: list[str]) -> tuple[list[str], list[str]]:
+    """把 `git status --porcelain` 的行分成（本工具自身产物, 其他改动）。
+
+    porcelain 每行前 3 个字符是状态码 + 空格，之后是路径；
+    `?? docs/test-evidence/` 这种整目录未跟踪时路径就是目录名本身。
+    """
+    own: list[str] = []
+    others: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        path = line[3:].strip()
+        # 重命名是 `R  old -> new`，取新路径判断归属
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if path == OWN_OUTPUT_PREFIX.rstrip("/") or path.startswith(OWN_OUTPUT_PREFIX):
+            own.append(line)
+        else:
+            others.append(line)
+    return own, others
 
 
 def git_facts() -> dict[str, object]:
@@ -54,13 +81,16 @@ def git_facts() -> dict[str, object]:
     if not sha:
         raise SystemExit("拿不到 git HEAD：这份档案要能对上提交，先确认在仓库里")
     subject = _run(["git", "log", "-1", "--pretty=%s"])
-    dirty = _run(["git", "status", "--porcelain"])
+    status = _run(["git", "status", "--porcelain"])
+    own, others = split_status(status.splitlines())
     return {
         "commit": sha,
         "commit_short": sha[:7],
         "commit_subject": subject,
-        "dirty": bool(dirty),
-        "dirty_files": [line for line in dirty.splitlines() if line.strip()],
+        # dirty 只认「本工具输出以外」的改动，这样「干净」才有意义
+        "dirty": bool(others),
+        "dirty_files": others,
+        "own_output_files": own,
     }
 
 
@@ -193,6 +223,13 @@ def render_markdown(meta: dict[str, object]) -> str:
             "若这些文件只是文档或证据产物，测试结论不受影响；若是 `src/` 或 `tests/` 下的代码，"
             "这份档案就不能代表该提交——先提交再重跑。"
         )
+    own_output = git.get("own_output_files") or []  # type: ignore[union-attr]
+    if own_output:
+        lines.append("")
+        lines.append(
+            f"（本档案自身写在 `{OWN_OUTPUT_PREFIX}` 下，共 {len(own_output)} 个改动，"
+            "不计入脏树判定——否则每份档案都会因为「要写这份档案」而自称不干净。）"
+        )
     lines.append("")
     lines.append("## 运行身份")
     lines.append("")
@@ -201,7 +238,7 @@ def render_markdown(meta: dict[str, object]) -> str:
     lines.append(f"| 提交 | `{git['commit']}` |")
     lines.append(f"| 提交说明 | {git['commit_subject'] or '（空）'} |")
     lines.append(f"| 分支 | `{meta['branch']}` |")
-    lines.append(f"| 工作区干净 | {'否' if git['dirty'] else '是'} |")
+    lines.append(f"| 工作区干净 | {'否' if git['dirty'] else '是'}{'（已排除本档案自身）' if not git['dirty'] and own_output else ''} |")
     lines.append(f"| Python | {env['python']} |")
     lines.append(f"| 平台 | {env['platform']} |")
     lines.append(f"| pytest | {env['pytest']} |")
