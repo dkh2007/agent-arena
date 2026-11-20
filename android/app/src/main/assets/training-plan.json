@@ -1,0 +1,28 @@
+{
+  "task_id": "dbg-001-order-report",
+  "focus_assertions": [
+    "R2_report_correct",
+    "R3_retry_evidence"
+  ],
+  "criterion": "在下一档任务上，门禁项全过且积分项全过（得分率 1.00、未判不合格）才算练会；只过一部分，回来看这份报告里没消掉的缺口。",
+  "family_id": "order-report",
+  "level": 1,
+  "levels_total": 3,
+  "levels": [
+    1,
+    2,
+    3
+  ],
+  "status": "has_next",
+  "next": {
+    "task_id": "dbg-003-purchase-report",
+    "title": "采购单金额核对报告（调试向 · 变体）",
+    "difficulty": 2,
+    "asks": [
+      "使用工具 fetch_orders 分页拉取全部采购单（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 30 条记录）",
+      "剔除无效记录：amount 字段缺失、为 null 或为负数",
+      "统计有效记录数量与总金额",
+      "调用 write_report 将结果写入 /workspace/report.json，内容为 JSON：{\"valid_count\": <有效记录数>, \"total_amount\": <总金额, 浮点>}"
+    ]
+  }
+}

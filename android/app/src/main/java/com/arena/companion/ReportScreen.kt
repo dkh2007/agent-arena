@@ -3,6 +3,7 @@ package com.arena.companion
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,11 +44,18 @@ import androidx.compose.ui.unit.sp
 /**
  * 诊断报告页（结构版）。
  *
- * 布局顺序固定：身份 → 总分 → 缺口 → 逐条断言 → 过程材料 → 数据来源。
+ * 布局顺序固定：身份 → 总分 → 缺口 → 逐条断言 → 过程材料 → 判定说明 → 下一步 → 数据来源。
  * 所有数值直接取自 Report 对象，页面不做任何计算或换算。
+ *
+ * 「下一步」卡是页尾唯一的行动号召：它读的是 training-plan.json（族 + 下一档），
+ * 不是页面自己想的建议。没有训练单时整块不出现，不写"敬请期待"。
  */
 @Composable
-fun ReportScreen(modifier: Modifier = Modifier) {
+fun ReportScreen(
+    modifier: Modifier = Modifier,
+    plan: TrainingPlan? = null,
+    onOpenTraining: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val report = remember { loadSampleReport(ctx) }
 
@@ -87,6 +95,7 @@ fun ReportScreen(modifier: Modifier = Modifier) {
 
         item { ProcessBanner(report.processMissing) }
         item { NotesCard(report.notes) }
+        plan?.let { item { NextStepCard(it, onOpenTraining) } }
         item { ProvenanceCard(report) }
     }
 }
@@ -458,6 +467,51 @@ private fun boldEmphasis(text: String): AnnotatedString = buildAnnotatedString {
     }
 }
 
+/**
+ * 下一步卡：把「练什么」放在评委翻到的位置，替掉原来那张调试卡。
+ *
+ * 三种状态都要显式：有下一档 / 已到本族最高档 / 没有训练单数据。
+ * 只有第一种才给按钮——另外两种点进去也没有内容，给了按钮等于骗一次点击。
+ */
+@Composable
+private fun NextStepCard(p: TrainingPlan, onOpen: () -> Unit) {
+    SurfaceCard {
+        Text("下一步", style = TEyebrow)
+        Spacer(Modifier.height(8.dp))
+        when {
+            p.hasNext && p.next != null -> {
+                Text("练「${p.next.title}」", style = TH2)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "同一场景的第 ${p.next.difficulty} 档，共 ${p.levelsTotal} 档。练完按同一判据重测这份报告。",
+                    style = TSmall,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(PillShape)
+                        .background(Brand.copy(alpha = 0.08f))
+                        .clickable(onClick = onOpen)
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("看训练单 →", fontSize = 12.5.sp, color = Brand, fontWeight = FontWeight.Medium)
+                }
+            }
+            p.status == "top_of_family" -> {
+                Text("这已是本族最高档", style = TH2)
+                Spacer(Modifier.height(6.dp))
+                Text("没有「同场景更难」的下一档，本页不编一档出来。换族或收工由你决定。", style = TSmall)
+            }
+            else -> {
+                Text("这道题没有标注族与难度", style = TH2)
+                Spacer(Modifier.height(6.dp))
+                Text("排不出前后档，所以这里不给「练哪道」的建议。", style = TSmall)
+            }
+        }
+    }
+}
+
 @Composable
 private fun ProvenanceCard(r: Report) {
     Column(
@@ -480,8 +534,9 @@ private fun ProvenanceCard(r: Report) {
 
 // ---------------- 通用件 ----------------
 
+/** 卡片外壳。两个页面共用一份，避免训练页另起一套圆角/描边。 */
 @Composable
-private fun SurfaceCard(
+internal fun SurfaceCard(
     padding: PaddingValues = PaddingValues(CardPad),
     content: @Composable ColumnScope.() -> Unit,
 ) {
