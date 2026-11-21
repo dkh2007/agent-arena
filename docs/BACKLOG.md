@@ -1691,7 +1691,12 @@
 4. python scripts/push_gate.py --self-test --dirty c830b1b → SELF_TEST_PASS=True
 5. python scripts/demo_decision.py --all            → FAIL 必须为 0
 6. 若改了测试 → 必须重生成评审包（`_pytest_count()` 会变 ⇒ 必 STALE）
-   **判据两条**：实测行里没有 `failed`；再生成一次 `packet-sha256` 不变。
+   **判据两条**：实测行里没有 `failed`；在 **HEAD 与工作区都不动**的前提下再生成一次，
+   `packet-sha256` 不变（2026-11-21 复验：两次都是 `99bca914`）。
+   **比的是 `packet-sha256`，不是文件 md5**：header 的 `generated=` 时间戳每次都变，
+   文件字节必不同（md5 `1bf9b602` → `d49d8056`），但 sha 只算正文、正文里没有时间。
+   反过来，**HEAD 一动 sha 必变**——正文含「生成锚点」与提交列表，那是快照的一部分，
+   不是不确定性。所以"sha 变了"先分清是哪种：时间戳（看文件名 md5 才知道）还是 HEAD 前进。
    （~~"且要生成三次：第一次必记 1 failed"~~ —— **round-98 已废**：那条是"生成器拿
    上一代包当参照物"造成的假失败，不是收敛规律。修好后改过用例数**第一次生成就全绿**。
    早期记的"第二次进度提示行还留着进行中"属于旧版生成器的行为，现在没有进度行。）
