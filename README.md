@@ -46,7 +46,7 @@ python scripts/test_evidence.py      # 跑一遍 pytest，把结果写成档案
 
 档案由脚本生成、不手改；工作区有未提交改动时会显式标注「对应工作区状态而非干净提交树」。
 判定「干净」时排除 `docs/test-evidence/` 自身——否则每份档案都会因为「要写这份档案」而自称不干净。
-最近一次干净树运行：`1583 passed / 1583 total`，被测提交 `f2ce3cb`（见 `INDEX.md`）。
+最近一次干净树运行：`1588 passed / 1588 total`，被测提交 `36468d6`（见 `INDEX.md`）。
 
 两点实话，免得复核时误会：
 
