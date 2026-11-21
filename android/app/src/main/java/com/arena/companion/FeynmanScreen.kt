@@ -1,13 +1,9 @@
 package com.arena.companion
 
-import android.app.Activity
-import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Context
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,16 +19,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,7 +39,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -53,16 +47,18 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 费曼复述页：先不看材料，自己讲一遍；讲完再对照这次评测留下的证据。
+ * 费曼复述页：先不看材料，自己讲一遍；**交上去之后**才解开对照材料。
  *
- * 三条纪律（与报告页、训练单一脉）：
+ * 四条纪律（与报告页、训练单一脉）：
  * 1. 页面上的每句话都要能追到 `feynman-prompt.json`；不打分、不评价、不写"不错，继续加油"。
  * 2. `task_id` 对不上就报错——让你复述一道不是这次判的题，比不给材料更糟。
- * 3. 三种输入方式都是**录入手段**，不是新判据：语音走系统识别、手写只存笔迹。
- *    手写不做文字识别（端上离线模型体积与许可都不合适），页面必须写明这一点。
+ * 3. **对照材料默认锁着**。清单、期望 vs 实际、错法解释在提交前一律不显示，
+ *    所以「提示」弹层在提交前只给"题目要几步"（题干本来就写着的那部分）。
+ *    锁不是奖励机制，是费曼技巧的前提：先自己生成，再拿材料修。
+ * 4. 提交之后正文只读。这是自己给自己定的规则——锁住的是"看完答案再改"，不是防作弊。
  *
- * 输入方式按豆包桌面端的做法放在输入框旁边：一个胶囊显示当前方式，点开切换。
- * 没有做成底部 Tab —— 切换的是"怎么打字"，不是页面，Tab 会让人以为换了功能。
+ * 输入只保留文字。语音与手写两版做过又删了（2026-11-21 人拍板）：
+ * 手写丢笔未修净、语音只在模拟器验过，而打字对"逼自己组织语言"这个目标已经够用。
  */
 @Composable
 fun FeynmanScreen(
@@ -72,37 +68,23 @@ fun FeynmanScreen(
     onBack: () -> Unit,
 ) {
     val ctx = LocalContext.current
+    val taskId = prompt?.taskId
+    val commitKey = prompt?.let { "${it.taskId}_${it.submissionId ?: "none"}" }
 
-    var text by rememberSaveable(prompt?.taskId) {
-        mutableStateOf(prompt?.let { loadDraft(ctx, it.taskId) } ?: "")
+    var text by rememberSaveable(taskId) {
+        mutableStateOf(taskId?.let { loadDraft(ctx, it) } ?: "")
     }
-    var savedAt by remember(prompt?.taskId) { mutableLongStateOf(prompt?.let { draftSavedAt(ctx, it.taskId) } ?: 0L) }
-    var mode by rememberSaveable { mutableStateOf(InputMode.Text.name) }
+    var savedAt by remember(taskId) { mutableLongStateOf(taskId?.let { draftSavedAt(ctx, it) } ?: 0L) }
+    // 提交时刻 > 0 即已提交。按「题 + 提交号」记：换了评测结果就是另一轮复述，旧锁不该延续。
+    var committedAt by remember(commitKey) {
+        mutableLongStateOf(commitKey?.let { prefs(ctx).getLong("commit_$it", 0L) } ?: 0L)
+    }
     var showHints by remember { mutableStateOf(false) }
-    val strokes = remember { mutableStateListOf<Stroke>() }
-    var padSize by remember { mutableStateOf(IntSize.Zero) }
-    var inkSaved by remember { mutableStateOf<String?>(null) }
-    var voiceNote by remember { mutableStateOf<String?>(null) }
-
-    val voiceAvailable = remember { VoiceInput.isAvailable(ctx) }
-    val voiceLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val heard = VoiceInput.firstResult(result.data)
-            if (heard == null) {
-                voiceNote = "没听清。再说一遍，或者切到文字补两笔。"
-            } else {
-                text = if (text.isBlank()) heard else text.trimEnd() + "\n" + heard
-                voiceNote = "已接在复述末尾。"
-            }
-        } else {
-            voiceNote = null
-        }
-    }
+    var askCommit by remember { mutableStateOf(false) }
+    val committed = committedAt > 0L
 
     LaunchedEffect(text) {
-        if (prompt == null || text.isBlank()) return@LaunchedEffect
+        if (prompt == null || committed || text.isBlank()) return@LaunchedEffect
         delay(600)
         saveDraft(ctx, prompt.taskId, text)
         savedAt = System.currentTimeMillis()
@@ -125,7 +107,14 @@ fun FeynmanScreen(
                 Spacer(Modifier.height(4.dp))
                 Text("费曼复述", style = TH1)
                 Spacer(Modifier.height(6.dp))
-                Text("先不看下面的对照，用大白话讲一遍；讲完再回来对。", style = TSmall)
+                Text(
+                    if (committed) {
+                        "复述已交，下面是对照材料——逐条看自己讲到了没有。"
+                    } else {
+                        "先不看对照，用大白话讲一遍。交上去之后才会解开对照。"
+                    },
+                    style = TSmall,
+                )
             }
         }
 
@@ -157,74 +146,74 @@ fun FeynmanScreen(
                 prompt = prompt,
                 text = text,
                 onTextChange = { text = it },
-                mode = InputMode.valueOf(mode),
-                onModeChange = { mode = it.name },
                 savedAt = savedAt,
+                committedAt = committedAt,
                 onOpenHints = { showHints = true },
+                onAskCommit = { askCommit = true },
                 ctx = ctx,
-                strokes = strokes,
-                onStrokeStart = { Stroke().also { strokes.add(it) } },
-                padSize = padSize,
-                onPadSize = { padSize = it },
-                inkSaved = inkSaved,
-                onClearInk = { strokes.clear(); inkSaved = null },
-                onSaveInk = {
-                    inkSaved = saveInkToPng(ctx, strokes, padSize.width, padSize.height)
-                },
-                voiceAvailable = voiceAvailable,
-                voiceNote = voiceNote,
-                onStartVoice = {
-                    voiceNote = null
-                    voiceLauncher.launch(VoiceInput.intent())
-                },
             )
         }
 
-        if (prompt.gaps.isNotEmpty()) item { GapCard(prompt) }
-        if (prompt.checks.isNotEmpty()) item { CheckCard(prompt) }
+        if (!committed) {
+            item { LockedCard() }
+        } else {
+            if (prompt.gaps.isNotEmpty()) item { GapCard(prompt) }
+            item {
+                SelfCheckCard(
+                    prompt = prompt,
+                    ctx = ctx,
+                    storeKey = commitKey.orEmpty(),
+                    committedText = text,
+                )
+            }
+        }
+
         item { SourceCard(prompt) }
     }
 
+    if (askCommit && prompt != null && !committed) {
+        CommitDialog(
+            text = text,
+            onDismiss = { askCommit = false },
+            onConfirm = {
+                val key = commitKey
+                if (key != null) {
+                    val now = System.currentTimeMillis()
+                    prefs(ctx).edit()
+                        .putLong("commit_$key", now)
+                        .putString("commit_text_$key", text.trim())
+                        .apply()
+                    committedAt = now
+                }
+                askCommit = false
+            },
+        )
+    }
+
     if (showHints && prompt != null) {
-        HintSheet(prompt) { showHints = false }
+        HintSheet(prompt, unlocked = committed) { showHints = false }
     }
 }
 
-// ---------------------------------------------------------------- 输入方式
-
-private enum class InputMode(val label: String, val hint: String) {
-    Text("文字", "键盘输入，随时改"),
-    Voice("语音", "说一遍，系统转成文字"),
-    Ink("手写", "写或画，存成本地图片"),
-}
-
 /**
- * 复述卡：问题提纲 + 输入区 + 三种录入方式 + 草稿状态。
+ * 复述卡：三问提纲 + 输入区 + 草稿状态 + 提交。
  *
- * 「提示」放在卡右上而不是页尾：卡住发生在写的过程中，让人先滚到底再滚回来，
- * 等于逼他把刚想到的半句丢掉。
+ * 「提交复述」放在输入框**上方**，与草稿状态同一行。原因很实在：2026-11-20 实测，
+ * 软键盘弹起后输入框下方的可操作项会被压住（见 docs/android-ui-handoff.md §9），
+ * 而"我写的东西有没有存住""现在能不能交"正是键盘打开时最想知道的两件事。
  */
 @Composable
 private fun RecallCard(
     prompt: FeynmanPrompt,
     text: String,
     onTextChange: (String) -> Unit,
-    mode: InputMode,
-    onModeChange: (InputMode) -> Unit,
     savedAt: Long,
+    committedAt: Long,
     onOpenHints: () -> Unit,
+    onAskCommit: () -> Unit,
     ctx: Context,
-    strokes: List<Stroke>,
-    onStrokeStart: () -> Stroke,
-    padSize: IntSize,
-    onPadSize: (IntSize) -> Unit,
-    inkSaved: String?,
-    onClearInk: () -> Unit,
-    onSaveInk: () -> Unit,
-    voiceAvailable: Boolean,
-    voiceNote: String?,
-    onStartVoice: () -> Unit,
 ) {
+    val committed = committedAt > 0L
     SurfaceCard {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("复述", style = TEyebrow)
@@ -246,35 +235,28 @@ private fun RecallCard(
 
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("输入方式", style = TMicro)
-            Spacer(Modifier.width(8.dp))
-            ModePicker(mode, onModeChange)
-            Spacer(Modifier.weight(1f))
-            Text("${text.length} 字", style = TMicro)
-        }
-
-        Spacer(Modifier.height(8.dp))
-        // 草稿状态与「复制全文」放在输入框**上方**，不是下方。
-        // 原因很实在：2026-11-20 实测，软键盘弹起后这两项被压在键盘底下（见 docs/android-ui-handoff.md §9），
-        // 而它们一个是「我写的东西有没有存住」、一个是「我要把这段话拿出去」——恰恰是键盘打开时最想看到的。
-        // 把可操作项移到输入框上方，不依赖 insets 是否分派正确；下面的说明文字被遮住无所谓。
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (savedAt > 0) "草稿已存 · ${clock(savedAt)}" else "还没有草稿",
+                when {
+                    committed -> "已提交 · ${clock(committedAt)} · ${text.trim().length} 字"
+                    savedAt > 0 -> "草稿已存 · ${clock(savedAt)}"
+                    else -> "还没有草稿"
+                },
                 style = TMicro,
             )
             Spacer(Modifier.weight(1f))
-            PillButton("复制全文", {
-                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("费曼复述", copyPayload(prompt, text)))
-            })
+            if (committed) {
+                PillButton("已锁定", {}, tone = Ink3)
+            } else {
+                PillButton("提交复述", onAskCommit, tone = Brand)
+            }
         }
 
         Spacer(Modifier.height(8.dp))
         BasicTextField(
             value = text,
             onValueChange = onTextChange,
-            textStyle = TBody.copy(color = Ink),
+            readOnly = committed,
+            textStyle = TBody.copy(color = if (committed) Ink2 else Ink),
             cursorBrush = SolidColor(Brand),
             modifier = Modifier.fillMaxWidth().heightIn(min = 132.dp),
             decorationBox = { inner ->
@@ -282,7 +264,7 @@ private fun RecallCard(
                     Modifier
                         .fillMaxWidth()
                         .clip(InnerShape)
-                        .background(LineSoft)
+                        .background(if (committed) CardBg else LineSoft)
                         .padding(12.dp),
                 ) {
                     if (text.isEmpty()) {
@@ -297,130 +279,62 @@ private fun RecallCard(
             },
         )
 
-        when (mode) {
-            InputMode.Voice -> VoicePanel(voiceAvailable, voiceNote, onStartVoice)
-            InputMode.Ink -> InkPanel(
-                strokes = strokes,
-                onStrokeStart = onStrokeStart,
-                onSizeChanged = onPadSize,
-                savedName = inkSaved,
-                onClear = onClearInk,
-                onSave = onSaveInk,
-            )
-            InputMode.Text -> Unit
-        }
-
         Spacer(Modifier.height(10.dp))
         Text(
-            "草稿存在本机，不联网；这一页不打分——讲得对不对，由你自己对照上面的证据。",
+            if (committed) {
+                "提交后这段不再改动。草稿存在本机，不联网；这一页不打分——对不对由你对照下面的清单自己判。"
+            } else {
+                "草稿存在本机，不联网。提交之前看不到对照材料，这是这一页的规矩，不是故障。"
+            },
+            style = TMicro,
+        )
+    }
+}
+
+/** 提交前的对照占位：说明为什么锁着，别让人以为是加载失败。 */
+@Composable
+private fun LockedCard() {
+    SurfaceCard {
+        Text("对照区已锁", style = TEyebrow)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "交上去之后才会出现：这次没过的断言、期望和实际的差、错法解释。",
+            style = TSmall,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "先看答案再讲，这一页就只剩抄写。真想提前看，点右上角「提示」——那里只给题目要几步，答案仍锁着。",
             style = TMicro,
         )
     }
 }
 
 @Composable
-private fun ModePicker(mode: InputMode, onChange: (InputMode) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            Modifier
-                .clip(PillShape)
-                .background(Brand.copy(alpha = 0.08f))
-                .clickable { expanded = true }
-                .padding(horizontal = 10.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(mode.label, fontSize = 12.sp, color = Brand, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.width(4.dp))
-            Text("▾", fontSize = 11.sp, color = Brand)
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            InputMode.values().forEach { item ->
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(
-                                item.label,
-                                fontSize = 13.sp,
-                                color = if (item == mode) Brand else Ink,
-                                fontWeight = if (item == mode) FontWeight.SemiBold else FontWeight.Normal,
-                            )
-                            Text(item.hint, style = TMicro)
-                        }
-                    },
-                    onClick = {
-                        onChange(item)
-                        expanded = false
-                    },
-                )
+private fun CommitDialog(text: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CardBg,
+        title = { Text("提交这段复述？", style = TH2) },
+        text = {
+            Column {
+                Text("交上去之后正文不能再改，对照材料会立刻解锁。", style = TSmall)
+                Spacer(Modifier.height(6.dp))
+                if (text.isBlank()) {
+                    Text("现在还是空的——空着交也行，但这次复述就没内容可对照了。", style = TSmall, color = Warn)
+                } else {
+                    Text("当前 ${text.trim().length} 字。", style = TMicro)
+                }
             }
-        }
-    }
-}
-
-/** 语音面板：先判断本机有没有识别服务，没有就直说，不给死按钮。 */
-@Composable
-private fun VoicePanel(available: Boolean, note: String?, onStart: () -> Unit) {
-    Spacer(Modifier.height(10.dp))
-    if (!available) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(InnerShape)
-                .background(Warn.copy(alpha = 0.07f))
-                .padding(12.dp),
-        ) {
-            Text("这台设备没有语音识别服务", fontSize = 12.5.sp, color = Warn, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "系统没装识别器（模拟器常见）。切到文字或手写，一样能完成复述；" +
-                    "手机上装了语音服务时这里会出现「开始说」。",
-                style = TMicro,
-            )
-        }
-        return
-    }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(InnerShape)
-            .background(Brand.copy(alpha = 0.07f))
-            .clickable(onClick = onStart)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("开始说", fontSize = 13.sp, color = Brand, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.width(10.dp))
-        Text("说完回来，文字接在复述末尾", style = TMicro)
-    }
-    note?.let {
-        Spacer(Modifier.height(6.dp))
-        Text(it, style = TMicro, color = Ink2)
-    }
-}
-
-/** 手写面板：画板 + 清空 + 存图。文案必须写明「不自动转文字」。 */
-@Composable
-private fun InkPanel(
-    strokes: List<Stroke>,
-    onStrokeStart: () -> Stroke,
-    onSizeChanged: (IntSize) -> Unit,
-    savedName: String?,
-    onClear: () -> Unit,
-    onSave: () -> Unit,
-) {
-    Spacer(Modifier.height(10.dp))
-    InkPad(strokes = strokes, onStrokeStart = onStrokeStart, onSizeChanged = onSizeChanged)
-    Spacer(Modifier.height(8.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        PillButton("存为图片", onSave, tone = Brand)
-        Spacer(Modifier.width(8.dp))
-        PillButton("清空", onClear, tone = Ink2)
-        Spacer(Modifier.weight(1f))
-        Text(if (savedName == null) "${strokes.size} 笔" else "已存 $savedName", style = TMicro)
-    }
-    Spacer(Modifier.height(6.dp))
-    Text("手写只存笔迹，不会自动转成文字：识别要么联网，要么塞一个离线模型，两条都不划算。", style = TMicro)
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(if (text.isBlank()) "空着交" else "提交并解锁", color = Brand, fontWeight = FontWeight.Medium)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("再想想", color = Ink2) }
+        },
+    )
 }
 
 // ---------------------------------------------------------------- 对照
@@ -450,43 +364,98 @@ private fun GapCard(prompt: FeynmanPrompt) {
     }
 }
 
-/** 对照卡：期望 vs 实际 + 现场。勾选只存本地。 */
+/**
+ * 自查清单：提交后才有。
+ *
+ * 两组：`step` 来自任务自述的编号步骤（逐字），`missed` 来自报告里没过的那几条。
+ * 勾选是**给用户自己看的记号**，写在本机 prefs，不进掌握度、不上传——
+ * 自评校准度没有验证过，拿它抬分数就是给判分层塞未仲裁的噪声。
+ */
 @Composable
-private fun CheckCard(prompt: FeynmanPrompt) {
-    val ticks = remember { mutableStateMapOf<String, Boolean>() }
+private fun SelfCheckCard(
+    prompt: FeynmanPrompt,
+    ctx: Context,
+    storeKey: String,
+    committedText: String,
+) {
+    val ticks = remember(storeKey) {
+        mutableStateMapOf<String, Boolean>().apply {
+            if (storeKey.isNotEmpty()) putAll(loadSelfCheck(ctx, storeKey))
+        }
+    }
+    val steps = prompt.checklist.filter { it.kind == "step" }
+    val misses = prompt.checklist.filter { it.kind != "step" }
+    val ticked = ticks.count { it.value }
+
     SurfaceCard {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("讲完对照", style = TEyebrow)
+            Text("对照清单", style = TEyebrow)
             Spacer(Modifier.weight(1f))
-            Text("共 ${prompt.checks.size} 条", style = TMicro)
+            Text("已勾 $ticked / ${prompt.checklist.size}", style = TMicro)
+        }
+
+        if (steps.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text("这题该说到这几步", style = TH2)
+            Spacer(Modifier.height(6.dp))
+            steps.forEach { item -> ChecklistRow(item, ticks[item.key] == true) {
+                ticks[item.key] = !(ticks[item.key] ?: false)
+                if (storeKey.isNotEmpty()) saveSelfCheck(ctx, storeKey, ticks)
+            } }
+        }
+
+        if (misses.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text("这次没说对的", style = TH2)
+            Spacer(Modifier.height(6.dp))
+            misses.forEach { item -> ChecklistRow(item, ticks[item.key] == true) {
+                ticks[item.key] = !(ticks[item.key] ?: false)
+                if (storeKey.isNotEmpty()) saveSelfCheck(ctx, storeKey, ticks)
+            } }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            PillButton("复制复述与自评", {
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(
+                    ClipData.newPlainText(
+                        "费曼复述",
+                        copyPayload(prompt, committedText, ticks.toMap()),
+                    ),
+                )
+            })
+            Spacer(Modifier.weight(1f))
+            Text("只存本机", style = TMicro)
         }
         Spacer(Modifier.height(8.dp))
-        prompt.checks.forEachIndexed { index, check ->
-            if (index > 0) Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.Top) {
-                TickBox(ticks[check.assertionId] == true) {
-                    ticks[check.assertionId] = !(ticks[check.assertionId] ?: false)
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(check.assertionId, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Ink)
-                    check.diffs.forEach { d ->
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            "${d.field}：期望 ${d.expected}，实际 ${d.actual}",
-                            style = TSmall,
-                            color = Fail,
-                        )
-                    }
-                    check.scene.forEach { line ->
-                        Spacer(Modifier.height(3.dp))
-                        Text(line, style = TMicro)
-                    }
-                }
+        Text(
+            "勾选不给分、不进掌握度：它是你留给自己的记号。" +
+                "自评准不准没有验证过，拿它抬成绩等于往判分里掺噪声。",
+            style = TMicro,
+        )
+    }
+}
+
+@Composable
+private fun ChecklistRow(item: FeynmanChecklistItem, checked: Boolean, onToggle: () -> Unit) {
+    Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.Top) {
+        TickBox(checked, onToggle)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                item.text,
+                style = if (item.kind == "step") TSmall else TSmall.copy(color = Ink),
+            )
+            item.diffs.forEach { d ->
+                Spacer(Modifier.height(3.dp))
+                Text("${d.field}：期望 ${d.expected}，实际 ${d.actual}", style = TMicro, color = Fail)
+            }
+            if (item.kind != "step" && item.diffs.isEmpty()) {
+                Spacer(Modifier.height(3.dp))
+                Text("报告没给期望/实际，只有这一条断言没过。", style = TMicro)
             }
         }
-        Spacer(Modifier.height(10.dp))
-        Text("勾选只记在本页，不做判定：这些句子是让你对照自己刚才讲的话，不是给你打分。", style = TMicro)
     }
 }
 
@@ -507,10 +476,16 @@ private fun SourceCard(prompt: FeynmanPrompt) {
 
 // ---------------------------------------------------------------- 提示弹层
 
-/** 提示：用户说"卡住了"才展开，展开的每一行都来自数据包，页面不补解释。 */
+/**
+ * 提示：用户说"卡住了"才展开，展开的每一行都来自数据包，页面不补解释。
+ *
+ * 提交前只放「题目到底要几步」——题干本来就写着这几点，看它不算看答案。
+ * 期望/实际、错法解释、现场描述都直接给出结论，必须等到提交之后。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HintSheet(prompt: FeynmanPrompt, onDismiss: () -> Unit) {
+private fun HintSheet(prompt: FeynmanPrompt, unlocked: Boolean, onDismiss: () -> Unit) {
+    val visible = if (unlocked) prompt.hints else prompt.hints.filter { it.key == "asks" }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
         Column(
             Modifier
@@ -520,8 +495,15 @@ private fun HintSheet(prompt: FeynmanPrompt, onDismiss: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text("卡住了就点一条", style = TH2)
-            Text("下面全部是这次评测已经产出的内容，不是我临时想的提示。", style = TMicro)
-            prompt.hints.forEach { hint -> HintRow(hint) }
+            Text(
+                if (unlocked) "下面全部是这次评测已经产出的内容，不是我临时想的提示。"
+                else "提交前只给「题目要几步」——其余几条直接给答案，得等你交上来。",
+                style = TMicro,
+            )
+            visible.forEach { hint -> HintRow(hint) }
+            if (!unlocked) {
+                Text("还有 ${prompt.hints.size - visible.size} 条锁着：期望和实际、错法解释、当时现场。", style = TMicro)
+            }
         }
     }
 }
@@ -566,8 +548,15 @@ private fun PillButton(label: String, onClick: () -> Unit, tone: androidx.compos
     }
 }
 
-/** 复制给外部 AI 的整段文本：问题 + 我的复述 + 对照材料，粘过去就能让人评。 */
-private fun copyPayload(prompt: FeynmanPrompt, text: String): String {
+/**
+ * 复制给外部 AI 的整段文本：问题 + 我的复述 + 对照材料 + 自评勾选。
+ * 自评一起带出去，是因为"勾了哪几条"本身就是判断复述质量的材料。
+ */
+private fun copyPayload(
+    prompt: FeynmanPrompt,
+    text: String,
+    ticks: Map<String, Boolean>,
+): String {
     val sb = StringBuilder()
     sb.append("费曼复述 · ").append(prompt.taskId).append('\n')
     prompt.questions.forEachIndexed { index, q ->
@@ -584,6 +573,11 @@ private fun copyPayload(prompt: FeynmanPrompt, text: String): String {
             }
             sb.append('\n')
         }
+    }
+    val checked = prompt.checklist.filter { ticks[it.key] == true }
+    if (checked.isNotEmpty()) {
+        sb.append("\n我自查时勾了这些：\n")
+        checked.forEach { sb.append("- ").append(it.text).append('\n') }
     }
     return sb.toString()
 }
@@ -606,5 +600,24 @@ private fun saveDraft(ctx: Context, taskId: String, text: String) {
     prefs(ctx).edit()
         .putString("text_$taskId", text)
         .putLong("at_$taskId", System.currentTimeMillis())
+        .apply()
+}
+
+// 自评：`id:1;id:0` 这种最笨的格式。条目 id 只有字母数字下划线和短横，分隔符不会撞。
+private fun loadSelfCheck(ctx: Context, key: String): Map<String, Boolean> =
+    prefs(ctx).getString("selfcheck_$key", "").orEmpty()
+        .split(';')
+        .mapNotNull { seg ->
+            val cut = seg.lastIndexOf(':')
+            if (cut <= 0) null else seg.substring(0, cut) to (seg.substring(cut + 1) == "1")
+        }
+        .toMap()
+
+private fun saveSelfCheck(ctx: Context, key: String, ticks: Map<String, Boolean>) {
+    prefs(ctx).edit()
+        .putString(
+            "selfcheck_$key",
+            ticks.entries.joinToString(";") { "${it.key}:${if (it.value) 1 else 0}" },
+        )
         .apply()
 }

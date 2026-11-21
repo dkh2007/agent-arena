@@ -219,3 +219,51 @@ def test_serialized_prompt_has_no_stray_markdown(prompt):
     text = json.dumps(prompt, ensure_ascii=False)
     for token in ("```", "## ", "]("):
         assert token not in text
+
+
+# --- 提交后解锁的自查清单（2026-11-21 人拍板：先交后给答案）-----------------------
+
+def test_checklist_steps_are_verbatim_from_task(prompt, task):
+    """「该说哪几步」必须逐字等于任务自述的编号条目，不许在这一层改写。"""
+    steps = [item for item in prompt["checklist"] if item["kind"] == "step"]
+    assert [item["text"] for item in steps] == asks_of(task)
+    assert steps, "没有步骤就不该有清单主干——空清单等于页面假装自查过了"
+
+
+def test_checklist_missed_text_is_verbatim_from_report(prompt, report):
+    """「哪里说漏了」用报告里那句人话原文；报告没写就只留断言 id，不代写解释。"""
+    misses = [item for item in prompt["checklist"] if item["kind"] == "missed"]
+    by_key = {item["key"]: item for item in misses}
+    noted = [a for a in report["assertions"] if a.get("state") != "pass" and (a.get("note") or "").strip()]
+    bare = [a for a in report["assertions"] if a.get("state") != "pass" and not (a.get("note") or "").strip()]
+    assert noted, "这份样例报告至少要有一条带 note 的失败项，否则这条测试测不到东西"
+    for assertion in noted:
+        assert by_key[assertion["id"]]["text"] == assertion["note"].strip()
+    for assertion in bare:
+        assert by_key[assertion["id"]]["text"] == assertion["id"], "没有 note 时不许替它写一句解释"
+
+
+def test_checklist_missed_diffs_match_the_outer_checks(prompt):
+    """清单里的期望/实际与外层 checks 是同一份数据，不许各存一份。"""
+    outer = {check["assertion_id"]: check["diffs"] for check in prompt["checks"]}
+    for item in prompt["checklist"]:
+        if item["kind"] == "missed":
+            assert item["diffs"] == outer[item["key"]]
+
+
+def test_checklist_puts_steps_before_misses(prompt):
+    """先「该说什么」再「哪里说漏了」：顺序反了会变成一上来先看答案。"""
+    kinds = [item["kind"] for item in prompt["checklist"]]
+    assert kinds == sorted(kinds, key=lambda k: 0 if k == "step" else 1)
+
+
+def test_clean_report_has_no_missed_items(report, task):
+    """全过的时候清单只剩步骤：没有漏项就别造出「你漏了」这一栏。"""
+    clean = json.loads(json.dumps(report))
+    for assertion in clean["assertions"]:
+        assertion["state"] = "pass"
+    clean["skill_gaps"] = []
+    for assertion in clean["assertions"]:
+        assertion.pop("note", None)
+    built = build_prompt(clean, task)
+    assert [item["kind"] for item in built["checklist"]] == ["step"] * len(built["asks"])

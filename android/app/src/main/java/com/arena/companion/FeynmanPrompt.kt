@@ -33,6 +33,19 @@ data class FeynmanCheck(
 
 data class FeynmanHint(val key: String, val label: String, val lines: List<String>)
 
+/**
+ * 提交后才解锁的自查项。
+ *
+ * `kind` 只有两种：`step`（任务自述的编号步骤，逐字）与 `missed`（报告里没过的那几条）。
+ * 页面靠它决定分行样式，不靠文案猜——文案改一个字不该改动分组。
+ */
+data class FeynmanChecklistItem(
+    val key: String,
+    val kind: String,
+    val text: String,
+    val diffs: List<FeynmanDiff>,
+)
+
 data class FeynmanPrompt(
     val taskId: String,
     val submissionId: String?,
@@ -41,6 +54,7 @@ data class FeynmanPrompt(
     val questions: List<FeynmanQuestion>,
     val gaps: List<FeynmanGap>,
     val checks: List<FeynmanCheck>,
+    val checklist: List<FeynmanChecklistItem>,
     val hints: List<FeynmanHint>,
     val sourceNote: String,
 )
@@ -86,6 +100,20 @@ fun parseFeynmanPrompt(text: String): FeynmanPrompt {
                     )
                 },
                 scene = o.optJSONArray("scene").toStringList(),
+            )
+        },
+        checklist = root.optJSONArray("checklist").mapObjects { o ->
+            FeynmanChecklistItem(
+                key = o.optString("key"),
+                kind = o.optString("kind"),
+                text = o.optString("text"),
+                diffs = o.optJSONArray("diffs").mapObjects { d ->
+                    FeynmanDiff(
+                        field = fieldLabel(d.optString("field")),
+                        expected = d.optString("expected"),
+                        actual = d.optString("actual"),
+                    )
+                },
             )
         },
         hints = root.optJSONArray("hints").mapObjects { o ->

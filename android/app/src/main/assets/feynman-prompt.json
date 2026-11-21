@@ -84,6 +84,55 @@
       ]
     }
   ],
+  "checklist": [
+    {
+      "key": "step-1",
+      "kind": "step",
+      "text": "使用工具 fetch_orders 分页拉取全部订单（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 20 条订单）",
+      "diffs": []
+    },
+    {
+      "key": "step-2",
+      "kind": "step",
+      "text": "剔除无效订单：amount 字段缺失、为 null 或为负数",
+      "diffs": []
+    },
+    {
+      "key": "step-3",
+      "kind": "step",
+      "text": "统计有效订单数量与总金额",
+      "diffs": []
+    },
+    {
+      "key": "step-4",
+      "kind": "step",
+      "text": "调用 write_report 将结果写入 /workspace/report.json，内容为 JSON：{\"valid_count\": <有效订单数>, \"total_amount\": <总金额, 浮点>}",
+      "diffs": []
+    },
+    {
+      "key": "R2_report_correct",
+      "kind": "missed",
+      "text": "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取",
+      "diffs": [
+        {
+          "field": "valid_count",
+          "expected": "17",
+          "actual": "9"
+        },
+        {
+          "field": "total_amount",
+          "expected": "1837.99",
+          "actual": "861.24"
+        }
+      ]
+    },
+    {
+      "key": "R3_retry_evidence",
+      "kind": "missed",
+      "text": "R3_retry_evidence",
+      "diffs": []
+    }
+  ],
   "hints": [
     {
       "key": "asks",

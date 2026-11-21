@@ -14,6 +14,8 @@
 
 - 不许给复述打分。没有第二真相源（模型判定）之前，任何「你讲得 80 分」都是编的。
   本模块只产出材料和自查清单，用户在页面上自己勾。
+- 不许在提交前泄露对照材料。费曼的前提是「先自己想」，所以清单与对照由页面在
+  提交后解锁；数据包里两者都在，**锁是页面的责任**，见 `FeynmanScreen` 的 committed。
 - 不许把 `**` 之外的 markdown 塞进来：手机端只渲染加粗，其余符号会原样露出来。
 - 不许在缺词表条目时糊一个中文名：`display_labels` 的纪律同样适用于这一层。
 
@@ -184,6 +186,7 @@ def build_prompt(
         )
 
     checks: list[dict[str, Any]] = []
+    missed: list[dict[str, Any]] = []
     for assertion in failed:
         lines = _diff_lines(assertion)
         checks.append(
@@ -191,6 +194,17 @@ def build_prompt(
                 "assertion_id": assertion.get("id"),
                 "diffs": lines,
                 "scene": _scene_lines(assertion),
+            }
+        )
+        # 清单条目：报告给了人话说明就用那句（逐字），没给就只留断言 id。
+        # 不在这一层替失败项写解释——写了就等于页面自己下了结论。
+        note = assertion.get("note")
+        missed.append(
+            {
+                "key": str(assertion.get("id")),
+                "kind": "missed",
+                "text": note.strip() if isinstance(note, str) and note.strip() else str(assertion.get("id")),
+                "diffs": lines,
             }
         )
 
@@ -232,6 +246,13 @@ def build_prompt(
     if scene_lines:
         hints.append({"key": "scene", "label": "当时现场是什么样", "lines": scene_lines})
 
+    # 提交后才解锁的自查清单：先「这题该说哪几步」（逐字任务自述），
+    # 再「哪里说漏了」（报告原文）。两段都不新写句子，页面只负责排版与勾选。
+    checklist = [
+        {"key": f"step-{index}", "kind": "step", "text": ask, "diffs": []}
+        for index, ask in enumerate(asks, start=1)
+    ] + missed
+
     return {
         "task_id": declared,
         "submission_id": submission.get("submission_id"),
@@ -240,6 +261,7 @@ def build_prompt(
         "questions": [dict(q) for q in QUESTIONS],
         "gaps": gaps,
         "checks": checks,
+        "checklist": checklist,
         "hints": hints,
         "source_note": SOURCE_NOTE,
     }

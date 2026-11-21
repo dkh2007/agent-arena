@@ -5,14 +5,9 @@
          当前页面只读内置样例，不发任何请求（见 ReportScreen.kt）。 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Android 11+ 包可见性：不声明这条，SpeechRecognizer.isRecognitionAvailable 在
-         部分机型上会恒返回 false，语音入口明明可用却显示"没有识别服务"。
-         只声明识别服务这一个 intent，不整包可见。 -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-    </queries>
+    <!-- 2026-11-21 移除 `android.speech.RecognitionService` 的 <queries> 声明：
+         语音输入整条链已删（只在模拟器验过，真机未验），留一条用不上的可见性声明
+         等于给下一个人留一个"这里好像在用什么"的误会。 -->
 
     <application
         android:allowBackup="false"
