@@ -4,6 +4,21 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-21（**外部评审回件核证：两条采纳进本清单，两条事实被否**。
+> 核证全文 `external-review-20261121-disposition.md`。新增：
+> **B-26 仲裁门控**——judge 双评分歧时，报告现在照常落库并计入掌握度（`submission_api.py`
+> 只在落库后 `record_arbitration` 入队，没有把 P 挡住）。**硬触发**：一旦真的开启双评
+> （`judge`+`arbitration_threshold` 同时给）之前必须先做，否则未仲裁证据直接推动状态。
+> 今天不受影响：judge 默认关、HTTP 端点不跑 judge、12 个任务 0 条 llm 类断言。
+> **B-27 确定性脱困规则**——`training.next_in_family()` 只找 `difficulty+1`，没有降档、
+> 没有连败计数，用户卡在某档就是死循环。做法取 mastery learning 的路数（连败 K 次 ⇒
+> 降一档巩固 / 同档换变体 + 针对错误模式定向练），理由必须可追到词表；bandit 不在本轮。
+> 被否的两条：①"L3 有两套遗忘模型会打架"——`decay.py` 借的就是 FSRS 的 `R(t,S)`，
+> `scheduler.py:55` 明写不衰减 P，全仓只有一条遗忘曲线；②"缺失被当成正证据"——
+> `skill_evidence()` 里 blocked/unscored/零权重一律进 `ignored`，从不相加。
+> 另有 `scripts/param_sensitivity.py` 实测：λ∈[0.1,1.0] 与衰减 1~90 天内，
+> 演示数据上技能排序**一次没翻**（只说明机制，不能推广——3 个技能太少）。
+>
 > 更新：2026-11-18（round-110：**B-20a 的「声明式推导规则」落地——缺项从两样变一样**。
 > ① `src/arena/derivation.py` + 母本 YAML 的 `derivation:` 块（9 个变体经 `base_task` 继承）：
 >    「哪些行算有效」（`not_null` / `gte|lte|eq`）、「怎么聚合」（`count` / `sum`）现在是**可执行的**，
