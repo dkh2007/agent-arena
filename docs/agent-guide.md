@@ -128,6 +128,11 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 5. **环境**：本机 `python` 可能不带 pytest，用带 pytest 的解释器；包未安装，命令前加 `PYTHONPATH=src`
    （Windows 下设 `$env:PYTHONPATH="src"`）；`verify.bat` 已改自动探测，不要写死解释器路径。
 6. 更多真实教训（声明无执行者、快照测试同引用假绿、守卫被遮挡）见 `docs/COLLABORATION.md` §8.4。
+7. **新增文件的名字也要过闸门**：`push_gate` 按**子串**匹配几类常见密钥前缀（OpenAI 的 `sk` 后接连字符、
+   GitHub 三种 token 前缀、密码赋值、HTTP 认证头、私钥首行标记）。**完整清单看
+   `scripts/push_gate.py` 的 `SECRET_PREFIXES`，不要抄进文档**——抄进来文档自己就会被判 `SECRET`。
+   本轮原拟名把 `ta` + `sk` + 连字符 + `authoring` 拼在一起，正好命中，改成 `authoring-tasks.md` 才过。
+   **处置是改文件名，不是改闸门**：为命名方便放宽密钥检查，等于把唯一的外泄防线拆了。
 
 ## 8. 对本 Agent 的工作方式要求
 
@@ -174,6 +179,7 @@ git rev-list --count HEAD
 | 报告字段定义 | `docs/diagnosis-report-schema.md` |
 | 执行器语义 | `docs/executor-semantics.md` |
 | 用户可见文案 | `docs/copy-inventory.md` |
+| **加一道题 / 改一道题** | **`docs/authoring-tasks.md`**（结构约束、要同步的硬编码、验收命令、锁得住/锁不住） |
 | 测试证据档案 | `docs/test-evidence/INDEX.md` |
 | 历轮外评与处置 | `docs/external-review-*.md`（disposition 是结论，question 是输入） |
 | 架构自包含说明 | `docs/architecture-for-review.md` |
