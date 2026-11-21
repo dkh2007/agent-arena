@@ -193,9 +193,34 @@ Compose BOM `2024.09.00`，AGP 8.7.3。**没有任何第三方 UI 库和网络�
 4. `MainActivity.kt` 的三页状态机里加一个分支与入口（仍不引导航组件）。
 5. 编译 + 截图 + 按第 7 节对账；截图存 `docs/images/`，文件名以页面开头（如 `feynman-*.png`）。
 
+## 6.5 改文案：先查总表，改完重生成
+
+页面上的字有两个来源，改错地方会白改：
+
+| 来源 | 例子 | 改完还要做什么 |
+|---|---|---|
+| `FeynmanScreen.kt` 等 Kotlin 文件 | 「对照区已锁」「提交复述」 | 重新编译 + 重装 |
+| `src/arena/feynman.py` 里的常量 | 三问提纲、提示条标题、`source_note` | 重新生成 `assets/feynman-prompt.json`，**再**编译 |
+
+`docs/copy-inventory.md` 是全部 153 条文案的总表（`文件:行` 定位），**由脚本生成，不许手改**：
+
+```bash
+python scripts/copy_inventory.py          # 改了文案后重生成
+python scripts/copy_inventory.py --check  # 只校验，不同步时退出 1
+```
+
+改了文案不重生成表，`pytest tests/test_copy_inventory.py` 会红——这条测试存在的理由就是
+防止表变成错的第二真相源。表里「命令行」那一类是 argparse 的 help，改了不影响 APK。
+
+**注意生效边界**：文案都随 APK 编译，改完必须重新编译重装，没有"改完就生效"这条路
+（要热更新就得运行时联网读，与本项目「不发网络请求」的纪律冲突）。
+
 ## 7. 验收（每次改完必做）
 
 ```bash
+# 动过任何一句用户可见文案（含 feynman.py 的常量）就必须跑这条：
+python scripts/copy_inventory.py --check   # 必须输出「一致」并退出 0
+
 cd android
 ./gradlew assembleDebug          # 必须 BUILD SUCCESSFUL
 adb connect 127.0.0.1:5555       # 模拟器 AVD arena35
