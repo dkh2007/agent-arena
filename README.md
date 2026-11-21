@@ -27,13 +27,13 @@ copy .env.example .env        # 填入 API key，勿提交 .env
 
 **给 AI Agent 的开工上下文先读 `docs/agent-guide.md`**（硬口径、已否决的外部建议、已知坑、当前该干什么）。
 
-见 `docs/COLLABORATION.md`（协作规范 v2）：小步迭代，一步一验，main 受保护，feat/* 短命分支 + PR。
+见 `docs/COLLABORATION.md`（协作规范 v2）：小步迭代，一步一验；`feat/*` 短命分支 + PR 是**两人协作期**的流程。
 两人协作的分支/提交/合并/验收规则、文件所有权表、AI 代码质量清单都在那里；开 PR 时模板会自动带出验收清单。
 交接说明见 `HANDOFF.md`，润色范围见 `docs/peer-brief-mvp-polish.md`。
 
-> **与现实不符的一条（已登记，待人拍）**：上面"main 受保护、只经 PR"是两人协作期的约定；
-> 单人维护期实际是直推 main（截至 2026-11-21：148 提交、零合并提交、直推成功 ⇒ 无分支保护）。
-> 待拍期间按现状直推，但闸门必须绿（`PUSH_GATE=CLEAN` + 全量测试绿）。详见 `docs/BACKLOG.md` B-29。
+> **分支口径（2026-11-21 人拍板，B-29）**：现在是**单人维护 + AI 协作**，`main` **直推**，
+> 前置条件是**闸门绿**——全量测试绿 + `PUSH_GATE=CLEAN` 才允许推；不 force push、不改写已推送历史。
+> 出现第二个真人提交者时，立刻打开 `COLLABORATION` §1 的分支保护、回到「只经 PR」。详见 `docs/BACKLOG.md` B-29。
 
 ## 测试证据（评委/评审可直接复核）
 
