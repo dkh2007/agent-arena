@@ -775,3 +775,87 @@ def test_scorecard_shows_p_and_never_rank():
     for word in ("第 1 名", "第1名", "排名第", "名次"):
         assert word not in out, f"排名未开，输出里不该出现 {word!r}"
 
+
+
+# --- B-26：仲裁未出结果的提交不进重放（2026-11-21 人拍板）-------------------------
+
+def test_pending_arbitration_submission_does_not_lift_p(db):
+    """双评不一致、人还没裁决的那份，**不许**推动掌握度。
+
+    理由与 `voided` 同源：这份报告"算不算数"还没定，拿它改状态等于用未定论据。
+    区别是 `voided` 由判据定、这里由人定。锁三件事：P 不变、step 不增、提交行还在
+    （排除的是"进不进重放"，不是"删历史"）。
+    """
+    when = "2026-11-01T00:00:00+00:00"
+    store.save_submission(
+        db, _report("raw-perfect", submission_id="ar-1", at=when),
+        user_id=USER, created_at=when,
+    )
+    before = m.build_series(db, USER, FR)
+    assert before.p is not None and len(before.steps) == 1
+
+    store.save_arbitration_entry(
+        db, "ar-1", judge_agreement=0.2, threshold=0.8,
+        opened_at="2026-11-01T00:00:30+00:00",
+    )
+    pending = m.build_series(db, USER, FR)
+    assert pending.p is None, "未裁决的证据不许推动状态"
+    assert pending.steps == ()
+    assert len(store.list_submissions(db, user_id=USER)) == 1, "排除的是重放，不是删历史"
+
+
+def test_resolved_arbitration_restores_the_same_p(db):
+    """裁决完之后同一份提交自动回到重放，且 P 与裁决前**逐位相等**。
+
+    这条是"重放是纯函数"的现场检验：如果恢复后值变了，说明中间有东西记在状态里，
+    那"改判自动生效"这句话就不成立。
+    """
+    when = "2026-11-01T00:00:00+00:00"
+    store.save_submission(
+        db, _report("raw-perfect", submission_id="ar-2", at=when),
+        user_id=USER, created_at=when,
+    )
+    before = m.build_series(db, USER, FR).p
+    store.save_arbitration_entry(
+        db, "ar-2", judge_agreement=0.1, threshold=0.8,
+        opened_at="2026-11-01T00:00:30+00:00",
+    )
+    assert m.build_series(db, USER, FR).p is None
+
+    store.resolve_arbitration(
+        db, "ar-2", note="两张判分表逐字段核对后维持原判", at="2026-11-02T00:00:00+00:00",
+    )
+    assert m.build_series(db, USER, FR).p == before
+
+
+def test_no_model_judged_assertion_type_can_reach_mastery():
+    """B 口径的守门（2026-11-21 人拍板：不合格提交只计"机器判得死"的部分）。
+
+    现状是**没有过滤对象**：断言执行器里 0 处模型调用，未知类型直接抛
+    `NotImplementedError`，12 个任务的 60 条断言全是确定性类型（下面逐个核对）。
+    所以这条测试锁的不是"过滤对了"，而是"别在没人注意时把模型判定接进断言"——
+    一旦有人加 LLM 执行器，它会红，并在报错里说明必须先实现 B 口径过滤。
+    """
+    source = (ROOT / "src" / "arena" / "assertion_evaluator.py").read_text(encoding="utf-8").lower()
+    for token in ("llm", "openai", "deepseek", "anthropic", "gpt"):
+        assert token not in source, (
+            f"`assertion_evaluator` 出现 {token!r}：断言可能已由模型判定。"
+            "按 2026-11-21 拍板，不合格提交只计机器判定项，须先实现该过滤再改这条测试"
+        )
+
+    deterministic = {
+        "file_exists", "trace_final_status", "json_field_equals",
+        "trace_sequence", "trace_param_schema_valid",
+    }
+    from arena import diagnosis_report as _dr
+
+    seen: set[str] = set()
+    for path in sorted((ROOT / "tasks").glob("*.yaml")):
+        task = _dr.load_task(path)
+        for key in ("rubric_gate", "rubric_credit"):
+            for item in task.get(key) or []:
+                seen.add(item.get("type"))
+    assert seen <= deterministic, (
+        f"任务里出现了未登记的断言类型 {sorted(seen - deterministic)}——"
+        "要么它由模型判定（须先实现 B 口径过滤），要么是新的确定性类型（须在这里登记）"
+    )

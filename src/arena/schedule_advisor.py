@@ -707,7 +707,9 @@ def advise_from_store(
         return Advice(user_id=user_id, at=_iso(instant), cap=limit,
                       weights=tuple((n, FACTOR_WEIGHTS[n]) for n in FACTOR_ORDER))
 
-    reports = store.user_reports(conn, user_id)
+    # 与掌握度同一条口径（round-111 / B-26）：双评未裁决的提交既不进 P、也不进错误热度。
+    # 否则会出现"状态不敢用、推荐却敢用"的分叉——同一份未定证据，两边待遇不同。
+    reports = store.user_reports(conn, user_id, only_settled=True)
     p = _skill_mastery(conn, user_id, skills, reports)
     r, last = _retrievability(conn, user_id, skills, instant)
     counts = _error_counts(reports, store.pattern_skill_map(conn), at=instant,

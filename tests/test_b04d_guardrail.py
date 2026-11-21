@@ -261,11 +261,19 @@ def test_dismissed_queue_also_clears_the_marker(env):
 
 # ── 4. 甲那一半：成绩照算、复习照排（不许滑回乙）────────────────────────────
 
-def test_disputed_submission_still_counts_for_mastery_and_scheduling(env):
-    """争议提交照算 P、照排复习。**这条红了就说明实现滑回了乙**。
+def test_disputed_submission_does_not_lift_p_but_still_schedules(env):
+    """待裁决的争议提交**不推动 P**，但**照常排复习**（round-111 / B-26 反转本条）。
 
-    判据用"同一份夹具、同一个用户，一次带 judge 一次不带 judge，P 逐位相等"。
-    比 `is not None` 硬：后者在"P 被算成别的数"时仍然绿。
+    反转历史（照抄本仓规矩：反转而不是删除，理由留在原处）：
+    本条原先锁的是「争议提交照算 P、照排复习」，判据是"判据歧义不是学生的问题，
+    记账成本由平台承担"。2026-11-21 人拍板改口径——**仲裁没出结果的证据先不进掌握度**：
+    可信度还没定的报告不该拿去改状态。因为裁决完会自动恢复（重放是纯函数），
+    这是**延迟**而不是**丢失**，所以与原判据"不惩罚学生"并不冲突。
+
+    反转后仍保留两个判据，第二个特意留着防止"顺手一起改掉"：
+      ① `judged_p is None`——争议期间 P 不被这份证据推动；
+      ② 复习卡与复习项**与不带 judge 时逐字段相等**——排程不因争议而停。
+         少排一次复习才是真惩罚（学生什么也没做错，却少了一次练习机会）。
     """
     db = env["db"]
     registry = env["registry"]
@@ -290,9 +298,9 @@ def test_disputed_submission_still_counts_for_mastery_and_scheduling(env):
     plain_p, plain_rest = run("plain")
     judged_p, judged_rest = run("judged")
 
-    assert plain_p is not None and judged_p is not None
-    assert judged_p == plain_p, "judge 与队列状态不许动 P（决策 7：判据歧义不是学生的问题）"
-    assert judged_rest == plain_rest, "复习卡与复习项不许因为进队列而变"
+    assert plain_p is not None, "不带 judge 时必须正常算出 P，否则下面的对照没有意义"
+    assert judged_p is None, "待裁决的证据不许推动 P（B-26，2026-11-21 人拍板）"
+    assert judged_rest == plain_rest, "复习卡与复习项照常生成：争议不导致停排"
 
 
 # ── 5. 「能回溯」的前提：原始产物真的落库了 ─────────────────────────────────

@@ -871,13 +871,14 @@ def count_submissions(conn: sqlite3.Connection, user_id: str | None = None) -> i
     return int(conn.execute("SELECT COUNT(*) FROM submissions WHERE user_id = ?", (user_id,)).fetchone()[0])
 
 
-def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
+def user_reports(conn: sqlite3.Connection, user_id: str, *,
+                only_settled: bool = False) -> list[dict]:
     """该用户**全部**作答的**当前生效**报告，按 `created_at` 升序（round-80，B-07 的第一个读者）。
 
     与 `list_submissions` 的分工：那个是"看列表"（倒序、限条数、不带正文）；
     这个是"按时间重放"（正序、不限条数、带整份报告）。
 
-    五点刻意为之：
+    六点刻意为之：
     - **正序**：状态层要的是"从头往后折"，倒序交给调用方自己翻会诱导出"按列表位置当时间"。
     - **不限条数**：掌握度是累计量，截断等于悄悄少算历史；要限流该在调用方显式做。
     - **`created_at` 排序而不是 `evaluated_at`**：落库时前者已锚到后者，而补录时显式传入的值
@@ -888,7 +889,19 @@ def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
       要读当时那份用 `load_report()`。
     - **一份作答仍只有一行**：重评是在 `reappraisals` 链上追加，不是插新 submission，
       所以这里的行数 = 提交数，P 的 step 数不会因重评而变化。
+    - **`only_settled=True` 时排除仲裁未出结果的提交**（round-111 / B-26）：
+      双评不一致就说明"这份报告的可信度还没定"，让它推动掌握度等于用未定论据改状态。
+      状态**属于队列自己**（v3 刻意没给 `submissions` 加"待仲裁"列，避免第二真相源），
+      所以这里用 `NOT EXISTS` 现查队列，而不是抄一个布尔到提交行上。
+      裁决完（`resolve_arbitration`）之后同一份提交会自动重新进入重放——不需要补写任何东西。
     """
+    settled_filter = ""
+    if only_settled:
+        settled_filter = (
+            " AND NOT EXISTS (SELECT 1 FROM arbitration_queue q "
+            "                 WHERE q.submission_id = s.submission_id "
+            "                   AND q.status = 'pending')"
+        )
     rows = conn.execute(
         "SELECT s.submission_id, s.user_id, s.task_id, s.created_at, s.diagnosis, "
         "       r.report AS latest_report "
@@ -896,7 +909,7 @@ def user_reports(conn: sqlite3.Connection, user_id: str) -> list[dict]:
         "LEFT JOIN reappraisals r ON r.submission_id = s.submission_id "
         "     AND r.revision = (SELECT MAX(revision) FROM reappraisals "
         "                      WHERE submission_id = s.submission_id) "
-        "WHERE s.user_id = ? ORDER BY s.created_at ASC, s.submission_id ASC",
+        "WHERE s.user_id = ?" + settled_filter + " ORDER BY s.created_at ASC, s.submission_id ASC",
         (user_id,),
     ).fetchall()
     return [

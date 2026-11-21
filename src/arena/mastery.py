@@ -484,11 +484,15 @@ def _user_reports(conn: sqlite3.Connection, user_id: str) -> list[tuple[str, str
     `report` 是**当前生效**那份（重评过就是最新 revision）。这一点很关键：
     若这里读的是落库时那份，判据改完的"批量回溯重算"就会变成"库里记了一堆重评、
     成绩一分没动"——上一轮 §91.5 ② 记的正是这个缺口。
+
+    **只用「可信度已定」的提交**（round-111 / B-26）：双评分歧未裁决的那份不进重放。
+    理由与 `voided` 同源——"这次算不算数还没定"，不能拿来改状态；区别是 `voided` 是
+    判据定的，这里是人还没看。裁决完自动恢复，不需要补写任何字段。
     """
     from . import store  # 局部导入：与 submission_api 同惯例，避免模块级循环依赖
 
     out: list[tuple[str, str, dict]] = []
-    for row in store.user_reports(conn, user_id):
+    for row in store.user_reports(conn, user_id, only_settled=True):
         out.append((row["submission_id"], row["created_at"], row["report"]))
     return out
 
