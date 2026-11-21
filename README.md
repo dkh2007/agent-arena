@@ -46,7 +46,21 @@ python scripts/test_evidence.py      # 跑一遍 pytest，把结果写成档案
 
 档案由脚本生成、不手改；工作区有未提交改动时会显式标注「对应工作区状态而非干净提交树」。
 判定「干净」时排除 `docs/test-evidence/` 自身——否则每份档案都会因为「要写这份档案」而自称不干净。
-最近一次干净树运行：`1588 passed / 1588 total`，被测提交 `36468d6`（见 `INDEX.md`）。
+最近一次干净树运行：`1607 passed / 1607 total`，被测提交 `772b09a`（见 `INDEX.md`）。
+
+## 文案总表
+
+页面上每一句用户能看到的字都收在 `docs/copy-inventory.md`（153 条，带 `文件:行` 定位）。
+表由脚本从源码生成、**不许手改**——手改会让表和代码脱钩，变成错的第二真相源。
+
+```bash
+python scripts/copy_inventory.py          # 改过文案后重生成
+python scripts/copy_inventory.py --check  # 只校验；不同步时退出 1
+```
+
+`pytest tests/test_copy_inventory.py -q` 里还有两条额外的锁：一是**提取器不许静默空转**
+（扫到的条数少于阈值就红，否则空表对空文件也会「一致」），二是**页面不许出现评价性用词**
+（「不错」「加油」「满分」这类，那是「复述不判分」这条对外承诺的机器判据）。
 
 两点实话，免得复核时误会：
 
