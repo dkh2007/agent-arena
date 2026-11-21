@@ -1,0 +1,108 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+#
+# 扩题试点第 1 道（B-30，2026-11-21）：本题补的是任务矩阵里的一格空格——"页面上限紧"此前只出现在
+# param-surface 家族，而 retry-drill 三道题全是 page=10。这题把两个维度同时收紧：
+# 页上限 5（必须分 6 次才拉完）+ 故障落在第 5 页（翻过前 4 页才遇到，且失败后还有第 6 页要拉）。
+# 与 ret-003 的区别不只是行数：ret-003 故障后只剩一页，本题要求"重试后继续推进"，决策链更长。
+base_task: dbg-001-order-report
+task_id: ret-004-narrow-page
+task_version: "2026-11-21.1"
+title: 运费结算单核对报告（重试专项 · 页上限 5 · 故障在第五页）
+primary_skill_id: failure_retry
+secondary_skill_ids: ['multi_step_planning', 'tool_param_validation']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: retry-drill
+  difficulty: 3          # 1–3：页数 / 无效行数 / 故障位距首页多远（本题 6 页，难度 3 要求 ≥4 页）
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部结算单（limit 取值必须在 1 到 5 之间，超过 5 服务端会返回错误 invalid_limit；共 30 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  match:
+    offset: 20
+  failures:
+    - attempt: 1
+      http_status: 502
+      error: bad_gateway
+
+tools:
+  - name: fetch_orders
+    parameters:
+      - name: offset
+        type: integer
+        required: true
+        minimum: 0
+      - name: limit
+        type: integer
+        required: true
+        minimum: 1
+        maximum: 5
+    mock:
+      pagination:
+        page_size_max: 5
+
+test_inputs:
+  # 30 条记录，6 页（每页 ≤5）；5 条无效行按页交错分布：
+  # 第 1 页 1 条、第 2 页 2 条、第 5 页（故障页）之后 1 条、第 6 页 1 条。
+  # 故意放两条在第 5 页之后——只在故障页"补一次"而不继续翻页的提交会算错数。
+  orders_fixture:
+    - {order_id: st-001, amount: 500.0}
+    - {order_id: st-002, amount: 637.5}
+    - {order_id: st-003, amount: -775.0}                # 负数（第 1 页）
+    - {order_id: st-004, amount: 912.5}
+    - {order_id: st-005, amount: 1050.0}
+    - {order_id: st-006, amount: 1187.5}
+    - {order_id: st-007, amount: 1325.0}
+    - {order_id: st-008, amount: null}                  # 金额为 null（第 2 页）
+    - {order_id: st-009}                                # 缺 amount 字段（第 2 页）
+    - {order_id: st-010, amount: 1600.0}
+    - {order_id: st-011, amount: 1737.5}
+    - {order_id: st-012, amount: 1875.0}
+    - {order_id: st-013, amount: 2012.5}
+    - {order_id: st-014, amount: 2150.0}
+    - {order_id: st-015, amount: 2287.5}
+    - {order_id: st-016, amount: 2425.0}
+    - {order_id: st-017, amount: 2562.5}
+    - {order_id: st-018, amount: 2700.0}
+    - {order_id: st-019, amount: 2837.5}
+    - {order_id: st-020, amount: 2975.0}
+    - {order_id: st-021, amount: 3112.5}                # 第 5 页首行（故障发生页，数据本身有效）
+    - {order_id: st-022, amount: -3250.0}               # 负数（故障页之后）
+    - {order_id: st-023, amount: 3387.5}
+    - {order_id: st-024, amount: 3525.0}
+    - {order_id: st-025, amount: 3662.5}
+    - {order_id: st-026, amount: 3800.0}
+    - {order_id: st-027, amount: 3937.5}
+    - {order_id: st-028, amount: null}                  # 金额为 null（第 6 页）
+    - {order_id: st-029, amount: 4075.0}
+    - {order_id: st-030, amount: 4212.5}
+  expected:
+    valid_count: 25
+    total_amount: 60487.5
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 25, total_amount: 60487.5}
+  - id: R3_retry_evidence
+    expected:
+      calls:
+        - {name: fetch_orders, params_match: {offset: 20}, status: error, http_status: 502}
+        - {name: fetch_orders, params_match: {offset: 20}, status: success}
+    error_pattern_detection:
+      cases:                     # 偏移序列按本变体的页大小（5）与故障位（20）重算
+        - {match: {offsets_equals: [0, 5, 10, 15, 20]}, pattern: no_retry}
+        - {match: {offsets_equals: [0, 5, 10, 15, 20, 0]}, pattern: retry_wrong_params}
+        - {match: {offsets_starts_with: [0, 5, 10, 15, 20, 20], last_status: error}, pattern: retry_exhausted}
+        - {match: {no_tool_calls: true}, pattern: no_retry}
+        - {match: {fault_point_not_reached: true}, pattern: no_retry}
+        - {match: {fault_point_not_repeated: true}, pattern: retry_wrong_params}
+      default: retry_wrong_params

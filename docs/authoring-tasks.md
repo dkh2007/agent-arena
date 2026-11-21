@@ -61,8 +61,21 @@
 不许凭印象预填。仓库里已经因此写错过两次（`BACKLOG` §61.7 / §63.7）。
 `test_inputs.expected` 与 `rubric_credit[R2].expected` 是同一件事的两处，必须相等。
 
-**第 6 步：若动了故障位，改两处。** `fault_injection.match/failures` 与
-`rubric_credit[R3].expected.calls` 必须互相吻合；只改一处会静默漂移（有测试拦）。
+**第 6 步：若动了故障位，改三处。** 前两处有测试拦，第三处没有：
+
+1. `fault_injection.match` 与 `rubric_credit[R3].expected.calls[0].params_match`——必须相等；
+2. `fault_injection.failures[0].http_status` 与 `calls[0].http_status`——必须相等；
+3. **`rubric_credit[R3].error_pattern_detection.cases` 里的 `offsets_equals` 序列必须按本变体的
+   页大小与故障位重算**（例：页 5、故障 20 ⇒ `[0,5,10,15,20]`）。这一处**没有任何测试**，
+   漏改的后果是静默的：R3 判定照常正确，但「没重试」会被归到兜底的 `retry_wrong_params`，
+   于是复习层推错题——**分数对、诊断错**。（2026-11-21 加 `ret-004` 时发现，上一版规范漏了这条。）
+
+**R3 的形状是写死的**（`test_fault_declaration_matches_retry_expectation`）：
+`expected.calls` **恰好两步**（失败 → 成功），且失败那步 `status` 只能是 `error`。
+所以三种想法在现有骨架里**表达不出来**，别试：①连续失败两次；②用「超时」当故障
+（`status` 枚举里虽有 `timeout`，但 R3 期望只接受 `error`）；③让第 2 次调用才失败
+（`failures[].attempt: 2` 会让同一 offset 先成功一次再失败，两步期望对不上）。
+要这些效果得新建骨架（方式 C，需人拍）。
 
 **第 7 步：跑验收（§2）并同步 §3 的硬编码。**
 
@@ -93,8 +106,8 @@ PYTHONPATH=src python -m pytest tests -q
 
 | 位置 | 内容 | 什么时候改 |
 |---|---|---|
-| `tests/test_task_variants.py:292` | `assert len(all_tasks) == 12` | **每加一道题都要改** |
-| `tests/test_derivation.py:87` | `assert checked == 10`（声明 `derivation` 的任务数） | 新题声明了 `derivation` 时 |
+| `tests/test_task_variants.py:294` | `assert len(all_tasks) == 13` | **每加一道题都要改** |
+| `tests/test_derivation.py:89` | `assert checked == 11`（声明 `derivation` 的任务数；13 题减 2 道定位题） | 新题声明了 `derivation` 时 |
 | `tests/test_task_variants.py` `FAMILY_PRIMARY` / `FAMILY_TEMPLATE` | 家族 → 主技能 / 骨架 | 加**家族**时 |
 | `tests/test_task_variants.py` `MOTHER_OF` | 骨架 → 母本文件 | 加**骨架**时 |
 
@@ -114,6 +127,7 @@ PYTHONPATH=src python -m pytest tests -q
 | 引用了词表里不存在的错误模式 | 词表先行没遵守 | `test_error_patterns_registered_in_vocabulary` |
 | 两个家族都声明同一主技能顺序，`seen` 对不上 | 家族登记漏了 | `test_family_maps_to_declared_primary_skill_and_template` |
 | 变体把骨架整段抄了一遍 | 继承没发生（改母本时这题不跟着变） | `test_every_variant_declares_its_parent_and_does_not_restate_skeleton` |
+| 0 分但「没重试」被归成 `retry_wrong_params` | `error_pattern_detection.cases` 的 offset 序列没按本变体页大小重算 | **无测试**（静默漂移，分数还对） |
 
 ---
 
@@ -129,11 +143,16 @@ PYTHONPATH=src python -m pytest tests -q
 1. **"这道题是不是只换了业务名"**——没有任何机器判据。`dbg-002` 把"订单"换成"发票"、
    改了故障码 500→503、数据全换，机器全绿；它到底算不算"新题"，只能人看。
 2. **区分度**——同一道题五份不同质量的提交能不能分出分。**只有 `dbg-001` 做过**
-   （0 / 0.25 / 0 / 0 / 1.00，`fixtures/raw-*.json` + 评审包表格）。其余 11 道没有夹具。
+   （0 / 0.25 / 0 / 0 / 1.00，`fixtures/raw-*.json` + 评审包表格）。其余 12 道没有夹具。
 3. **"学生要做的事"是否真的变了**——目前只能靠 §7 的清单人判。
 4. **题面有没有把解法写进去**——没有测试。`scenario` 里写"先看 A 再看 B"照样全绿，
    但那会把 R3/R4 变成照抄。只能人审（判据：把题面独立发给一个没看过代码的人，
    他能不能只靠题面写出正确流程；能写出，就是题面泄漏了解法）。
+5. **故障一定被踩到**——故障按 `offset` **精确匹配**，而学习者有权用更小的合法 `limit`。
+   用 `limit=3` 拉本题时偏移序列是 0/3/6/…，永远不等于 `offset=20`，故障不触发、也不需重试；
+   判定却给 `fail + no_retry`（2026-11-21 实测，母本同样复现）。全库共有，见 `BACKLOG` B-31。
+   **加题时选 `offset` 无法规避**：命中条件是「page 上限能整除 offset」且「学习者页大小能整除 offset」，
+   两个数都要满足，`lcm` 很快就没有公共解。
 
 ---
 
@@ -168,7 +187,7 @@ PYTHONPATH=src python -m pytest tests -q
 - **哪些内容可以交给 AI 批量写？** 我的判断（需人认）：
   `test_inputs` 与 `expected` 可由脚本生成（因为有 `derivation` 可执行 + `expected` 必须现算），
   `scenario` 与"要做什么"必须人审——那是教学设计，不是数据填充。
-- **计划书里的任务数上限**：`ROADMAP` 记录「12 个 > 计划书的『≤10』（待人确认措辞）」。
+- **计划书里的任务数上限**：`ROADMAP` 记录「13 个 > 计划书的『≤10』（待人确认措辞）」。
   扩到 40 之前，这句措辞必须先定，否则对外材料与仓库不一致（本仓库 §3.4「数字不许说过头」）。
 
 ---

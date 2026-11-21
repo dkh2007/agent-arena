@@ -84,7 +84,9 @@ def test_rule_reproduces_every_answer_key():
                 f"{stem}: 规则现算 {name}={got[name]} 与答案键 {expected} 不符"
             )
         checked += 1
-    assert checked == 10, f"只有 {checked} 个任务声明了 derivation，应为 10（母本 + 9 变体）"
+    # 13 题里 2 道定位题（fix-*）不声明 derivation：答案不是推导值，是根因判断。
+    # 2026-11-21：10 → 11，新增 ret-004-narrow-page（经 base_task 继承 derivation 块）。
+    assert checked == 11, f"只有 {checked} 个任务声明了 derivation，应为 11（母本 + 10 变体）"
 
 
 def test_tasks_with_answer_keys_declare_a_rule():
