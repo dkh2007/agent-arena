@@ -31,6 +31,22 @@ from arena import trace_pipeline as tp  # noqa: E402
 
 FIX1 = ROOT / "tasks" / "fix-001-token-expiry.yaml"
 FIX2 = ROOT / "tasks" / "fix-002-cart-none-deref.yaml"
+
+
+def _locate_task_files() -> list[Path]:
+    """按 `family_id` 从任务库动态取，不写死题号（B-33①，2026-11-22）。
+
+    写死的代价不是红，是**静默漏验**：扩到 20 题时 `fix-003/004` 自动落在骨架契约之外，
+    flaw states / `source_path` 一致性这些结构约束对它们一条都没跑，测试却全绿。
+    """
+    files: list[Path] = []
+    for path in sorted((ROOT / "tasks").glob("*.yaml")):
+        if "family_id: locate-drill" in path.read_text(encoding="utf-8"):
+            files.append(path)
+    return files
+
+
+LOCATE_TASKS = _locate_task_files()
 GIT_HASH = "deadbee"
 FLAW_STATES = {
     "correct": {},
@@ -235,7 +251,7 @@ def _drive(task: dict, flaw: str) -> dict:
         th.join(timeout=5)
 
 
-@pytest.mark.parametrize("path", [FIX1, FIX2], ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", LOCATE_TASKS, ids=lambda p: p.stem)
 def test_locate_task_runs_to_full_marks(path):
     report = _drive(dr.load_task(path), "correct")
     states = {a["id"]: a["state"] for a in report["assertions"]}
@@ -244,7 +260,7 @@ def test_locate_task_runs_to_full_marks(path):
 
 
 @pytest.mark.parametrize("flaw", sorted(FLAW_STATES))
-@pytest.mark.parametrize("path", [FIX1, FIX2], ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", LOCATE_TASKS, ids=lambda p: p.stem)
 def test_locate_flaw_only_breaks_its_own_assertions(path, flaw):
     """每种缺陷形态只该打掉它对应的断言——这是"诊断能定位到哪一步走错"的实证。"""
     report = _drive(dr.load_task(path), flaw)
@@ -256,14 +272,14 @@ def test_locate_flaw_only_breaks_its_own_assertions(path, flaw):
         )
 
 
-@pytest.mark.parametrize("path", [FIX1, FIX2], ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", LOCATE_TASKS, ids=lambda p: p.stem)
 def test_wrong_line_is_classified_as_wrong_offending_line(path):
     report = _drive(dr.load_task(path), "wrong_line")
     patterns = {p for a in report["assertions"] for p in (a.get("error_patterns") or [])}
     assert patterns == {"wrong_offending_line"}, f"{path.stem}: 分类落到 {patterns}"
 
 
-@pytest.mark.parametrize("path", [FIX1, FIX2], ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", LOCATE_TASKS, ids=lambda p: p.stem)
 def test_giving_up_on_503_is_classified_as_no_retry(path):
     """放弃重试必须落到 R3 失败且模式是 no_retry，不能退到兜底的 retry_wrong_params。"""
     report = _drive(dr.load_task(path), "no_retry")
@@ -306,3 +322,17 @@ def test_flaw_must_belong_to_the_template(fix1, ):
     debug = dr.load_task(ROOT / "tasks" / "dbg-001-order-report.yaml")
     with pytest.raises(ra.AgentError, match="不属于骨架"):
         ra.ReferenceAgent(debug, ra.ToolClient("http://127.0.0.1:1"), flaw="wrong_line")
+
+
+def test_parametrization_covers_every_locate_task():
+    """参数化列表必须覆盖全家族——它写死过，也差点空过，两次都是静默的。
+
+    这里用两条互相独立的路径交叉验证：一条是文本匹配（`LOCATE_TASKS` 的取法），
+    一条是解析后的 `variant_meta.family_id`。两条不一致就说明取法漏了或错抓了。
+    """
+    in_catalog = {
+        path.stem for path in (ROOT / "tasks").glob("*.yaml")
+        if dr.load_task(path)["variant_meta"].get("family_id") == "locate-drill"
+    }
+    assert in_catalog, "题库里一道定位题都没有——前置条件已经崩了，不该继续跑骨架契约"
+    assert {path.stem for path in LOCATE_TASKS} == in_catalog
