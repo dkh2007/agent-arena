@@ -12,7 +12,7 @@
 | 4 | 跑全量才知道哪里错 | 12 分钟 | 报错在 900 行之外，得自己猜是哪一处 |
 
 第 3 步已在 2026-11-22 换成「台账写一句 why」+ 推导计数；本模块处理 1、2、4：
-**生成时就把数据与期望值一起算好**，**单题自检 3 秒内给出"还差什么"**。
+**生成时就把数据与期望值一起算好**，**单题自检 0.6 秒给出"还差什么"**（全库 24 题 1.75 秒）。
 
 ## 两条设计纪律
 
@@ -25,7 +25,7 @@
 ## 用法
 
     python scripts/new_task.py --list                    # 家族 × 难度梯度，看缺哪一档
-    python scripts/new_task.py --check tasks/xxx.yaml     # 单题自检（3 秒）
+    python scripts/new_task.py --check tasks/xxx.yaml     # 单题自检（实测 0.6 秒）
     python scripts/new_task.py --new --family retry-drill \
         --id ret-007-late-fault --title "……" --rows 28 --page 10 --fault-at 26
 
@@ -771,7 +771,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="加一道题：生成骨架 / 单题自检 / 看难度梯度")
     parser.add_argument("--list", action="store_true", help="列家族 × 难度梯度，看缺哪一档")
     parser.add_argument("--check", nargs="+", metavar="YAML",
-                        help="单题自检（3 秒，不用跑全量）")
+                        help="单题自检（实测 0.6 秒，不用跑全量）")
     parser.add_argument("--new", action="store_true", help="生成一道新题的骨架并登记台账")
     parser.add_argument("--family", help="家族 id（--new 用）")
     parser.add_argument("--id", dest="task_id", help="新题 task_id（--new 用）")

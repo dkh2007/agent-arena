@@ -69,7 +69,7 @@ curl -s -X POST http://127.0.0.1:8765/tools/fetch_orders \
 python scripts/new_task.py --list                      # 四族梯度，看缺哪一档
 python scripts/new_task.py --new --family retry-drill \
     --id ret-008-xxx --title "……" --rows 28 --page 10 --write
-python scripts/new_task.py --check ret-008-xxx         # 只查这一道，3 秒出结果
+python scripts/new_task.py --check ret-008-xxx         # 只查这一道，实测 0.6 秒
 ```
 
 三条口径写在代码里：

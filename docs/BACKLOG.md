@@ -1634,7 +1634,8 @@
   ③ **家族表单一来源**：`docs/task-families.yaml`（含 `prefix` 字段），测试、脚本、文档共用一份，
      原来三份 Python 字典 + 文档表格各写一遍；
   ④ **`scripts/new_task.py`**：`--list`（看四族梯度缺哪档）/ `--new`（生成骨架，**期望值按 derivation 现算**，
-     自动登记台账）/ `--check`（单题自检，**3 秒**，逐条说明还差什么，每条对应 tests/ 里一条用例）。
+     自动登记台账）/ `--check`（单题自检，实测**单题 0.63 秒 / 全库 24 题 1.75 秒**，逐条说明还差什么，
+     每条对应 tests/ 里一条用例——对比全量 15 分钟，差两个数量级）。
   验证方式不是自评：`--new` 生成的 `prm-005` 与 `dbg-007` **零人工修改**就过了
   `test_task_runs_to_full_marks` + `test_each_task_classifies_its_own_failure` 两条。
 - **改造时撞到的事实偏差（已修，值得记）**：`fault_injection` 是**继承字段**——

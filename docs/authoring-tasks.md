@@ -17,7 +17,7 @@
 python scripts/new_task.py --list                       # 看四个家族各自的难度梯度，挑缺的那一档
 python scripts/new_task.py --new --family retry-drill \
     --id ret-008-xxx --title "……" --rows 28 --page 10 --write
-python scripts/new_task.py --check ret-008-xxx          # 只查这一道，3 秒出结果
+python scripts/new_task.py --check ret-008-xxx          # 只查这一道，实测 0.6 秒
 ```
 
 生成器会把 `expected` 按 `derivation` **现算好**（第 5 步那条纪律由代码代劳），
@@ -108,7 +108,7 @@ python scripts/new_task.py --check ret-008-xxx          # 只查这一道，3 �
 ## 2. 验收命令（快 → 慢，四档都要过）
 
 ```bash
-# ⓪ 只查这一道题（2026-11-22 新增）：3 秒，逐条列出还差什么
+# ⓪ 只查这一道题（2026-11-22 新增）：实测 0.63 秒/题、24 题全库 1.75 秒，逐条列出还差什么
 python scripts/new_task.py --check tasks/新题.yaml
 
 # ① 任务层的快门槛：141 条，实测 27 秒（2026-11-21）
