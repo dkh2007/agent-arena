@@ -97,7 +97,7 @@ worktree 里**没有虚拟环境**，这台机器的 `python` 与 `pytest` 也�
 
 ---
 
-## 3. 九条红线（每条线程通用；四个指令文件里各有一份精简版）
+## 3. 十一条红线（每条线程通用；四个指令文件里各有一份精简版）
 
 1. **只准动自己家族的编号段**。§4 每张卡写了段号，写超了就撞别人的文件名。
 2. **只准动 `tasks/<你自己的>.yaml`**。不要改母本 `dbg-001` / `fix-001`——改母本会同骨架所有题一起变，那不是加题。
@@ -115,6 +115,18 @@ worktree 里**没有虚拟环境**，这台机器的 `python` 与 `pytest` 也�
 9. **动手前先跑一次第一档验收，确认基线全绿**。红线 3 允许你改计数行，于是"测试红了"有两种原因：
    你改坏了，或环境/基线本来就是坏的。**没有基线就没法区分**，你会开始乱改测试。
    基线红 → 停手，在报告里贴原始输出，不要动手改任何东西。
+10. **同一个编号段只留一份文件**。改题意就**原地改**那个 YAML，不要另存成
+   `fix-003-xxx.yaml` 再写一份 `fix-003-yyy.yaml`。任务库按 `tasks/*.yaml` 通配扫描，
+   多一个文件就让**所有人的**测试红（`len(all_tasks)` 对不上），而且报错指向别人。
+   > 实测（2026-11-22，T1 真实翻车）：那条线程重写三轮、留下 6 个文件（2 提交 + 4 未跟踪），
+   > 第一档报 `19 == 15`。它在报告里把这 4 个文件**误判成「另一条线程并发跑同一编号」**，
+   > 进而建备份目录、去 `%TEMP%` 跑"隔离副本"自证——全部是白做的。
+   > **判据**：`git status` 里是 `??`、且 slug 不是你这一版 ⇒ 就是你前几轮的稿，删掉。
+   > 提交前跑一次 `ls tasks/<你的段号>-*.yaml`，多于预期就清。
+11. **收尾清掉自己建的临时目录与 worktree**。同一条线程那次还留下一个 detached worktree
+   （`.tmp-xxx-verify`），`git worktree list` 里会一直挂着，下次同路径 `add` 直接失败。
+   收尾三查：`git worktree list`（有没有多余的）、`git status`（有没有 `??` 残留）、
+   `ls tasks/<你的段号>-*.yaml`（有没有旧稿）。三样都干净才算完。
 
 ---
 
@@ -189,11 +201,19 @@ worktree 里**没有虚拟环境**，这台机器的 `python` 与 `pytest` 也�
    20 个更不能靠"措辞待定"糊过去，扩到 20 之前这句必须定，否则对外材料与仓库不一致。
 4. 跑全量：`PYTHONPATH=src pytest tests -q`（12–15 分钟，一次；20 题后会更久）。
 5. 重生成评审包 → 归档证据 → 过闸门（三条命令，参数已核对）：
+
+   **前两条必须用「装了 pytest 的解释器」启动**：`review_packet.py` 与 `test_evidence.py` 内部都跑
+   `sys.executable -m pytest`，而本机裸 `python` 没有 pytest（2026-11-22 实测：裸 `python` 启动
+   `review_packet.py --check` 直接报 `No module named pytest`）。`push_gate.py` 不跑测试，随便哪个都行。
+
    ```bash
-   PYTHONPATH=src python src/arena/review_packet.py --check --full   # 先校验，不写文件
-   PYTHONPATH=src python src/arena/review_packet.py                  # 确认无误再生成
-   PYTHONPATH=src python scripts/test_evidence.py --note "扩到 20 题后全量"
-   PYTHONPATH=src python scripts/push_gate.py                        # 必须 PUSH_GATE=CLEAN
+   PY="$HOME/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
+   "$PY" -c "import pytest; print('ok')"    # 先确认这个解释器真的有 pytest
+
+   PYTHONPATH=src "$PY" src/arena/review_packet.py --check --full   # 先校验，不写文件
+   PYTHONPATH=src "$PY" src/arena/review_packet.py                  # 确认无误再生成
+   PYTHONPATH=src "$PY" scripts/test_evidence.py --note "扩到 20 题后全量"
+   PYTHONPATH=src "$PY" scripts/push_gate.py                        # 必须 PUSH_GATE=CLEAN
    ```
    然后一次提交推送。评审包幂等判据是比 `packet-sha256`（正文摘要），
    **不要比文件 md5**——header 里有 `generated=` 时间戳，每生成一次 md5 都变。
@@ -204,7 +224,14 @@ worktree 里**没有虚拟环境**，这台机器的 `python` 与 `pytest` 也�
    ```
    （分支保留一段时间，出问题好回溯。）
 
-**中途某条线程卡住怎么办**：其余三条照常合并，把卡住的那条的分支留着，`len` 按已合并的实际数写
+**怎么判断某条线程压根没起来**：看它的 worktree，三条一起看——
+`git status` 空、`git log --oneline -1` 还停在建 worktree 那个提交、目录 mtime 等于建目录那一刻。
+三条同时成立 ⇒ 它一行都没写，不是"在思考"。
+> 实测（2026-11-22）：param / order 两条从 13:18 建好到 14:28 收口，**70 分钟零改动**，
+> 分支提交号仍是起点。而"外面跑了三个"这句话让我以为三条都在跑。
+> **建议开工 20 分钟后查一次**，空的就直接接手，不要等。
+
+**中途某条线程卡住怎么办**：其余几条照常合并，把卡住的那条的分支留着，`len` 按已合并的实际数写
 （例如先合 5 道就写 18）。**不要为了等一条线程让全局数字悬空**——数字悬空比少几道题更贵。
 
 ---
