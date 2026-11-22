@@ -86,7 +86,7 @@ def test_rule_reproduces_every_answer_key():
         checked += 1
     # 13 题里 2 道定位题（fix-*）不声明 derivation：答案不是推导值，是根因判断。
     # 2026-11-21：10 → 11，新增 ret-004-narrow-page（经 base_task 继承 derivation 块）。
-    assert checked == 14, f"只有 {checked} 个任务声明了 derivation，应为 14（母本 + 13 变体）"
+    assert checked == 16, f"只有 {checked} 个任务声明了 derivation，应为 16（母本 + 15 变体）"
 
 
 def test_tasks_with_answer_keys_declare_a_rule():

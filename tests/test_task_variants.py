@@ -291,7 +291,7 @@ def test_every_skill_is_primary_somewhere(all_tasks):
         assert primaries.count(sid) >= 2, f"技能 {sid} 作为主技能只出现 {primaries.count(sid)} 次"
     # 故意写死：加题时必须停下来确认"这是一道真独立的题，不是复制粘贴"（docs/authoring-tasks.md §3）。
     # 12 → 13：2026-11-21 新增 ret-004-narrow-page（retry-drill 家族首道 page=5 的题）。
-    assert len(all_tasks) == 18, f"任务库应为 18 个任务，实际 {len(all_tasks)}"
+    assert len(all_tasks) == 20, f"任务库应为 20 个任务，实际 {len(all_tasks)}"
 
 
 def test_difficulty_is_not_decorative(all_tasks):
