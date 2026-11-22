@@ -68,7 +68,7 @@
 
 > **B-05 补充：`variant_template_id` 与 `variant_meta.family_id` 不是一回事，别混用。**
 > - `variant_template_id`（入库，`tpl-tool-debug`）＝**骨架模板**：共用同一套断言骨架、分数可比的那些任务。
->   现在有 **2 套**（round-86 / B-05b）：`tpl-tool-debug`（16 个汇报题：分页拉数据→剔无效行→写报告）与
+>   现在有 **2 套**（round-86 / B-05b）：`tpl-tool-debug`（19 个汇报题：分页拉数据→剔无效行→写报告）与
 >   `tpl-bug-locate`（4 个定位题：读日志 + 读源码→给根因与行号）。同骨架内断言 id / 类型 / 权重逐字段相同，
 >   跨骨架允许不同——但 `scoring` / `execution` / `submission_requirements` 全库统一，
 >   否则"分数怎么算"随题型变，跨题型的 P 就不可比。
