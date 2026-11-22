@@ -1,0 +1,71 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+base_task: dbg-001-order-report
+task_id: dbg-005-return-credit
+task_version: "2026-11-22.1"
+title: 退货单金额核对报告（调试向 · 变体）
+primary_skill_id: multi_step_planning
+secondary_skill_ids: ['tool_param_validation', 'failure_retry']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: order-report
+  difficulty: 2          # 3 页（24 行 / 上限 10），剔除 5 行覆盖 null / 缺字段 / 负数三类
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部退货单记录（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 24 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  match:
+    offset_covers: 18
+  failures:
+    - attempt: 1
+      http_status: 500
+      error: internal_error
+
+test_inputs:
+  # 24 条记录；被剔除的行已逐行标注原因。上限 10 ⇒ 3 页；故障在第 19 条（第三页内，非页首）
+  orders_fixture:
+    - {order_id: rtn-001, amount: 541.0}
+    - {order_id: rtn-002, amount: 678.25}
+    - {order_id: rtn-003, amount: null}                 # 金额为 null
+    - {order_id: rtn-004, amount: 815.5}
+    - {order_id: rtn-005}                               # 缺 amount 字段
+    - {order_id: rtn-006, amount: 952.75}
+    - {order_id: rtn-007, amount: 1090.0}
+    - {order_id: rtn-008, amount: 1227.25}
+    - {order_id: rtn-009, amount: 1364.5}
+    - {order_id: rtn-010, amount: 523.0}
+    - {order_id: rtn-011, amount: 660.25}
+    - {order_id: rtn-012}                               # 缺 amount 字段
+    - {order_id: rtn-013, amount: -797.5}               # 负数
+    - {order_id: rtn-014, amount: 934.75}
+    - {order_id: rtn-015, amount: 1072.0}
+    - {order_id: rtn-016, amount: 1209.25}
+    - {order_id: rtn-017, amount: 1346.5}
+    - {order_id: rtn-018, amount: 505.0}
+    - {order_id: rtn-019, amount: 642.25}
+    - {order_id: rtn-020, amount: null}                 # 金额为 null
+    - {order_id: rtn-021, amount: 779.5}
+    - {order_id: rtn-022, amount: 1054.0}
+    - {order_id: rtn-023, amount: 1191.25}
+    - {order_id: rtn-024, amount: 1328.5}
+  expected:
+    valid_count: 19
+    total_amount: 17915.5
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 19, total_amount: 17915.5}
+  - id: R3_retry_evidence
+    expected:
+      calls:
+        - {name: fetch_orders, params_match: {offset_covers: 18}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset_covers: 18}, status: success}
+    # error_pattern_detection 不写：母本 cases 已是相对谓词，与页大小、故障位置无关（B-31）
