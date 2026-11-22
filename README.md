@@ -23,6 +23,31 @@ pip install -r requirements.txt
 copy .env.example .env        # 填入 API key，勿提交 .env
 ```
 
+## 跑一道题（学习者侧）
+
+题面只写「使用工具 `fetch_orders`」——这个工具从哪来、怎么调，在这里：
+
+```bash
+python scripts/lab.py --list                        # 列任务（题号 + 标题）
+python scripts/lab.py --task dbg-001-order-report   # 起本地 mock 服务，打印端点
+```
+
+启动后屏幕上有服务地址、工具清单、参数签名，和一条可直接拷走的示例请求。调它用什么都行：
+
+```bash
+curl -s http://127.0.0.1:8765/tools
+curl -s -X POST http://127.0.0.1:8765/tools/fetch_orders \
+     -H 'Content-Type: application/json' -d '{"offset":0,"limit":10}'
+```
+
+三点要说清，免得误会：
+
+- 这个服务**只按任务声明回放数据，不判对错**。本地调通 ≠ 能拿分，判分在提交之后；
+- 它**不打印任何判分信息**（故障位、期望值、断言 id）。这是故意的：印出来就等于替学习者
+  跳过「发现服务会失败」这一步，重试类题目会直接失效。`tests/test_lab.py` 有一条用例盯这个；
+- 目前只交付了**第 0 层（起服务）**。提交后回看自己的调用序列、以及分层提示按钮，
+  涉及「给不给返回体」「看提示要不要降权」的口径，见 `docs/BACKLOG.md` B-32。
+
 ## 开发流程
 
 **给 AI Agent 的开工上下文先读 `docs/agent-guide.md`**（硬口径、已否决的外部建议、已知坑、当前该干什么）。
@@ -52,7 +77,7 @@ python scripts/test_evidence.py      # 跑一遍 pytest，把结果写成档案
 
 档案由脚本生成、不手改；工作区有未提交改动时会显式标注「对应工作区状态而非干净提交树」。
 判定「干净」时排除 `docs/test-evidence/` 自身——否则每份档案都会因为「要写这份档案」而自称不干净。
-最近一次干净树运行：`1607 passed / 1607 total`，被测提交 `772b09a`（见 `INDEX.md`）。
+最近一次干净树运行：`1689 passed / 1689 total`，被测提交 `1e265a9`（见 `INDEX.md`）。
 
 ## 文案总表
 
