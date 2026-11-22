@@ -269,3 +269,60 @@ def test_cli_really_serves_after_starting():
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:  # pragma: no cover - 兜底
             proc.kill()
+
+
+# ---------------------------------------------------------------------------
+# 第 1 层：--show-trace（看自己的调用序列）
+#
+# 两种输入都得认：报告里平台算好的 `trace_view`，和自己手上那份原始提交的 `trace`。
+# 一条硬约束跟第 0 层同源：**不打印返回体**——返回里的行数就是答案。
+# ---------------------------------------------------------------------------
+
+def _raw_trace_file() -> Path:
+    return ROOT / "fixtures" / "raw-perfect.json"
+
+
+def test_show_trace_accepts_a_raw_submission(capsys):
+    assert lab.main(["--show-trace", str(_raw_trace_file())]) == 0
+    out = capsys.readouterr().out
+    assert "调用序列" in out
+    assert "fetch_orders" in out and "offset=10" in out
+    assert "error (500)" in out, "失败那次的状态码必须露出来，否则看不出自己遇没遇到故障页"
+
+
+def test_show_trace_accepts_a_report_file(tmp_path, capsys):
+    report = {"submission": {"task_id": "dbg-001-order-report"},
+              "trace_view": [{"call_index": 1, "name": "fetch_orders",
+                              "params": {"offset": 0, "limit": 5}, "status": "success"}]}
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    assert lab.main(["--show-trace", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "dbg-001-order-report" in out and "limit=5" in out
+
+
+def test_show_trace_never_prints_the_response_body(capsys):
+    """答案就是返回里的『10 orders』『合计』。序列里只该有请求与状态码。"""
+    assert lab.main(["--show-trace", str(_raw_trace_file())]) == 0
+    out = capsys.readouterr().out
+    assert "10 orders" not in out
+    assert "result_summary" not in out
+
+
+def test_show_trace_missing_file_exits_2(capsys):
+    assert lab.main(["--show-trace", "no-such-file.json"]) == 2
+    assert "找不到文件" in capsys.readouterr().out
+
+
+def test_show_trace_rejects_json_without_trace(tmp_path, capsys):
+    path = tmp_path / "x.json"
+    path.write_text(json.dumps({"hello": "world"}), encoding="utf-8")
+    assert lab.main(["--show-trace", str(path)]) == 2
+    out = capsys.readouterr().out
+    assert "trace_view" in out and "trace" in out, "要说清两种输入都行，别只说『格式不对』"
+
+
+def test_show_trace_does_not_need_a_task_or_start_a_server(capsys):
+    """这条入口是纯读文件：给 --show-trace 就返回，别把 mock 服务起起来占端口。"""
+    assert lab.main(["--show-trace", str(_raw_trace_file()), "--catalog", str(TASKS)]) == 0
+    assert "服务地址" not in capsys.readouterr().out

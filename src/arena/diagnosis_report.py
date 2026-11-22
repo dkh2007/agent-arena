@@ -656,6 +656,94 @@ def _report_attribution(policy: dict, by_state: dict, suppressed: bool) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# B-32 第 1 层：把「你实际调了哪几次」交给学习者
+#
+# 报告原本只给断言级结论（`R3 fail / no_retry`），学习者看不到自己发了哪些请求。
+# 这是 B-26 / B-31 的另一面：**把「没看到」记成「不会」**——判分说他没重试，
+# 他却不知道自己第二页到底返回了 500 还是返回了空。
+#
+# 一条刻意的边界：**不含返回体**。`result_summary` 里写的是「10 orders」「total=37」，
+# 那正是这类题要学习者自己发现的答案（数据里几行无效、该不该重试）。给了它，
+# 题目就从"发现异常"退化成"读一段字"。状态码留着——它回答的是请求成没成，
+# 不是数据长什么样。
+# ---------------------------------------------------------------------------
+
+TRACE_VIEW_PARAM_CHARS = 120
+
+
+def _short_param(value: Any, limit: int = TRACE_VIEW_PARAM_CHARS) -> Any:
+    """长字符串截断，并如实标出原长。不静默丢字：学习者要能看出"这里被截了"。"""
+    if isinstance(value, str) and len(value) > limit:
+        return f"{value[:limit]}…(原 {len(value)} 字符)"
+    return value
+
+
+def trace_view_items(trace: dict | None) -> list[dict]:
+    """trace → 逐次调用的可读序列（`call_index / name / params / status / http_status`）。
+
+    条目字段是白名单取值，不是整条 copy：trace 里将来多一个字段（比如某天有人把
+    `payload` 写进来），白名单能保证它不会顺着这份报告漏到学习者眼前。
+    """
+    if not isinstance(trace, dict):
+        return []
+    calls = trace.get("tool_calls")
+    if not isinstance(calls, list):
+        return []
+    items: list[dict] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        params = call.get("params")
+        item = {
+            "call_index": call.get("call_index"),
+            "name": call.get("name"),
+            "params": (
+                {k: _short_param(v) for k, v in params.items()}
+                if isinstance(params, dict) else {}
+            ),
+            "status": call.get("status"),
+        }
+        if isinstance(call.get("http_status"), int):
+            item["http_status"] = call["http_status"]
+        items.append(item)
+    return items
+
+
+def _report_trace_view(trace: dict | None, trace_audit: dict) -> list[dict]:
+    """报告里要不要带这段，取决于 trace 是否**结构合法**。
+
+    不是合法 trace 就不带：半截序列会让人以为"我只调了这么几次"，
+    而真实情况可能是编号乱序、参数类型不对——那种情况下缺省比残缺更诚实
+    （`trace_audit.invalid_reasons` 已经写明原因）。
+    """
+    if not trace_audit.get("schema_valid"):
+        return []
+    return trace_view_items(trace)
+
+
+def format_trace_view(items: list[dict]) -> str:
+    """把序列排成给人看的表。空列表也给一行话，不留空白让人猜。"""
+    if not items:
+        return "（这次没有任何工具调用记录）"
+    header = ("#", "工具", "参数", "状态")
+    rows = []
+    for it in items:
+        params = it.get("params") or {}
+        rendered = " ".join(f"{k}={params[k]}" for k in sorted(params))
+        status = str(it.get("status") or "?")
+        if it.get("http_status") is not None:
+            status = f"{status} ({it['http_status']})"
+        rows.append((str(it.get("call_index", "?")), str(it.get("name") or "?"),
+                     rendered or "-", status))
+    widths = [max(len(header[i]), *(len(r[i]) for r in rows)) for i in range(3)]
+    lines = ["  ".join(header[i].ljust(widths[i]) for i in range(3)) + "  " + header[3]]
+    lines.append("-" * (sum(widths) + 2 * len(widths) + len(header[3])))
+    for r in rows:
+        lines.append("  ".join(r[i].ljust(widths[i]) for i in range(3)) + "  " + r[3])
+    return "\n".join(lines)
+
+
 def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
                  *, unreachable_reason: str | None = None,
                  pattern_skills: dict[str, tuple[str, ...]] | None = None) -> dict:
@@ -868,6 +956,11 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
         "skill_gaps": sorted(gaps.values(), key=lambda g: (-g["weight_lost"], g["skill_id"])),
         "unattributed_patterns": unattributed,
     }
+    # B-32 第 1 层：只在 trace 结构合法时给逐次调用序列；没有就不加这个键，
+    # 而不是给一个空数组——"没交 trace"与"交了但一次没调"是两件事。
+    trace_view = _report_trace_view(raw.get("trace"), trace_audit)
+    if trace_view:
+        report["trace_view"] = trace_view
     # 中文展示名随报告下发，词表是唯一真相源。
     # 起因：2026-11-20 盘点发现同一个技能有四种写法（两份词表各一份、mastery_scorecard 一份、
     # Android 一份），页面上的「合计金额算错」在词表里其实叫「总额算错」。四处各写一遍，

@@ -41,6 +41,8 @@ notes[]              可选。报告出现"未覆盖情况"时必须在这里说
 judge_scores[]       可选（B-04b）。跑了 judge 才有：每次评价的 {rating 1–4, suspected_patterns, rationale, model, latency_ms}
 judge_agreement      可选（B-04b）。跑了 judge 才有：两两比较中 rating 相同的比例，[0,1]
 rubric_fingerprint   可选（B-04e）。64 位十六进制：这份报告按哪版判据判的（rubric_gate + rubric_credit 的规范化 sha256）
+trace_view[]         可选（B-32 第 1 层）。逐次调用序列：{call_index, name, params, status, http_status?}
+                     ——**不含返回体**；只在 trace_audit.schema_valid=true 时出现
 ```
 
 > **`rubric_fingerprint` 的缺省语义与 judge 两字段同理，但理由不同**：
@@ -119,6 +121,27 @@ A3 / A4 为 round-24 新增（拍板 P-F1-4）。即使将来出现绕过 `recom
 原「两处独立实现、未来须收敛」与「已知旁路」两处描述均已过时。
 
 ---
+
+### 2.2 `trace_view`：学习者看得见的调用序列（B-32 第 1 层，2026-11-22）
+
+报告原本只给断言级结论（`R3 fail / no_retry`）。学习者看到这句话时，不知道自己
+第二页到底返回了 500、还是返回了空——**"没看到"被记成了"不会"**（与 B-26 / B-31 同源）。
+`trace_view` 补的就是这一段：一条调用一行，`call_index / name / params / status`，
+有 HTTP 状态码时带 `http_status`。
+
+**三条边界，都是刻意的**：
+
+| 不做 | 为什么 |
+|---|---|
+| 不给返回体（`result_summary` 一律剔除） | 它写的是「10 orders」「total=37」——那正是这类题要学习者自己发现的答案。给了就把"发现异常"换成"读一段字" |
+| trace 结构不合法时不出现这个键 | 半截序列会让人以为"我只调了这么几次"，而真实原因可能是编号乱序、参数类型不对（`trace_audit.invalid_reasons` 已写明） |
+| 超长参数截断并注明原长 | 定位题会把整份产物写进 `write_file` 的 `content`；不截断报告会涨到不可读。截断标 `…(原 N 字符)`，不静默丢字 |
+
+缺省语义与 judge 两字段一致：**缺键 = 没交 trace 或 trace 不合法**，不是"一次没调"。
+后者由 `trace_audit.call_count == 0` 表达——两件事不能混成一个空数组。
+
+字段是**白名单取值**（不是整条 `copy`）：trace 里将来多一个字段，不会顺着这份报告漏出去。
+`tests/test_diagnosis_report.py` 有 7 条用例锁这条（含"不含返回体"与"结构不合法即缺键"）。
 
 ## 3. `score`：两段式（v2 核心变更）
 

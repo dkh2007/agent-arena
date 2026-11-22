@@ -30,6 +30,7 @@ copy .env.example .env        # 填入 API key，勿提交 .env
 ```bash
 python scripts/lab.py --list                        # 列任务（题号 + 标题）
 python scripts/lab.py --task dbg-001-order-report   # 起本地 mock 服务，打印端点
+python scripts/lab.py --show-trace report.json      # 看自己这几次到底发了什么请求
 ```
 
 启动后屏幕上有服务地址、工具清单、参数签名，和一条可直接拷走的示例请求。调它用什么都行：
@@ -40,13 +41,25 @@ curl -s -X POST http://127.0.0.1:8765/tools/fetch_orders \
      -H 'Content-Type: application/json' -d '{"offset":0,"limit":10}'
 ```
 
-三点要说清，免得误会：
+`--show-trace` 收两种文件：平台返回的报告（`report.json`），或你提交时那份原始 JSON
+（含 `trace` 即可）。它把逐次调用排成一行一条：
+
+```
+#  工具            参数                            状态
+------------------------------------------------------------
+1  fetch_orders  limit=10 offset=0               success
+2  fetch_orders  limit=10 offset=10              error (500)
+3  fetch_orders  limit=10 offset=10              success
+```
+
+四点要说清，免得误会：
 
 - 这个服务**只按任务声明回放数据，不判对错**。本地调通 ≠ 能拿分，判分在提交之后；
 - 它**不打印任何判分信息**（故障位、期望值、断言 id）。这是故意的：印出来就等于替学习者
   跳过「发现服务会失败」这一步，重试类题目会直接失效。`tests/test_lab.py` 有一条用例盯这个；
-- 目前只交付了**第 0 层（起服务）**。提交后回看自己的调用序列、以及分层提示按钮，
-  涉及「给不给返回体」「看提示要不要降权」的口径，见 `docs/BACKLOG.md` B-32。
+- `--show-trace` **不给返回体**，只给请求参数与状态码。返回里有几行、合计多少正是要你自己
+  发现的东西——给了它，「发现异常」就退化成「读一段字」；
+- 分层提示按钮还没做：它涉及「看提示要不要在掌握度上降权」，见 `docs/BACKLOG.md` B-32。
 
 ## 开发流程
 

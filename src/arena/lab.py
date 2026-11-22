@@ -1,18 +1,21 @@
-"""学生侧「本地跑起来」入口（B-32 第 0 层，2026-11-22）。
+"""学生侧入口（B-32 第 0 层 + 第 1 层的「看回放」，2026-11-22）。
 
 ## 为什么需要它
 
 扩到 20 题时发现的缺口：题面只说「使用工具 `fetch_orders`」，全仓**没有一句**告诉学习者
 这个工具从哪来、怎么调。于是学习者只能改一行代码就提交一次，等判分告回来。
 这一层只解决**最前面那一步**：本地起 mock 服务，拿到能直接对着调的端点。
+第二件事是提交之后**看见自己发了什么**：`--show-trace` 把序列排成表。
 
-## 只做 0 层，不做 1/2 层
+## 三层缺口的分工
 
-| 层 | 内容 | 为什么不在本模块 |
+| 层 | 内容 | 状态 |
 |---|---|---|
-| 0 | 起服务 + 打印端点 | **本模块** |
-| 1 | 提交后看自己的调用序列 | 涉及「给不给返回体」的口径，待人拍（BACKLOG B-32） |
-| 2 | 分层提示按钮 | 涉及「看提示要不要降权」，待人拍（BACKLOG B-32） |
+| 0 | 起服务 + 打印端点 | **本模块（`--task`）** |
+| 1 | 看自己的调用序列（`offset` / `limit` / 状态码，**不含返回体**） | **本模块（`--show-trace`）** |
+| 2 | 分层提示按钮 | 待人拍（涉及「看提示要不要降权」，BACKLOG B-32） |
+
+第 1 层的边界写在 `diagnosis_report.trace_view_items()` 的注释里：不含返回体。
 
 ## 一条硬约束：**不泄露判分信息**
 
@@ -34,7 +37,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .diagnosis_report import ReportError, load_task
+from .diagnosis_report import (
+    ReportError,
+    format_trace_view,
+    load_task,
+    trace_view_items,
+)
 from .mock_tools import MockConfigError, make_server
 
 DEFAULT_CATALOG = Path(__file__).resolve().parents[2] / "tasks"
@@ -100,6 +108,47 @@ def _first_scalar(text: str, key: str) -> str | None:
 # ---------------------------------------------------------------------------
 # 横幅（纯函数，好测）
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 看自己的调用序列（B-32 第 1 层）
+# ---------------------------------------------------------------------------
+
+def load_trace_view(path: str | Path) -> tuple[list[dict], str]:
+    """从「报告 JSON」或「原始提交 JSON」里取逐次调用序列，返回 (items, 抬头说明)。
+
+    两种输入都收：报告里有 `trace_view`（平台算好的），原始提交里有 `trace`
+    （自己手上那份）——学习者手里是哪种就用哪种，别为格式再教一遍。
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise LabError(f"找不到文件：{p}")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LabError(f"{p} 不是合法 JSON（{exc}）") from exc
+    if not isinstance(data, dict):
+        raise LabError(f"{p} 顶层应是对象，实际是 {type(data).__name__}")
+
+    task_id = ""
+    submission = data.get("submission")
+    if isinstance(submission, dict) and submission.get("task_id"):
+        task_id = str(submission["task_id"])
+    title = f"任务 {task_id}" if task_id else p.name
+
+    if isinstance(data.get("trace_view"), list):
+        return list(data["trace_view"]), title
+    if "trace" in data:
+        items = trace_view_items(data.get("trace"))
+        if not items:
+            raise LabError(
+                f"{p} 里 trace 没有可读的调用记录（可能没上报，或结构不合法）"
+            )
+        return items, title
+    raise LabError(
+        f"{p} 里既没有 trace_view（报告）也没有 trace（提交）——"
+        "先把它 POST 给平台拿到报告，或直接给原始提交文件"
+    )
+
 
 def describe(task: dict, base_url: str) -> str:
     """生成开跑前给人看的那段字。只含题面已有的信息。"""
@@ -216,11 +265,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"端口（默认 {DEFAULT_PORT}；填 0 让系统分配）")
     parser.add_argument("--list", action="store_true", help="只列任务，不起服务")
+    parser.add_argument("--show-trace", metavar="文件",
+                        help="打印一次提交（或报告）的逐次调用序列，不起服务（B-32 第 1 层）")
     parser.add_argument("--no-probe", action="store_true", help="跳过启动自检")
     parser.add_argument("--quiet", action="store_true", help="不打印每次 HTTP 请求")
     args = parser.parse_args(argv)
 
     catalog = Path(args.catalog)
+    if args.show_trace:
+        try:
+            items, title = load_trace_view(args.show_trace)
+        except LabError as exc:
+            print(str(exc), flush=True)
+            return 2
+        print(f"调用序列（{title}）")
+        print(format_trace_view(items))
+        print()
+        print("只列请求参数与状态码，**不含返回体**——返回里有几行、合计多少，")
+        print("正是要你自己发现的东西。改了参数再提交一次，把两份序列对着看。")
+        return 0
     try:
         if args.list:
             for task_id, title, name in list_tasks(catalog):

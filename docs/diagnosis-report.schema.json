@@ -99,6 +99,27 @@
         }
       ]
     },
+    "trace_view": {
+      "type": "array",
+      "description": "B-32 第 1 层：学习者自己这几次到底发了什么请求（逐次调用序列）。**刻意不含返回体**——返回里的行数与合计就是这类题的答案，给了就把『自己发现异常』换成『读一段字』。可选键：只在 trace_audit.schema_valid=true 时出现，缺省表示没交 trace 或 trace 结构不合法（原因见 trace_audit.invalid_reasons）；空数组不会出现，因为『一次没调』也是一条事实，用 call_count=0 表达。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["call_index", "name", "params", "status"],
+        "properties": {
+          "call_index": { "type": "integer", "minimum": 1 },
+          "name": { "type": "string" },
+          "params": {
+            "type": "object",
+            "description": "原样保留请求参数；超过 120 字符的字符串会被截断并注明原长（`…(原 N 字符)`），以便学习者看出『这里被截了』而不是以为参数就这么短。"
+          },
+          "status": {
+            "enum": ["success", "error", "timeout"]
+          },
+          "http_status": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
     "score": {
       "type": "object",
       "additionalProperties": false,

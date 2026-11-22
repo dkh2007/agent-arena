@@ -910,3 +910,92 @@ def test_display_labels_reject_id_missing_from_vocabulary():
         _display_labels({"skill_id_that_does_not_exist"}, set())
     with pytest.raises(ReportError, match="没有对应的 label"):
         _display_labels(set(), {"pattern_that_does_not_exist"})
+
+
+# ---------------------------------------------------------------------------
+# B-32 第 1 层：报告里的「你实际调了哪几次」
+#
+# 判据三条：①有序列时逐次都在；②**不含返回体**（result_summary 里的行数/合计
+# 就是答案）；③trace 不合法时不带序列——半截序列比没有更误导。
+# ---------------------------------------------------------------------------
+
+def test_trace_view_lists_every_call_in_order():
+    report = _build("raw-perfect")
+    view = report["trace_view"]
+    calls = _raw("raw-perfect")["trace"]["tool_calls"]
+    assert len(view) == len(calls) == 5, "逐次调用必须一条不少"
+    assert [v["call_index"] for v in view] == [1, 2, 3, 4, 5], "顺序即编号，不能重排"
+    assert view[1]["status"] == "error" and view[1]["http_status"] == 500, (
+        "失败那次要能看出来是 500——否则学习者无法核对『我到底有没有遇到故障页』"
+    )
+    assert view[1]["params"] == {"offset": 10, "limit": 10}, "参数要原样给出，这是他自己的请求"
+
+
+def test_trace_view_never_carries_the_response_body():
+    """返回体是答案：`result_summary` 写着『10 orders』，给了就不用自己发现异常了。"""
+    report = _build("raw-perfect")
+    blob = json.dumps(report["trace_view"], ensure_ascii=False)
+    # 注意别拿"orders"当禁词：工具自己就叫 fetch_orders。要盯的是返回体摘要的形状
+    # ——「10 orders」这种计数字符串和 result_summary 这个键。
+    assert "result_summary" not in blob
+    assert "10 orders" not in blob, "返回体摘要漏进来了（里面写着返回了几行）"
+    for item in report["trace_view"]:
+        assert set(item) <= {"call_index", "name", "params", "status", "http_status"}
+    written = report["trace_view"][-1]["params"]
+    assert set(written) == {"path", "content"}, "params 只做截断，不额外增删键"
+    # 参数里那份 content 是**学习者自己写的答案**（他手上本来就有），不是判分侧的真相。
+    assert not any("valid_count" in str(v) and "\"valid_count\"" not in str(v)
+                   for v in written.values())
+
+
+def test_trace_view_is_absent_when_no_trace_was_reported():
+    report = _build("raw-no-trace")
+    assert report["trace_audit"]["reported"] is False
+    assert "trace_view" not in report, "没交 trace 就不该出现这个键（空数组会被读成『一次没调』）"
+
+
+def test_trace_view_is_absent_when_trace_is_structurally_invalid():
+    """编号乱序 ⇒ schema_valid=false。半截序列会让人以为『我只调了这么几次』。"""
+    # 走 build_report 时 trace_audit 是**输入**（它是 assemble_raw 的派生物，不在这里重算），
+    # 所以这条用例直接把"已判定为不合法"的审计结果喂进去，看序列会不会照发。
+    raw = copy.deepcopy(_raw("raw-perfect"))
+    raw["trace"]["tool_calls"][1]["call_index"] = 7  # 1,7,3,4,5
+    raw["trace_audit"] = {"reported": True, "schema_valid": False,
+                          "invalid_reasons": ["call_index_not_sequential"], "call_count": 5}
+    report = build_report(TASK, raw, VOCAB)
+    assert report["trace_audit"]["schema_valid"] is False
+    assert "trace_view" not in report
+    assert "call_index_not_sequential" in report["trace_audit"]["invalid_reasons"]
+
+
+def test_trace_view_truncates_long_params_but_says_so():
+    raw = copy.deepcopy(_raw("raw-perfect"))
+    long_text = "x" * 500
+    raw["trace"]["tool_calls"][-1]["params"]["content"] = long_text
+    report = build_report(TASK, raw, VOCAB)
+    content = report["trace_view"][-1]["params"]["content"]
+    assert len(content) < 200, "没截断就会把整份产物塞进报告"
+    assert content.startswith("x" * 120)
+    assert "原 500 字符" in content, "截断必须标原长，否则学习者以为参数就这么短"
+
+
+def test_trace_view_passes_schema_validation():
+    report = _build("raw-perfect")
+    validate_report(report, SCHEMA)  # trace_view 是可选键，但一旦出现就得合 schema
+
+
+def test_format_trace_view_renders_rows_and_handles_empty():
+    from arena.diagnosis_report import format_trace_view
+
+    text = format_trace_view([
+        {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10},
+         "status": "success"},
+        {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10},
+         "status": "error", "http_status": 500},
+    ])
+    lines = text.splitlines()
+    assert lines[0].split() == ["#", "工具", "参数", "状态"]
+    assert lines[1].startswith("---"), "表头与数据之间要有分隔线，否则一行行读不清"
+    assert "error (500)" in lines[-1] and "offset=10" in lines[-1]
+    assert "offset=0" in lines[-2]
+    assert format_trace_view([]) == "（这次没有任何工具调用记录）"
