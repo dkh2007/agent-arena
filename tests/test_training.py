@@ -64,8 +64,12 @@ def test_family_position_rejects_non_positive_or_non_int_difficulty(bad):
 
 
 def test_levels_in_family_lists_each_family(catalog):
+    # 2026-11-22 扩题（13 → 20）：四个家族都补齐到 1/2/3。
+    # locate-drill 此前只有 [1, 2]（缺难度 3），fix-004 补上后变 [1, 2, 3]。
     assert levels_in_family("order-report", catalog) == [1, 2, 3]
-    assert levels_in_family("locate-drill", catalog) == [1, 2]
+    assert levels_in_family("locate-drill", catalog) == [1, 2, 3]
+    assert levels_in_family("param-surface", catalog) == [1, 2, 3]
+    assert levels_in_family("retry-drill", catalog) == [1, 2, 3]
     assert levels_in_family("no-such-family", catalog) == []
 
 
@@ -90,7 +94,16 @@ def test_next_in_family_walks_the_real_chains(by_id, task_id, expected):
     assert nxt is not None and nxt["task_id"] == expected
 
 
-@pytest.mark.parametrize("task_id", ["dbg-004-sensor-batch", "fix-002-cart-none-deref", "ret-003-fourth-page-fault"])
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "dbg-004-sensor-batch",
+        # 2026-11-22：locate-drill 的族尾从 fix-002（难度 2）变成 fix-004（难度 3），
+        # fix-002 现在有下一档 fix-004，不再满足"没有下一档"。
+        "fix-004-cache-lost-update",
+        "ret-003-fourth-page-fault",
+    ],
+)
 def test_top_of_family_has_no_next(by_id, task_id):
     assert next_in_family(by_id[task_id], list(by_id.values())) is None
 
@@ -177,14 +190,23 @@ def test_drill_brief_no_family_does_not_invent_a_level(by_id):
 
 def test_mutation_raising_difficulty_removes_the_recommendation(by_id, tmp_path):
     """把下一档的 difficulty 改掉，推荐必须跟着消失——证明它真在读 YAML，不是常量。"""
+    # 2026-11-22：同一档可以有多道题（order-report 的难度 2 现在有 dbg-003 与 dbg-005），
+    # 只改走一道时 dbg-001 仍有下一档，断言会假红。必须把该档**整档**改走。
+    # 用 family_position 动态挑而不是写死 task_id：以后再加同档题也不用回来改这条。
+    target = ("order-report", 2)
     catalog = []
+    raised = 0
     for task_id, task in by_id.items():
         copy = yaml.safe_load(yaml.safe_dump(task, allow_unicode=True))
-        if task_id == "dbg-003-purchase-report":
+        if family_position(copy) == target:
             copy["variant_meta"]["difficulty"] = 9
+            raised += 1
         catalog.append(copy)
+    assert raised >= 1, f"前置条件不成立：{target} 在任务库里一道都没有"
     brief = drill_brief(by_id["dbg-001-order-report"], catalog)
-    assert brief["status"] == "top_of_family", "difficulty=2 的题被改走后，dbg-001 不该还有下一档"
+    assert brief["status"] == "top_of_family", (
+        f"{target} 整档（{raised} 道）被改走后，dbg-001 不该还有下一档"
+    )
 
 
 def test_mutation_dropping_family_disables_recommendation(by_id):
