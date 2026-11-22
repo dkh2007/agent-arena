@@ -34,8 +34,13 @@ OUT_PATH = ROOT / "docs" / "copy-inventory.md"
 # Android 侧：用户能看见的字符串都在这几个文件里（.kt 全部扫，不写死清单，
 # 免得以后加页面忘了加进名单——漏扫一份，那张表就会悄悄少一半）。
 KOTLIN_DIR = ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "arena" / "companion"
-# 数据层：页面上展示的材料由它产出（三问提纲、提示条标签、来源说明、错误信息）。
-PYTHON_SOURCES = [ROOT / "src" / "arena" / "feynman.py"]
+# 数据层：页面上展示的材料由它们产出（三问提纲、提示条标签、来源说明、错误信息；
+# 提醒页的标题与逾期说法）。只列文件不扫目录：src/arena 下大量模块的字符串是内部
+# 错误消息，不是"用户可见"，全扫会让表里九成是噪音。
+PYTHON_SOURCES = [
+    ROOT / "src" / "arena" / "feynman.py",
+    ROOT / "src" / "arena" / "reminder.py",
+]
 
 _CJK = re.compile(r"[\u4e00-\u9fa5]")
 _STR_LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
