@@ -51,9 +51,10 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 一次提交：取任务定义（**必须合并 base_task**，见 §7）→ 逐项判（确定性断言 + 语义双判，分歧进仲裁）
 → 先 gate 后 credit → 归因错误模式并绑技能 → 折熟练度、排复习 → 推荐下一题 → 渲染三页。
 
-任务库结构（**数字是 2026-11-21 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
-13 题 = 2 个基座 + 11 个参数变体；每题合并后都是 5 个判分项（2 前提 + 3 得分）。
-（取样时点 2026-11-21；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l`。）
+任务库结构（**数字是 2026-11-22 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
+24 题 = 2 个基座 + 22 个参数变体，四族 7/7/5/5（`order-report` / `retry-drill` / `param-surface` / `locate-drill`），
+难度 1/2/3 全档覆盖；每题合并后都是 5 个判分项（2 前提 + 3 得分）。
+（取样时点 2026-11-22；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l` 或 `python scripts/new_task.py --list` 末行。）
 技能 3 个；错误类型 17 条，其中 4 条不映射技能（`no_output_file` / `empty_output_file` /
 `task_crashed` / `task_timeout`，属交付纪律类，语义上刻意如此）。
 **不会随扩题变的是结构**：每个变体合并后都必须是 5 项、未映射的那几条必须是前提失败类。
@@ -180,7 +181,7 @@ git rev-list --count HEAD
 | 报告字段定义 | `docs/diagnosis-report-schema.md` |
 | 执行器语义 | `docs/executor-semantics.md` |
 | 用户可见文案 | `docs/copy-inventory.md` |
-| **加一道题 / 改一道题** | **`docs/authoring-tasks.md`**（结构约束、要同步的硬编码、验收命令、锁得住/锁不住） |
+| **加一道题 / 改一道题** | 先跑 **`python scripts/new_task.py --list` / `--check`**（生成 + 3 秒单题自检）；规矩读 **`docs/authoring-tasks.md`**（结构约束、要登记的台账与家族表、验收命令、锁得住/锁不住） |
 | 测试证据档案 | `docs/test-evidence/INDEX.md` |
 | 历轮外评与处置 | `docs/external-review-*.md`（disposition 是结论，question 是输入） |
 | 架构自包含说明 | `docs/architecture-for-review.md` |
