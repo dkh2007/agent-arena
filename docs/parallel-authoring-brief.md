@@ -97,7 +97,7 @@ worktree 里**没有虚拟环境**，这台机器的 `python` 与 `pytest` 也�
 
 ---
 
-## 3. 九条红线（每条线程通用，卡里也重复一遍）
+## 3. 九条红线（每条线程通用；四个指令文件里各有一份精简版）
 
 1. **只准动自己家族的编号段**。§4 每张卡写了段号，写超了就撞别人的文件名。
 2. **只准动 `tasks/<你自己的>.yaml`**。不要改母本 `dbg-001` / `fix-001`——改母本会同骨架所有题一起变，那不是加题。
@@ -118,224 +118,30 @@ worktree 里**没有虚拟环境**，这台机器的 `python` 与 `pytest` 也�
 
 ---
 
-## 4. 线程卡（每张 = 一段可直接粘贴的 prompt）
+## 4. 四条线程的指令文件（每个文件 = 一条线程的全部指令）
 
-每张卡最上面是**题材槽**：那几行由你填，其余不要改。填完把整段粘给新会话。
+四个文件各自自包含：位置自检、要读什么、在哪改、改完放哪、测试命令与通过标准、报告格式。
+**把对应文件整份交给那条线程即可**，它不需要读这份文档。
 
-### 4.1 卡 T1：`locate-drill` 家族（最缺的一块）
+| 线程 | 指令文件 | 家族 | 加几道 | 编号段 | 分支 / worktree |
+|---|---|---|---|---|---|
+| T1 | `docs/threads/T1-locate.md` | `locate-drill` | 2 | fix-003 / fix-004 | `thread/locate` · `arena-t-locate` |
+| T2 | `docs/threads/T2-param.md` | `param-surface` | 1 | prm-004 | `thread/param` · `arena-t-param` |
+| T3 | `docs/threads/T3-order.md` | `order-report` | 2 | dbg-005 / dbg-006 | `thread/order` · `arena-t-order` |
+| T4 | `docs/threads/T4-retry.md` | `retry-drill` | 2 | ret-005 / ret-006 | `thread/retry` · `arena-t-retry` |
 
-> **为什么给它两条题**：这是唯一只有 2 题的家族，而且缺难度 3；`failure_retry` 至今没有定位类题目（B-05b 边界③）。
+合计 +7：13 → **20**。
 
-```
-你在一份本地 git 仓库里加 2 道「定位题」。工作目录是一个 git worktree，
-路径末尾是 arena-t-locate（开新会话时选中该目录；进来先 pwd 确认，不在这个目录就别动手）
+**线程只交这三样**（都在它自己的 worktree 里 commit 到自己的分支，不 push）：
 
-先用 git branch --show-current 确认在 thread/locate 分支上，然后按顺序读完这四份文件再动手：
-1. docs/authoring-tasks.md      —— 加题的完整规范（七步清单、陷阱表）
-2. tasks/fix-001-token-expiry.yaml —— 这个家族的母本（骨架、字段全貌）
-3. tasks/fix-002-cart-none-deref.yaml —— 最干净的一份变体（只写差异的写法）
-4. tests/test_locate_skeleton.py  —— 定位族特有的断言
+1. `tasks/<编号>-<短名>.yaml` —— 新题
+2. 计数测试的两行 —— 按它自己那份改，合并时我按总数重算
+3. `docs/threads/report-<家族>.md` —— 报告，作为加题证据留档
 
-你负责的编号段是 fix-003 / fix-004，不许用这两个之外的编号。
+其余一律不改：母本、别人的编号段、`docs/BACKLOG.md`、`docs/ROADMAP.md`、评审包。
 
-要加的两道题（题材已定，见下）：
-- fix-003：难度 2，日志里至少 3 条带 " ERROR " 的行
-- fix-004：难度 3，日志里至少 4 条带 " ERROR " 的行
-（难度与 ERROR 条数的对应关系有测试硬查：1→≥2、2→≥3、3→≥4，见 test_difficulty_is_not_decorative）
-
-题材槽【由需求方填，填完删掉本行】：
-- fix-003 场景：__________（示例：时间戳混用 UTC 与本地时区导致对账偏差）
-- fix-004 场景：__________（示例：并发写入没加锁导致后写覆盖前写）
-- 若题材槽留空，用上面括号里的示例，并在报告里注明"题材未指定，用了示例"。
-
-硬约束（违反任一条即作废）：
-1. 定位题不声明 derivation 块——答案是根因判断，不是推导值。
-2. 只新增 tasks/fix-003-*.yaml 与 tasks/fix-004-*.yaml，不修改母本与 fix-002。
-3. 唯一允许改的测试数字：tests/test_task_variants.py 的 assert len(all_tasks) == 13 → == 15。
-   tests/test_derivation.py 不要动（定位题不声明 derivation，11 不变）。
-   除这一行外，tests/ 下任何文件都不许改。
-4. 不跑全量测试，不 commit 到 main，不 push。不碰 docs/BACKLOG.md 与 docs/ROADMAP.md。
-5. 题面不许写"先看日志再看源码"这类步骤提示。
-
-验收前先跑一次下面的第一条命令，确认基线全绿（红就停手、贴原始输出，别动测试）。
-
-验收（两条都要绿，把完整输出贴进报告）：
-PYTHONPATH=src pytest tests/test_task_yaml.py tests/test_task_variants.py \
-  tests/test_task_executability.py tests/test_derivation.py -q
-PYTHONPATH=src pytest tests/test_task_variants.py -q -k "full_marks or own_failure"
-
-然后在 thread/locate 分支上 commit 一次，commit message 用：
-  feat(tasks): 加 fix-003 / fix-004（locate-drill 补难度 3）
-
-最后写一份报告，必须包含这四块（缺一块算没完成）：
-A. 改了哪些文件（git diff --stat 的输出）
-B. 两条验收命令的末尾结果行（passed 数量）
-C. 三个问题逐条自答——这是唯一能证明"不是只换了业务名"的东西：
-   ① 学员要处理的东西数量变了吗？（日志条数 / 文件数 / 错误种类数）
-   ② 故障或异常的种类变了吗？
-   ③ 决策点变了吗？（在哪一步必须做出判断）
-   三条都答"没变"说明这题只是改名，回去改题再验收。
-D. 你自己不确定的地方（宁可写"我不确定"，不要写"应该没问题"）
-```
-
-### 4.2 卡 T2：`param-surface` 家族
-
-```
-你在一份本地 git 仓库里加 1 道「参数校验题」。工作目录是一个 git worktree，
-路径末尾是 arena-t-param（开新会话时选中该目录；进来先 pwd 确认，不在这个目录就别动手）
-
-先用 git branch --show-current 确认在 thread/param 分支上，然后按顺序读完这四份文件再动手：
-1. docs/authoring-tasks.md       —— 加题的完整规范
-2. tasks/dbg-001-order-report.yaml —— 母本（骨架全貌）
-3. tasks/prm-003-page-ceiling-4.yaml —— 同家族最难的一份，重点看它的题面怎么写上限
-4. 这两条会硬查你的题面，先读判据再写题面：
-   - tests/test_task_yaml.py 的 test_scenario_states_limit_error（题面必须说超限报什么错）
-   - tests/test_task_variants.py 的 test_scenario_mentions_the_real_ceiling_and_row_count
-     （题面写的上限与行数必须与 tools / test_inputs 真实一致）
-
-你负责的编号段是 prm-004，不许用别的编号。
-
-要加的题：
-- prm-004：难度 2，页上限换成 6（现有是 5 / 5 / 4，换成 6 是为了让"边界外一点"更不显眼）
-- 总行数要满足难度 2 的页数下限：ceil(行数 / 6) ≥ 3，即至少 13 行，建议 18–20 行
-
-题材槽【由需求方填，填完删掉本行】：
-- prm-004 场景：__________（示例：物流轨迹批量查询，字段名是 tracking_id）
-
-硬约束：
-1. 题面必须明说"limit 超过 6 会返回 invalid_limit"，且写的上限、总行数必须与 tools/test_inputs 真实一致。
-2. 期望值（有效行数、总金额）必须先把数据跑一遍得出，不许预填。
-3. 只新增 tasks/prm-004-*.yaml。唯一允许改的测试数字：
-   tests/test_task_variants.py 的 assert len(all_tasks) == 13 → == 14。
-   tests/test_derivation.py 的 assert checked == 11 → == 12（汇报族都声明 derivation）。
-   除这两行外 tests/ 任何文件不许改。
-4. 不跑全量，不 commit 到 main，不 push，不碰 BACKLOG / ROADMAP。
-5. 题面不许写步骤提示。
-
-验收前先跑一次下面的第一条命令，确认基线全绿（红就停手、贴原始输出，别动测试）。
-
-验收（两条都要绿，贴完整输出）：
-PYTHONPATH=src pytest tests/test_task_yaml.py tests/test_task_variants.py \
-  tests/test_task_executability.py tests/test_derivation.py -q
-PYTHONPATH=src pytest tests/test_task_variants.py -q -k "full_marks or own_failure"
-
-然后 commit 一次：
-  feat(tasks): 加 prm-004（param-surface 页上限 6）
-
-报告四块（同 T1）：
-A. git diff --stat
-B. 两条验收的末尾结果行
-C. 三个问题自答（处理的东西数量 / 异常种类 / 决策点）
-D. 不确定的地方
-```
-
-### 4.3 卡 T3：`order-report` 家族
-
-```
-你在一份本地 git 仓库里加 2 道「汇报题」（调试向）。工作目录是一个 git worktree，
-路径末尾是 arena-t-order（开新会话时选中该目录；进来先 pwd 确认，不在这个目录就别动手）
-
-先用 git branch --show-current 确认在 thread/order 分支上，然后按顺序读完这四份文件再动手：
-1. docs/authoring-tasks.md          —— 加题的完整规范（尤其 §1 七步清单与 §4 陷阱表）
-2. tasks/dbg-001-order-report.yaml  —— 母本（骨架全貌）
-3. tasks/dbg-002-invoice-report.yaml —— 最干净的变体范本（66 行，照着它的结构写）
-4. tasks/dbg-004-sensor-batch.yaml  —— 同家族难度 3 的一份，看它怎么把难度做上去
-
-你负责的编号段是 dbg-005 / dbg-006，不许用别的编号。
-
-要加的两道题：
-- dbg-005：难度 2，页数至少 3（即 ceil(行数 / page_size_max) ≥ 3）
-- dbg-006：难度 3，页数至少 4
-- **两题都要显式写 fault_injection**。注意：dbg-003 / dbg-004 自己的文件里**没有** fault_injection 块，
-  它们的故障是从母本 dbg-001 继承的（offset_covers: 10 / 500）。所以别去那两份文件里抄故障码，
-  要去 dbg-001 看。
-- 已用过的故障位：5 / 8 / 10 / 15 / 20 / 30。尽量错开（**没有测试强制唯一**，
-  错开是为了复习层不把两道题看成同一道）。
-- http_status 现有题只出现过 500 / 502 / 503。想用别的值，先去 src/arena/mock_tools.py
-  确认服务端会怎么回，不要猜。
-
-题材槽【由需求方填，填完删掉本行】：
-- dbg-005 场景：__________（示例：退货单金额核对）
-- dbg-006 场景：__________（示例：库存盘点差异汇总）
-- 若留空用上面示例，并在报告注明。
-
-硬约束：
-1. 变体只写差异，不许抄 rubric_gate / scoring / trace_requirements / submission_requirements
-   （有测试查：test_every_variant_declares_its_parent_and_does_not_restate_skeleton）。
-2. 故障位用 offset_covers: N（页区间覆盖），不是 offset: N（精确相等）。
-   R3 的期望恰好两步：失败（status: error）→ 成功，且 params_match 与 fault_injection.match 必须相等。
-3. 被剔除的每一行都要在 YAML 里逐行注释原因（缺字段 / null / 负数 / 重复 id 等）。
-4. 期望值必须先跑出来。test_inputs.expected 与 rubric_credit[R2].expected 必须相等。
-5. 唯一允许改的测试数字：len(all_tasks) == 13 → == 15；checked == 11 → == 13。
-   除这两行外 tests/ 不许改。
-6. 不跑全量，不 commit 到 main，不 push，不碰 BACKLOG / ROADMAP。
-7. 题面不许写步骤提示。
-
-验收前先跑一次下面的第一条命令，确认基线全绿（红就停手、贴原始输出，别动测试）。
-
-验收（两条都要绿，贴完整输出）：
-PYTHONPATH=src pytest tests/test_task_yaml.py tests/test_task_variants.py \
-  tests/test_task_executability.py tests/test_derivation.py -q
-PYTHONPATH=src pytest tests/test_task_variants.py -q -k "full_marks or own_failure"
-
-然后 commit 一次：
-  feat(tasks): 加 dbg-005 / dbg-006（order-report）
-
-报告四块（同 T1）：git diff --stat / 验收结果行 / 三个问题自答 / 不确定的地方
-```
-
-### 4.4 卡 T4：`retry-drill` 家族
-
-```
-你在一份本地 git 仓库里加 2 道「重试题」。工作目录是一个 git worktree，
-路径末尾是 arena-t-retry（开新会话时选中该目录；进来先 pwd 确认，不在这个目录就别动手）
-
-先用 git branch --show-current 确认在 thread/retry 分支上，然后按顺序读完这五份文件再动手：
-1. docs/authoring-tasks.md         —— 加题的完整规范（§1 第 6 步尤其重要）
-2. tasks/dbg-001-order-report.yaml —— 母本
-3. tasks/ret-001-refund-503.yaml   —— 家族最简单的一份
-4. tasks/ret-004-narrow-page.yaml  —— 最新的一份（2026-11-21 加，页上限 5、30 行 6 页）
-5. src/arena/mock_tools.py 里 _take_fault 与 page_covers —— 故障到底怎么被触发
-
-你负责的编号段是 ret-005 / ret-006，不许用别的编号。
-
-要加的两道题：
-- ret-005：难度 2，页数至少 3（ceil(行数 / page_size_max) ≥ 3）
-- ret-006：难度 3，页数至少 4
-- 两题的故障位置要"离首页更远"（这是难度递增的真实含义，不是装饰字段）
-- http_status 现有题只出现过 500 / 502 / 503（母本 500、ret-001 503、ret-004 502），
-  想用别的值先去 src/arena/mock_tools.py 确认服务端怎么回，不要猜
-- 已用过的故障位：5 / 8 / 10 / 15 / 20 / 30，尽量错开（无测试强制，为了复习层能区分）
-
-题材槽【由需求方填，填完删掉本行】：
-- ret-005 场景：__________（示例：批量导出任务轮询，中途 502）
-- ret-006 场景：__________（示例：对账接口在第 6 页才 503）
-- 若留空用上面示例，并在报告注明。
-
-硬约束：
-1. 故障位用 offset_covers: N（页区间覆盖）。learner 用任意合法 limit 都必须恰好踩到一次。
-   有测试硬查 6 种页大小：tests/test_mock_tools.py::test_b31_fault_triggers_for_any_legal_page_size
-   （判分侧还有一条 tests/test_assertion_evaluator.py::test_b31_any_legal_page_size_can_pass_r3）。
-2. R3 期望恰好两步：失败（status: error）→ 成功。不许设计"连续失败两次"或"第二次调用才失败"
-   ——现有骨架表达不出来（规范 §1 第 6 步末尾）。
-3. 期望值先跑出来再填。
-4. 唯一允许改的测试数字：len(all_tasks) == 13 → == 15；checked == 11 → == 13。
-   除这两行外 tests/ 不许改。
-5. 不跑全量，不 commit 到 main，不 push，不碰 BACKLOG / ROADMAP。
-6. 题面不许写"失败后重试一次就行"这类提示——那会把 R3 变成照抄。
-
-验收前先跑一次下面的第一条命令，确认基线全绿（红就停手、贴原始输出，别动测试）。
-
-验收（两条都要绿，贴完整输出）：
-PYTHONPATH=src pytest tests/test_task_yaml.py tests/test_task_variants.py \
-  tests/test_task_executability.py tests/test_derivation.py -q
-PYTHONPATH=src pytest tests/test_task_variants.py -q -k "full_marks or own_failure"
-
-然后 commit 一次：
-  feat(tasks): 加 ret-005 / ret-006（retry-drill）
-
-报告四块（同 T1）：git diff --stat / 验收结果行 / 三个问题自答 / 不确定的地方
-```
+> 四个文件里的测试命令、基线数字、故障自检脚本都**实测过**（脚本拿 `ret-004` 跑出
+> `limit=1..5 → hits=[20]`，与预期一致；也由此发现超限 limit 的 400 会被误记成故障命中）。
 
 ---
 
