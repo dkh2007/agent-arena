@@ -1,0 +1,82 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+base_task: dbg-001-order-report
+task_id: dbg-006-stock-diff-audit
+task_version: "2026-11-22.1"
+title: 库存盘点差异汇总报告（调试向 · 变体）
+primary_skill_id: multi_step_planning
+secondary_skill_ids: ['tool_param_validation', 'failure_retry']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: order-report
+  difficulty: 3          # 4 页（34 行 / 上限 10），剔除 7 行、三类原因各出现两次以上
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部盘点差异记录（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 34 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  match:
+    offset_covers: 27
+  failures:
+    - attempt: 1
+      http_status: 500
+      error: internal_error
+
+test_inputs:
+  # 34 条记录；被逐行标注剔除原因。上限 10 ⇒ 4 页；故障在第 28 条（第四页内）
+  # 三类无效原因（null / 缺字段 / 负数）各出现两次以上，且最后一页仍含 2 类
+  orders_fixture:
+    - {order_id: sku-a01, amount: 312.5}
+    - {order_id: sku-a02, amount: 428.75}
+    - {order_id: sku-a03, amount: null}                 # 金额为 null
+    - {order_id: sku-a04, amount: 545.0}
+    - {order_id: sku-a05, amount: 661.25}
+    - {order_id: sku-a06}                               # 缺 amount 字段
+    - {order_id: sku-a07, amount: 777.5}
+    - {order_id: sku-a08, amount: 893.75}
+    - {order_id: sku-a09, amount: 1010.0}
+    - {order_id: sku-a10, amount: -1126.25}             # 负数
+    - {order_id: sku-a11, amount: 1242.5}
+    - {order_id: sku-a12, amount: 1358.75}
+    - {order_id: sku-a13, amount: 1475.0}
+    - {order_id: sku-a14, amount: 1591.25}
+    - {order_id: sku-a15, amount: null}                 # 金额为 null
+    - {order_id: sku-a16, amount: 1707.5}
+    - {order_id: sku-a17, amount: 1823.75}
+    - {order_id: sku-a18, amount: 1940.0}
+    - {order_id: sku-a19, amount: 2056.25}
+    - {order_id: sku-a20, amount: 2172.5}
+    - {order_id: sku-a21, amount: 2288.75}
+    - {order_id: sku-a22, amount: 2405.0}
+    - {order_id: sku-a23, amount: 2521.25}
+    - {order_id: sku-a24, amount: 2637.5}
+    - {order_id: sku-a25, amount: 2753.75}
+    - {order_id: sku-a26, amount: 2870.0}
+    - {order_id: sku-a27, amount: 2986.25}
+    - {order_id: sku-a28, amount: 3102.5}
+    - {order_id: sku-a29, amount: -3218.75}             # 负数
+    - {order_id: sku-a30, amount: 3335.0}
+    - {order_id: sku-a31, amount: 3451.25}
+    - {order_id: sku-a32}                               # 缺 amount 字段
+    - {order_id: sku-a33, amount: null}                 # 金额为 null
+    - {order_id: sku-a34, amount: 3683.75}
+  expected:
+    valid_count: 27
+    total_amount: 52031.25
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 27, total_amount: 52031.25}
+  - id: R3_retry_evidence
+    expected:
+      calls:
+        - {name: fetch_orders, params_match: {offset_covers: 27}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset_covers: 27}, status: success}
+    # error_pattern_detection 不写：母本 cases 已是相对谓词，与页大小、故障位置无关（B-31）
