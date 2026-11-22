@@ -36,14 +36,29 @@ SELF = Path(__file__).resolve()
 
 # Adjacent literals are intentional. A contiguous literal here would make
 # this file hit its own gate; runtime values stay exact after concatenation.
+#
+# 只有"凭据文件标记"这类本身就有意义的放这里；**令牌前缀不放**——
+# 它们必须连一个足够长的随机串一起才算数（见 SECRET_PATTERNS）。
 SECRET_PREFIXES = (
-    "sk" "-",
-    "gh" "p_",
-    "github" "_pat_",
     "-----" "BEGIN",
     "PASS" "WORD=",
     "P" "AT=",
     "Bea" "rer ",
+)
+
+# 令牌形状：前缀 + 足够长的 base62 串 + 左边界不是字母数字。
+#
+# 为什么需要左边界和长度（2026-11-22 实测）：裸前缀匹配会把 `task-authoring-log.yaml`
+# 判成 OpenAI 密钥（"ta|sk-"），于是一份全是文档改动的提交被闸门拦下 37 处。
+# 那次是真·假阳性：`git log -p --all | grep 'sk-[A-Za-z0-9]\{16,\}'` 命中 0。
+# 收紧后判据变成"看起来真的是一把钥匙"：前面不能紧跟字母数字，后面至少 20 位随机串
+# （OpenAI 的 key ≥ 40 位，GitHub PAT ≥ 36 位，20 是留足余量的下界）。
+_TOKEN_TAIL = r"[A-Za-z0-9_\-]{20,}"
+_LEFT_EDGE = r"(?<![A-Za-z0-9])"
+SECRET_PATTERNS = (
+    re.compile(_LEFT_EDGE + "s" "k-" + _TOKEN_TAIL),
+    re.compile(_LEFT_EDGE + "g" "hp_" + _TOKEN_TAIL),
+    re.compile(_LEFT_EDGE + "github" "_pat_" + _TOKEN_TAIL),
 )
 
 EXIT_CLEAN = 0
@@ -118,6 +133,9 @@ def tag_text(text: str, words: tuple[str, ...], paths: list[str], username: str)
         tags.append("ABS_PATH")
     if any(s in text for s in SECRET_PREFIXES):
         tags.append("SECRET")
+    if not tags or "SECRET" not in tags:
+        if any(p.search(text) for p in SECRET_PATTERNS):
+            tags.append("SECRET")
     if username and username in text:
         tags.append("USERNAME")
     return tags
