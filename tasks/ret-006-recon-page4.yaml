@@ -1,0 +1,88 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+#
+# 扩题（B-30，2026-11-22，T4 线程）：retry-drill 第 6 道，家族难度天花板。33 行 / 每页 ≤10 ⇒ 4 页，
+# 故障压到**第 4 页第 2 条**（索引 31）：要翻过三整页才遇到失败，失败后同一页还剩 1 条有效记录、
+# 且该页末行是一条无效记录——重试后不把这一页重拉完，就会既少数又多数。
+# 与 ret-004（页上限 5、故障在第 5 页）的区别：那道靠"页更小"堆页数，本题页上限仍是 10，
+# 靠"行数更多 + 故障更靠后"堆难度，学习者的 limit 选择空间不变。
+base_task: dbg-001-order-report
+task_id: ret-006-recon-page4
+task_version: "2026-11-22.1"
+title: 对账结果核对报告（重试专项 · 故障在第四页）
+primary_skill_id: failure_retry
+secondary_skill_ids: ['multi_step_planning', 'tool_param_validation']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: retry-drill
+  difficulty: 3          # 33 行 / 每页 ≤10 ⇒ 4 页，难度 3 要求 ≥4 页
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部对账明细（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 33 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  match:
+    offset_covers: 31       # 第 4 页（索引 30–32）第 2 条
+  failures:
+    - attempt: 1
+      http_status: 500
+      error: internal_error
+
+test_inputs:
+  # 33 条记录，4 页（每页 ≤10）；5 条无效行：
+  # 第 1 页 2 条（null / 缺字段）、第 2 页 1 条（负数）、第 3 页 1 条（null）、第 4 页 1 条（null）。
+  # 第 4 页（索引 30–32）结构：索引 30 有效、索引 31 有效（故障点）、索引 32 无效。
+  # 重试后只补索引 31 而不重拉整页 ⇒ valid_count 会多 1（把索引 32 的 null 算进去）。
+  orders_fixture:
+    - {order_id: rc-001, amount: 250.0}
+    - {order_id: rc-002, amount: 312.5}
+    - {order_id: rc-003, amount: 375.0}
+    - {order_id: rc-004, amount: null}                  # 金额为 null（第 1 页）
+    - {order_id: rc-005, amount: 500.0}
+    - {order_id: rc-006, amount: 562.5}
+    - {order_id: rc-007, amount: 625.0}
+    - {order_id: rc-008, amount: 687.5}
+    - {order_id: rc-009}                                # 缺 amount 字段（第 1 页）
+    - {order_id: rc-010, amount: 812.5}
+    - {order_id: rc-011, amount: 875.0}
+    - {order_id: rc-012, amount: 937.5}
+    - {order_id: rc-013, amount: 1000.0}
+    - {order_id: rc-014, amount: 1062.5}
+    - {order_id: rc-015, amount: -1125.0}               # 负数（第 2 页）
+    - {order_id: rc-016, amount: 1187.5}
+    - {order_id: rc-017, amount: 1250.0}
+    - {order_id: rc-018, amount: 1312.5}
+    - {order_id: rc-019, amount: 1375.0}
+    - {order_id: rc-020, amount: 1437.5}
+    - {order_id: rc-021, amount: 1500.0}
+    - {order_id: rc-022, amount: 1562.5}
+    - {order_id: rc-023, amount: 1625.0}
+    - {order_id: rc-024, amount: 1687.5}
+    - {order_id: rc-025, amount: 1750.0}
+    - {order_id: rc-026, amount: 1812.5}
+    - {order_id: rc-027, amount: null}                  # 金额为 null（第 3 页）
+    - {order_id: rc-028, amount: 1937.5}
+    - {order_id: rc-029, amount: 2000.0}
+    - {order_id: rc-030, amount: 2062.5}
+    - {order_id: rc-031, amount: 2125.0}                # 第 4 页首行
+    - {order_id: rc-032, amount: 2187.5}                # 第 4 页第 2 行（故障点同行，数据有效）
+    - {order_id: rc-033, amount: null}                  # 金额为 null（第 4 页末行）
+  expected:
+    valid_count: 28
+    total_amount: 34812.5
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 28, total_amount: 34812.5}
+  - id: R3_retry_evidence
+    expected:
+      calls:
+        - {name: fetch_orders, params_match: {offset_covers: 31}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset_covers: 31}, status: success}
