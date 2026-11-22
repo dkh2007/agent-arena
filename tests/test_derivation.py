@@ -84,9 +84,18 @@ def test_rule_reproduces_every_answer_key():
                 f"{stem}: 规则现算 {name}={got[name]} 与答案键 {expected} 不符"
             )
         checked += 1
-    # 13 题里 2 道定位题（fix-*）不声明 derivation：答案不是推导值，是根因判断。
-    # 2026-11-21：10 → 11，新增 ret-004-narrow-page（经 base_task 继承 derivation 块）。
-    assert checked == 16, f"只有 {checked} 个任务声明了 derivation，应为 16（母本 + 15 变体）"
+    # 数量**不写死**（2026-11-22，B-30 扩题前置）。写死一个数会逼人每加一道题就改一次，
+    # 而"该有几道"这件事本来就能从磁盘算出来：答案键里有 `valid_count` 的题，
+    # 就是必须声明推导规则的题；定位题（fix-*）的答案是根因判断，不在其中。
+    # 这样守住的仍是原来那个意图——漏声明 derivation 就红——但加题时不用再动这里一行。
+    tasks = _all_tasks()
+    needs_rule = [stem for stem, t in tasks.items()
+                  if "valid_count" in (t.get("test_inputs", {}).get("expected") or {})]
+    missing = sorted(s for s in needs_rule if "derivation" not in tasks[s])
+    assert checked == len(needs_rule), (
+        f"{checked} 个任务声明了 derivation，但有 {len(needs_rule)} 个任务的答案键含 valid_count；"
+        f"缺规则的是：{missing}"
+    )
 
 
 def test_tasks_with_answer_keys_declare_a_rule():

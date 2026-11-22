@@ -41,7 +41,9 @@ def _all_task_files() -> list[Path]:
 
 def test_list_tasks_lists_every_task_in_the_catalog():
     rows = lab.list_tasks(TASKS)
-    assert len(rows) == len(_all_task_files()) == 20, (
+    # 不写死题数（2026-11-22）：核心是「lab 扫到的 == tasks/ 下全部任务」，那是漏扫判据；
+    # 题数本身由加题台账管（tests/test_task_authoring.py），这里再写一份就多一个真相源。
+    assert len(rows) == len(_all_task_files()), (
         f"--list 只列出 {len(rows)} 道，而题库有 {len(_all_task_files())} 道——"
         "新增任务没被扫到，学习者就找不到它"
     )
@@ -197,7 +199,7 @@ def test_port_in_use_says_which_flag_to_change():
 def test_cli_list_prints_every_task(capsys):
     assert lab.main(["--list", "--catalog", str(TASKS)]) == 0
     out = capsys.readouterr().out
-    assert out.count("\n") == 20
+    assert out.count("\n") == len(_all_task_files()), "一行一道题，别漏也别多空行"
     assert "dbg-001-order-report" in out
 
 
@@ -222,7 +224,7 @@ def test_shim_runs_without_pythonpath():
         cwd=str(ROOT),
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.count("\n") == 20
+    assert result.stdout.count("\n") == len(_all_task_files())
 
 
 def test_cli_really_serves_after_starting():

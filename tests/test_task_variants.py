@@ -38,28 +38,23 @@ TASKS_DIR = ROOT / "tasks"
 TASK_FILES = sorted(TASKS_DIR.glob("*.yaml"))
 GIT_HASH = "deadbee"
 
-# 骨架 → 母本（round-86 / B-05b：从 1 套变 2 套）。变体只能继承**自己那套**的母本，
-# 跨骨架继承会让"改母本 ⇒ 该骨架下所有任务一起变"这条保证失效。
-MOTHER_OF = {
-    "tpl-tool-debug": TASKS_DIR / "dbg-001-order-report.yaml",
-    "tpl-bug-locate": TASKS_DIR / "fix-001-token-expiry.yaml",
-}
+# 家族与骨架的唯一登记处：docs/task-families.yaml（2026-11-22，B-30 扩题前置）。
+# 原来这三张表写在测试里，于是加题文档抄一份、加题脚本再来一份——三份就会漂，漂的时候全绿。
+# 现在测试、脚本、文档共用一份；加家族是改 YAML，不用改 Python。
+FAMILIES = yaml.safe_load(
+    (ROOT / "docs" / "task-families.yaml").read_text(encoding="utf-8")
+)["families"]
+
 DEFAULT_TEMPLATE = "tpl-tool-debug"
 
-# 家族 → (主技能, 所属骨架)。放在测试里而不是"随手填"：任务的主技能与骨架必须与家族一致，
+# 骨架 → 母本（round-86 / B-05b：从 1 套变 2 套）。变体只能继承**自己那套**的母本，
+# 跨骨架继承会让"改母本 ⇒ 该骨架下所有任务一起变"这条保证失效。
+MOTHER_OF = {f["template"]: TASKS_DIR / f"{f['mother']}.yaml" for f in FAMILIES}
+
+# 家族 → (主技能, 所属骨架)。任务的主技能与骨架必须与家族一致，
 # 否则 tasks 表里的 primary_skill_id 只是装饰。
-FAMILY_PRIMARY = {
-    "order-report": "multi_step_planning",
-    "retry-drill": "failure_retry",
-    "param-surface": "tool_param_validation",
-    "locate-drill": "multi_step_planning",
-}
-FAMILY_TEMPLATE = {
-    "order-report": "tpl-tool-debug",
-    "retry-drill": "tpl-tool-debug",
-    "param-surface": "tpl-tool-debug",
-    "locate-drill": "tpl-bug-locate",
-}
+FAMILY_PRIMARY = {f["id"]: f["primary_skill"] for f in FAMILIES}
+FAMILY_TEMPLATE = {f["id"]: f["template"] for f in FAMILIES}
 # 骨架字段：同一骨架内必须逐项相同，只有这里没列的（expected / error_pattern_detection）才允许不同
 SKELETON_FIELDS = ("type", "target", "weight", "skill_id", "depends_on",
                    "on_fail", "error_patterns", "detects")
@@ -289,9 +284,15 @@ def test_every_skill_is_primary_somewhere(all_tasks):
     primaries = [t["primary_skill_id"] for t in all_tasks.values()]
     for sid in skills:
         assert primaries.count(sid) >= 2, f"技能 {sid} 作为主技能只出现 {primaries.count(sid)} 次"
-    # 故意写死：加题时必须停下来确认"这是一道真独立的题，不是复制粘贴"（docs/authoring-tasks.md §3）。
-    # 12 → 13：2026-11-21 新增 ret-004-narrow-page（retry-drill 家族首道 page=5 的题）。
-    assert len(all_tasks) == 20, f"任务库应为 20 个任务，实际 {len(all_tasks)}"
+    # 数量**不再写死**（2026-11-22，B-30 扩题前置）。原来这里是 `== 20`，注释写着
+    # 「故意写死，逼人停下来确认这题真的独立」——但改数字本身不需要任何判断，
+    # 那个闸没起作用，只让人每加一道题多改一行。现在闸换成「加题必须在台账里写一句 why」，
+    # 数量由台账行数决定（校验在 tests/test_task_authoring.py），这里只做双边对账。
+    log = yaml.safe_load((ROOT / "docs" / "task-authoring-log.yaml").read_text(encoding="utf-8"))
+    assert len(all_tasks) == len(log["tasks"]), (
+        f"任务库有 {len(all_tasks)} 道，加题台账登记了 {len(log['tasks'])} 道——"
+        f"两边必须一致；加题流程见 docs/authoring-tasks.md §1"
+    )
 
 
 def test_difficulty_is_not_decorative(all_tasks):

@@ -1,0 +1,94 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+#
+# 本文件由 `python scripts/new_task.py --new` 生成（2026-11-22，B-30）。
+# 生成时已按 derivation 现算好 expected，所以**默认自检与 pytest 都绿**；
+# 需要人改的只有 title 与 scenario 的措辞（那是教学设计，脚本不该替你想）。
+
+base_task: dbg-001-order-report
+task_id: dbg-007-first-fault
+task_version: "2026-11-22.1"
+title: 装运单核对报告（调试向 · 高密度脏数据）
+primary_skill_id: multi_step_planning
+secondary_skill_ids: ['multi_step_planning', 'tool_param_validation']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: order-report
+  difficulty: 2          # 25 行 / 每页 ≤10 ⇒ 3 页；改页数记得同步这一行
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  物流系统刚导出了本周全部 25 条装运单。
+  1. 使用工具 fetch_orders 分页拉取全部装运单（limit 取值必须在 1 到 10 之间，
+     超过 10 服务端会返回错误 invalid_limit；共 25 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  match:
+    offset_covers: 1
+  failures:
+    - attempt: 1
+      http_status: 500
+      error: internal_error
+
+tools:
+  - name: fetch_orders
+    parameters:
+      - name: offset
+        type: integer
+        required: true
+        minimum: 0
+      - name: limit
+        type: integer
+        required: true
+        minimum: 1
+        maximum: 10
+    mock:
+      pagination:
+        page_size_max: 10
+
+test_inputs:
+  # 25 条记录，3 页；被剔除的行已逐行标注原因。
+  orders_fixture:
+    - {order_id: nw-001, amount: 112.5}
+    - {order_id: nw-002, amount: 125.0}
+    - {order_id: nw-003}                        # 缺 amount 字段（第 3 条）
+    - {order_id: nw-004, amount: 137.5}
+    - {order_id: nw-005, amount: 150.0}
+    - {order_id: nw-006, amount: null}          # 金额为 null（第 6 条）
+    - {order_id: nw-007, amount: 162.5}
+    - {order_id: nw-008, amount: 175.0}
+    - {order_id: nw-009, amount: -175.0}        # 负数（第 9 条）
+    - {order_id: nw-010, amount: 187.5}
+    - {order_id: nw-011, amount: 200.0}
+    - {order_id: nw-012}                        # 缺 amount 字段（第 12 条）
+    - {order_id: nw-013, amount: 212.5}
+    - {order_id: nw-014, amount: 225.0}
+    - {order_id: nw-015, amount: null}          # 金额为 null（第 15 条）
+    - {order_id: nw-016, amount: 237.5}
+    - {order_id: nw-017, amount: 250.0}
+    - {order_id: nw-018, amount: -250.0}        # 负数（第 18 条）
+    - {order_id: nw-019, amount: 262.5}
+    - {order_id: nw-020, amount: 275.0}
+    - {order_id: nw-021}                        # 缺 amount 字段（第 21 条）
+    - {order_id: nw-022, amount: 287.5}
+    - {order_id: nw-023, amount: 300.0}
+    - {order_id: nw-024, amount: null}          # 金额为 null（第 24 条）
+    - {order_id: nw-025, amount: 312.5}
+  expected:
+    valid_count: 17
+    total_amount: 3612.5
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 17, total_amount: 3612.5}
+  - id: R3_retry_evidence
+    expected:
+      calls:
+        - {name: fetch_orders, params_match: {offset_covers: 1}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset_covers: 1}, status: success}

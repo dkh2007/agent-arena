@@ -1,0 +1,56 @@
+# 家族登记表（2026-11-22，B-30 扩题前置）
+#
+# ── 这个文件为什么存在 ────────────────────────────────────────────────────
+# 加一道题要先回答三个问题：属于哪个家族、家族用哪套骨架、骨架的母本是哪个文件。
+# 这三件事原来写在 tests/test_task_variants.py 的 FAMILY_PRIMARY / FAMILY_TEMPLATE /
+# MOTHER_OF 三张 Python 字典里。问题不是难看，是**同一张表要写三份**：
+# 测试一份、加题文档 §1 一份、加题脚本再来一份。三份就会漂，而漂的时候全绿。
+#
+# 现在这张表只有一份，三个读者共用：
+#   · tests/test_task_variants.py  —— 家族↔主技能↔骨架的约束
+#   · scripts/new_task.py          —— 生成骨架、校验单题
+#   · docs/authoring-tasks.md §1   —— 人看的同一张表（改了这里，文档照抄）
+#
+# ── 加一个家族（authoring-tasks.md §0 方式 B）────────────────────────────
+# 在下面加一段，**不用改 Python**。但要满足三条，测试会拦：
+#   ① primary_skill 必须在 docs/skill-taxonomy-v0.yaml 里；
+#   ② template 必须是已有骨架（新骨架＝方式 C，要人拍）；
+#   ③ mother 必须是该骨架的母本文件（与同 template 的其它家族一致）。
+#
+# ── 字段 ─────────────────────────────────────────────────────────────────
+#   id            家族 id（与 YAML 的 variant_meta.family_id 一致）
+#   primary_skill 该家族所有题的主技能（task YAML 的 primary_skill_id 必须等于它）
+#   template      骨架 id
+#   mother        母本文件名（不含 .yaml）——该家族新题的 base_task 默认填它
+#   prefix        task_id 前缀（dbg-/ret-/prm-/fix-）。加题脚本用它检查"新题放对家族了吗"，
+#                 台账也靠它把条目归到正确的段里
+#   about         一句话说明"这个家族在考什么、难度靠什么撑"，给加题的人看
+
+families:
+  - id: order-report
+    prefix: dbg-
+    primary_skill: multi_step_planning
+    template: tpl-tool-debug
+    mother: dbg-001-order-report
+    about: 拉全-剔除-统计-写报告。**故障从母本继承**（第一页末尾一次 500），所以本族的考点不在重试本身，而在「页数变多以后，剔除规则有没有覆盖到每一页」。
+
+  - id: retry-drill
+    prefix: ret-
+    primary_skill: failure_retry
+    template: tpl-tool-debug
+    mother: dbg-001-order-report
+    about: 分页途中注入一次故障，考「发现失败 → 原参数重试 → 补拉剩余页」；难度靠故障位置靠后程度撑。
+
+  - id: param-surface
+    prefix: prm-
+    primary_skill: tool_param_validation
+    template: tpl-tool-debug
+    mother: dbg-001-order-report
+    about: limit 上限被压低（4/5/6），超限直接报 invalid_limit；难度靠上限宽度 × 页数撑，可与故障叠加。
+
+  - id: locate-drill
+    prefix: fix-
+    primary_skill: multi_step_planning
+    template: tpl-bug-locate
+    mother: fix-001-token-expiry
+    about: 给日志与源码，要求指出根因类别与出错行；难度靠 ERROR 噪声条数与干扰线索撑。

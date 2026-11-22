@@ -61,6 +61,28 @@ curl -s -X POST http://127.0.0.1:8765/tools/fetch_orders \
   发现的东西——给了它，「发现异常」就退化成「读一段字」；
 - 分层提示按钮还没做：它涉及「看提示要不要在掌握度上降权」，见 `docs/BACKLOG.md` B-32。
 
+## 加一道题（内容维护侧）
+
+任务库现在 24 道（四个家族 7/7/5/5，难度 1/2/3 全档覆盖）。加题**不用改测试代码**：
+
+```bash
+python scripts/new_task.py --list                      # 四族梯度，看缺哪一档
+python scripts/new_task.py --new --family retry-drill \
+    --id ret-008-xxx --title "……" --rows 28 --page 10 --write
+python scripts/new_task.py --check ret-008-xxx         # 只查这一道，3 秒出结果
+```
+
+三条口径写在代码里：
+
+- **期望值不手抄**。生成时按任务自己声明的 `derivation` 现算（与判分侧同一条规则），
+  改数据后 `--check` 会直接把正确值打出来；
+- **数量不写死**。加题必须在 `docs/task-authoring-log.yaml` 写一句 `why`（这题变的是什么）——
+  原来"改测试里写死的数字"这道闸是假的：改数字不需要判断；
+- **家族表单一来源**。`docs/task-families.yaml` 一份，测试、脚本、文档共用。
+
+判据仍在测试里：`--check` 报的每一条都对应 `tests/` 中一条用例；规矩与陷阱见
+`docs/authoring-tasks.md`，并行开线程加题见 `docs/parallel-authoring-brief.md`。
+
 ## 今天该复习什么（提醒页数据侧）
 
 ```bash
@@ -115,7 +137,7 @@ python scripts/test_evidence.py      # 跑一遍 pytest，把结果写成档案
 
 ## 文案总表
 
-页面上每一句用户能看到的字都收在 `docs/copy-inventory.md`（153 条，带 `文件:行` 定位）。
+页面上每一句用户能看到的字都收在 `docs/copy-inventory.md`（169 条，带 `文件:行` 定位）。
 表由脚本从源码生成、**不许手改**——手改会让表和代码脱钩，变成错的第二真相源。
 
 ```bash

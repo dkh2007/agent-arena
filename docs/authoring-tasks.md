@@ -11,6 +11,20 @@
 
 **一句话**：加一道题＝**在已有骨架上换情景变量**；换判分结构是另一件事，要新建骨架，且要人拍。
 
+**最快路径（2026-11-22 起）**——一条命令生成、三秒自检，不用先读完整份文档：
+
+```bash
+python scripts/new_task.py --list                       # 看四个家族各自的难度梯度，挑缺的那一档
+python scripts/new_task.py --new --family retry-drill \
+    --id ret-008-xxx --title "……" --rows 28 --page 10 --write
+python scripts/new_task.py --check ret-008-xxx          # 只查这一道，3 秒出结果
+```
+
+生成器会把 `expected` 按 `derivation` **现算好**（第 5 步那条纪律由代码代劳），
+自动登记台账并提示还差什么。产出的题默认就能过 `--check` 与 pytest；
+要人动手的只剩 `title` 与 `scenario` 的措辞——那是教学设计，脚本不该替你想。
+下面七步仍是**判据来源**：工具报的每条错都对应这里的一条约束与 `tests/` 里的一条用例。
+
 ---
 
 ## 0. 三种"加题"方式（代价从低到高）
@@ -29,6 +43,10 @@
 ## 1. 加一道变体：七步清单
 
 以 `tasks/dbg-002-invoice-report.yaml` 为范本（66 行，是最干净的一份变体：只写差异，不碰骨架）。
+
+**第 0 步（可选但推荐）：跑生成器。** `python scripts/new_task.py --new ...` 会按下面七步里
+的硬约束产出骨架，并把期望值算好。手写也行，但手写必须自己跑 `--check`——它会把下面
+每一条都过一遍，比等全量测试报错快两个数量级。
 
 **第 1 步：选家族与母本。** 家族决定主技能与骨架，母本决定继承谁：
 
@@ -87,9 +105,12 @@
 
 ---
 
-## 2. 验收命令（快 → 慢，三档都要过）
+## 2. 验收命令（快 → 慢，四档都要过）
 
 ```bash
+# ⓪ 只查这一道题（2026-11-22 新增）：3 秒，逐条列出还差什么
+python scripts/new_task.py --check tasks/新题.yaml
+
 # ① 任务层的快门槛：141 条，实测 27 秒（2026-11-21）
 PYTHONPATH=src python -m pytest tests/test_task_yaml.py tests/test_task_variants.py \
   tests/test_task_executability.py -q
@@ -108,17 +129,27 @@ PYTHONPATH=src python -m pytest tests -q
 
 ---
 
-## 3. 加题时必须同步的硬编码（漏一处就红）
+## 3. 加题时要登记的两处（2026-11-22 起只剩两处，都是改 YAML）
 
 | 位置 | 内容 | 什么时候改 |
 |---|---|---|
-| `tests/test_task_variants.py:294` | `assert len(all_tasks) == 13` | **每加一道题都要改** |
-| `tests/test_derivation.py:89` | `assert checked == 11`（声明 `derivation` 的任务数；13 题减 2 道定位题） | 新题声明了 `derivation` 时 |
-| `tests/test_task_variants.py` `FAMILY_PRIMARY` / `FAMILY_TEMPLATE` | 家族 → 主技能 / 骨架 | 加**家族**时 |
-| `tests/test_task_variants.py` `MOTHER_OF` | 骨架 → 母本文件 | 加**骨架**时 |
+| `docs/task-authoring-log.yaml` | 一行 `- id: <task_id>` + `why:`（说清这题变的是什么） | **每加一道题** |
+| `docs/task-families.yaml` | 家族 → 主技能 / 骨架 / 母本 / **id 前缀** | 加**家族**时 |
 
-这些不是"顺手改成通过"就行：`len == 12` 是**故意的**，逼你在加题时停下来确认
-「这题真的独立、不是复制粘贴」，改之前先看它在拦什么。
+`--new` 会自动往台账追加一行占位，`why` 由人来写。
+
+**为什么闸门从"改数字"挪到"写 why"。** 原来这里有三处 Python 常量
+（`len(all_tasks) == 20`、`checked == 16`、`test_lab.py` 的三处 `== 20`），注释写着
+「故意写死，逼你停下来确认这题真的独立」。但这件事逼不住：把 20 改成 21 不需要任何判断，
+而且这个数字本身没有信息量（机器能自己数）。现在改成：**数量由台账行数决定，判断由
+`why` 那一句话负责**。写 why 必须先想清"它和同族其它题差在哪"，而这句话会被 review。
+
+校验在 `tests/test_task_authoring.py`（台账 ↔ 磁盘双向一致、why 非空非占位、家族表自洽）。
+数量那条守卫也接了过来：台账里同一 id 登记两次会红（并行加题时两行都写进合并结果）。
+
+**加骨架（方式 C）仍要改 Python**：`MOTHER_OF` 由家族表推导，所以新骨架＝家族表里新增一个
+`template` + `mother` 组合，同时要处理 `tests/test_task_variants.py` 里与骨架相关的断言比对
+（那一层没法用 YAML 表达）。这仍是"要人拍"的动作。
 
 ---
 
@@ -134,6 +165,8 @@ PYTHONPATH=src python -m pytest tests -q
 | 两个家族都声明同一主技能顺序，`seen` 对不上 | 家族登记漏了 | `test_family_maps_to_declared_primary_skill_and_template` |
 | 变体把骨架整段抄了一遍 | 继承没发生（改母本时这题不跟着变） | `test_every_variant_declares_its_parent_and_does_not_restate_skeleton` |
 | 学习者用 `limit=3` 正确重试却被判「没重试」 | 写了 `offset: N`（精确相等）而不是 `offset_covers: N`（页区间覆盖） | `test_b31_fault_triggers_for_any_legal_page_size` / `test_b31_any_legal_page_size_can_pass_r3` |
+| 以为新题「没有故障」，其实继承了母本第 10 条 | `fault_injection` 是**继承字段**：不写＝照抄母本，不等于关掉 | `new_task.py --check` 的 `[!]` 提示（2026-11-22 记：台账一度按"无故障"写了两道题的 why） |
+| 把非任务文件放进 `tasks/` | 任务库靠 `tasks/*.yaml` 通配发现，任何 YAML 都会被当题解析 | 这里没有测试，`--check` 也不拦；约定是非任务文件放 `docs/` |
 
 ---
 
@@ -143,6 +176,10 @@ PYTHONPATH=src python -m pytest tests -q
 骨架一致、家族↔技能↔骨架映射、难度单调、期望值与数据一致、故障位两处相等、
 参考 Agent 每题满分、每题的放弃重试都被判成 `no_retry`、词表引用、依赖无环、
 计分与执行口径全库一致、两套骨架的 credit 断言 id 真的不同。
+
+2026-11-22 补的三条（B-30）：**台账 ↔ 磁盘双向一致**（加了题不登记 = 红，登记了但文件没了 = 红）、
+**why 有实义**（非空、≥12 字、不是「同上/略/TODO」）、**家族表自洽**（母本存在且骨架相符、
+一个骨架只挂一个母本、主技能在词表里）。
 
 **锁不住**（不要假装它被锁住了）：
 
