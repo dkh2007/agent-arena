@@ -61,7 +61,19 @@ PYTHONPATH=src pytest tests/test_task_variants.py -q -k "full_marks or own_failu
 30 passed, 21 deselected in 18.13s
 ```
 
-两档全绿，条数与线程预期一致（187 / 30）。对照基线（加题前，本工作区）：
+两档全绿，条数与线程预期一致（187 / 30）。
+
+为了不让"隔离副本"这个词留下疑问，同一 commit 的内容又用 `git archive HEAD | tar -x` 解开
+（任务数恰好 15，不含任何外来文件）复跑了一遍，两条命令结果相同：
+
+```
+187 passed in 34.59s
+30 passed, 21 deselected in 17.96s
+```
+
+也就是说：**只看这个 commit 的树，两档就是全绿的**，与工作区里那些外来文件无关。
+
+对照基线（加题前，本工作区）：
 
 ```
 171 passed in 29.74s
