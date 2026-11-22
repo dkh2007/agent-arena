@@ -63,6 +63,44 @@ def _match_key(match: dict) -> tuple:
     return tuple(sorted((str(k), json.dumps(v, sort_keys=True)) for k, v in match.items()))
 
 
+# B-31：`offset_covers: N` 表示「这次请求的页区间 [offset, offset+limit) 覆盖第 N 条」。
+# 与 `offset: N`（精确相等）分开，是因为两者语义不同：题面允许 limit 取 1..上限，
+# 学习者用 limit=3 分页时 offset 序列是 0/3/6/…，永远不等于 10，故障却不该因此消失。
+COVER_KEY = "offset_covers"
+
+
+def page_covers(params: dict, point: int) -> bool:
+    """`params` 这次请求是否覆盖数据点 `point`（含左端、不含右端）。
+
+    缺 offset/limit 或类型不对一律判「不覆盖」——不能把畸形入参当成命中，
+    否则故障会落在一次本来就该被拒的调用上，掩盖真正的失败。
+    """
+    off = params.get("offset") if isinstance(params, dict) else None
+    lim = params.get("limit") if isinstance(params, dict) else None
+    for v in (off, lim):
+        if isinstance(v, bool) or not isinstance(v, int):
+            return False
+    return off <= point < off + lim
+
+
+def match_params(match: dict, params: dict) -> bool:
+    """`match` 里的每个键都必须满足。支持两种键：`offset_covers` 与精确相等。"""
+    for key, want in match.items():
+        if key == COVER_KEY:
+            # 写成字符串会在 page_covers 里比出 TypeError，报错信息与配置错对不上；
+            # 这里直接按配置错 fail closed。
+            if isinstance(want, bool) or not isinstance(want, int):
+                raise MockConfigError(
+                    f"{COVER_KEY} 必须是整数（数据点下标），收到 {want!r}"
+                )
+            if not page_covers(params, want):
+                return False
+            continue
+        if params.get(key) != want:
+            return False
+    return True
+
+
 class ToolSpec:
     """一个工具的已声明语义。缺声明就在构造期报错。"""
 
@@ -195,6 +233,13 @@ class MockToolService:
 
         with self._lock:
             self.calls_served += 1
+            # B-31：覆盖语义让「非法但区间覆盖故障点」的请求也能命中故障
+            # （offset=0, limit=11 覆盖第 10 条），错误码会从 400 invalid_limit 变成 500。
+            # 真实服务端先校验参数再处理，所以这里也把参数校验前置：非法请求不注入故障。
+            if spec.pagination is not None:
+                problem = self._pagination_problem(spec, params)
+                if problem is not None:
+                    return problem
             fault = self._take_fault(name, params)
 
         if fault is not None:
@@ -223,9 +268,8 @@ class MockToolService:
         """调用方已持锁。命中第 attempt 次 ⇒ 返回该条失败配置。"""
         if not self._fault or name != self._fault_target:
             return None
-        for key, want in self._fault_match.items():
-            if params.get(key) != want:
-                return None
+        if not match_params(self._fault_match, params):
+            return None
 
         key = (name, _match_key(self._fault_match))
         self._attempts[key] = self._attempts.get(key, 0) + 1
@@ -238,17 +282,19 @@ class MockToolService:
             )
         return None
 
-    def _paginate(self, spec: ToolSpec, params: dict) -> tuple[int, dict]:
-        pag = spec.pagination
-        rows = spec.rows
-        base = int(pag["offset_base"])
-        page_max = int(pag["page_size_max"])
+    def _pagination_problem(self, spec: ToolSpec, params: dict) -> tuple[int, dict] | None:
+        """这次请求会不会因分页参数本身被拒；会就返回 (状态码, 错误体)。
 
-        offset = params.get("offset", base)
-        limit = params.get("limit", page_max)
+        `call()` 与 `_paginate()` 共用这一份判据：前者靠它决定「不注入故障」，
+        后者靠它决定返回什么错误。两处各写一遍迟早漂移，而漂移的表现是
+        「同一个非法请求，有时 400 有时 500」。
+        """
+        pag = spec.pagination
+        page_max = int(pag["page_size_max"])
+        base = int(pag["offset_base"])
         try:
-            offset = int(offset)
-            limit = int(limit)
+            offset = int(params.get("offset", base))
+            limit = int(params.get("limit", page_max))
         except (TypeError, ValueError):
             return 400, {"error": "bad_request", "detail": "offset/limit 必须是整数"}
 
@@ -260,11 +306,24 @@ class MockToolService:
                 }
             return 400, {"error": "invalid_limit"}
 
+        if offset - base < 0:
+            return 400, {"error": "bad_request", "detail": "offset 小于 offset_base"}
+        return None
+
+    def _paginate(self, spec: ToolSpec, params: dict) -> tuple[int, dict]:
+        pag = spec.pagination
+        rows = spec.rows
+        base = int(pag["offset_base"])
+        page_max = int(pag["page_size_max"])
+
+        problem = self._pagination_problem(spec, params)
+        if problem is not None:
+            return problem
+
+        offset = int(params.get("offset", base))
+        limit = int(params.get("limit", page_max))
         total = len(rows)
         start = offset - base
-        if start < 0:
-            return 400, {"error": "bad_request", "detail": "offset 小于 offset_base"}
-
         if start >= total:
             if pag.get("on_offset_out_of_range") == "empty_list":
                 return 200, {"orders": [], "total": total}

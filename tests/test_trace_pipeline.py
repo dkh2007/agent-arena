@@ -1021,7 +1021,11 @@ def test_f3_td018_no_retry_with_null_success_stays_fail():
     assert r3["state"] == "fail"
     assert r3.get("reason_code") is None
     # 具体 pattern 属 Q10-A / TD-001 口径；本步只锁「没有被误判成 unscored」。
-    assert r3["error_patterns"] == ["retry_wrong_params"]
+    # B-31 起改为 no_retry：trace 里一次失败都没有，故障页只被请求过一次且报 success
+    # ⇒ 落到 `fault_point_hit_once`。旧值 retry_wrong_params 来自 `fault_point_not_repeated`
+    # （count<2），它把「遇到但没失败」和「失败了但换了页」混成同一类；
+    # 这个用例的**名字**本来就叫 no_retry，新结果才与它自述的意图一致。
+    assert r3["error_patterns"] == ["no_retry"]
 
 
 def test_f3_td018_zero_valid_offsets_are_not_zero_target_calls():

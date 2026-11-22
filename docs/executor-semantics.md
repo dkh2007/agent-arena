@@ -7,9 +7,24 @@
 
 `ordered: true` + `allow_interleaved: true` 的组合语义是**子序列匹配**，不是相邻匹配：
 
-1. 在 tool_calls 中找第一个满足 `name=fetch_orders && params_match{offset:10} && status=error && http_status=500` 的调用；
-2. 在它**之后**找第一个满足 `name=fetch_orders && params_match{offset:10} && status=success` 的调用；
+1. 在 tool_calls 中找第一个满足 `name=fetch_orders && params_match{offset_covers:10} && status=error && http_status=500` 的调用；
+2. 在它**之后**找第一个满足 `name=fetch_orders && params_match{offset_covers:10} && status=success` 的调用；
 3. 两次命中之间允许存在任意数量的其他工具调用（包括对 fetch_orders 的其他 offset 调用）。
+
+**`offset_covers: N` 是「页区间覆盖」，不是「offset 等于 N」（B-31，2026-11-22）**：
+命中条件是 `offset <= N < offset + limit`，即这次请求的页里含第 N 条数据。理由：
+`limit` 本就允许 1..上限，学习者用 `limit=3` 时偏移序列是 0/3/6/9…，`offset: 10`
+的精确相等永远不成立——他把 20 条数据拉全了，故障却从不触发，R3 判「没重试」。
+旧写法等于把「必须按上限分页」偷偷写进了评分标准。
+
+实现分两处，**不能合并**：jmespath 没有算术（`params.offset + params.limit` 直接
+抛 `LexerError`），所以 `_filter_expr()` 只按 name 过滤、把 `offset_covers` 的数值
+作为第二个返回值交给 Python 侧的 `page_covers()` 过滤；过滤发生在**匹配步骤之前**
+（投影下标是 `_match_step` 游标的基准，事后再筛会错位）。
+
+配套的一条硬约束：**非法请求不注入故障**。`offset=0, limit=11` 的区间也覆盖第 10 条，
+若先注入故障，错误码会从 `400 invalid_limit` 变成 `500`。所以 `MockToolService.call()`
+把 `_pagination_problem()` 前置到 `_take_fault()` 之前——真实服务端同样是先校验再处理。
 
 **禁止实现成**：两条调用在数组中必须相邻；或中间不得有任何其他调用——那会误伤合理的失败恢复路径
 （如 `offset=10 失败 → offset=5 补拉成功 → offset=10 重试成功`）。

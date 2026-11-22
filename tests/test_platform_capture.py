@@ -76,7 +76,9 @@ def _call(url: str, name: str, params: dict) -> tuple[int, dict]:
 
 def test_ledger_numbers_calls_from_one_by_arrival_order(served):
     url, _svc, recorder = served
-    assert _call(url, "fetch_orders", {"offset": 1, "limit": 10})[0] == 200
+    # offset=0 的页区间是 [0,10)，不含第 10 条，所以不触发故障。
+    # 原来写的是 offset=1——B-31 改成覆盖语义后 [1,11) 含第 10 条，会返回 500。
+    assert _call(url, "fetch_orders", {"offset": 0, "limit": 10})[0] == 200
     assert _call(url, "fetch_orders", {"offset": 10, "limit": 10})[0] == 500
 
     items = recorder.trace_items()
@@ -88,11 +90,11 @@ def test_ledger_numbers_calls_from_one_by_arrival_order(served):
 
 def test_reset_starts_a_new_ledger(served):
     url, svc, recorder = served
-    _call(url, "fetch_orders", {"offset": 1, "limit": 10})
+    _call(url, "fetch_orders", {"offset": 0, "limit": 10})
     assert len(recorder) == 1
     svc.reset()  # reset_policy: per_submission
     recorder.reset()
-    _call(url, "fetch_orders", {"offset": 1, "limit": 10})
+    _call(url, "fetch_orders", {"offset": 0, "limit": 10})
     assert [c["call_index"] for c in recorder.trace_items()] == [1]
 
 

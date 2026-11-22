@@ -25,7 +25,7 @@
     {
       "name": "fake_retry",
       "note": "失败后退回首页：offset 0,10,0",
-      "expect": {"state": "fail", "pattern": "retry_wrong_params", "source": "case:offsets_equals", "reason_code": null, "observed_offsets": [0, 10, 0]},
+      "expect": {"state": "fail", "pattern": "retry_wrong_params", "source": "case:fault_then_moved_on", "reason_code": null, "observed_offsets": [0, 10, 0]},
       "tool_calls": [
         {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
         {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
@@ -35,7 +35,7 @@
     {
       "name": "no_retry",
       "note": "失败后完全没有后续同工具调用",
-      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:offsets_equals", "reason_code": null, "observed_offsets": [0, 10]},
+      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:fault_point_hit_once", "reason_code": null, "observed_offsets": [0, 10]},
       "tool_calls": [
         {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
         {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"}
@@ -44,7 +44,7 @@
     {
       "name": "retry_exhausted",
       "note": "同参连续重试仍失败",
-      "expect": {"state": "fail", "pattern": "retry_exhausted", "source": "case:last_status,offsets_starts_with", "reason_code": null, "observed_offsets": [0, 10, 10]},
+      "expect": {"state": "fail", "pattern": "retry_exhausted", "source": "case:last_status", "reason_code": null, "observed_offsets": [0, 10, 10]},
       "tool_calls": [
         {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
         {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
@@ -77,7 +77,7 @@
     {
       "name": "other_tool_after_failure",
       "note": "失败后只调了别的工具，probe 过滤后 offsets 仍是 [0,10]",
-      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:offsets_equals", "reason_code": null, "observed_offsets": [0, 10]},
+      "expect": {"state": "fail", "pattern": "no_retry", "source": "case:fault_point_hit_once", "reason_code": null, "observed_offsets": [0, 10]},
       "tool_calls": [
         {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
         {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},
@@ -87,7 +87,7 @@
     {
       "name": "wrong_offset_after_failure",
       "note": "Q10-A：故障点只命中一次、后续 offset 跳到 20 → fault_point_not_repeated",
-      "expect": {"state": "fail", "pattern": "retry_wrong_params", "source": "case:fault_point_not_repeated", "reason_code": null, "observed_offsets": [0, 10, 20]},
+      "expect": {"state": "fail", "pattern": "retry_wrong_params", "source": "case:fault_then_moved_on", "reason_code": null, "observed_offsets": [0, 10, 20]},
       "tool_calls": [
         {"call_index": 1, "name": "fetch_orders", "params": {"offset": 0, "limit": 10}, "status": "success", "result_summary": "page 1"},
         {"call_index": 2, "name": "fetch_orders", "params": {"offset": 10, "limit": 10}, "status": "error", "http_status": 500, "error": "internal_error"},

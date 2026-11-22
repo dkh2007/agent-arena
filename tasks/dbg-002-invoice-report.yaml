@@ -23,7 +23,7 @@ scenario: |
 
 fault_injection:
   match:
-    offset: 10
+    offset_covers: 10
   failures:
     - attempt: 1
       http_status: 503
@@ -62,5 +62,5 @@ rubric_credit:
   - id: R3_retry_evidence
     expected:
       calls:
-        - {name: fetch_orders, params_match: {offset: 10}, status: error, http_status: 503}
-        - {name: fetch_orders, params_match: {offset: 10}, status: success}
+        - {name: fetch_orders, params_match: {offset_covers: 10}, status: error, http_status: 503}
+        - {name: fetch_orders, params_match: {offset_covers: 10}, status: success}

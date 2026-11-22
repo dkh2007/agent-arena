@@ -137,6 +137,8 @@ from typing import Any
 
 import jmespath
 
+from .mock_tools import COVER_KEY, page_covers
+
 ROOT = Path(__file__).resolve().parents[2]
 TASK_PATH = ROOT / "tasks" / "dbg-001-order-report.yaml"
 VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
@@ -183,14 +185,19 @@ def _param_path(key: str) -> str:
     return f"params.{key}" if _IDENT.match(key) else f'params."{key}"'
 
 
-def _filter_expr(spec: dict) -> str:
-    """由 expected.calls 派生过滤表达式。
+def _filter_expr(spec: dict) -> tuple[str, int | None]:
+    """由 expected.calls 派生过滤表达式，以及可选的「页覆盖」判定点。
 
     约束（不满足就抛错，不静默降级）：
     - `ordered` 必须为 true：本实现按子序列匹配，无序语义尚未定义；
     - `allow_interleaved` 必须为 true：过滤法天然允许穿插，若契约要求严格相邻，
       这个实现会误判，所以拒绝执行而不是给出看起来合理的结果；
     - 所有步骤的 (name, params_match) 必须一致——当前只支持"同一页重试"。
+
+    B-31：`params_match` 允许写 `offset_covers: N`（这次请求的页区间覆盖第 N 条）。
+    它**不能**塞进 JMESPath——jmespath 没有算术，`params.offset + params.limit`
+    直接抛 LexerError。所以这里把它摘出来交给 Python 侧过滤，
+    表达式照旧投影 offset/limit 两个字段（多带字段对 `_match_step` 无影响）。
     """
     expected = spec.get("expected") or {}
     steps = expected.get("calls") or []
@@ -216,9 +223,23 @@ def _filter_expr(spec: dict) -> str:
             )
 
     conds = [f"name=={_literal(name)}"]
-    conds += [f"{_param_path(k)}=={_literal(v)}" for k, v in match.items()]
+    cover: int | None = None
+    for k, v in match.items():
+        if k == COVER_KEY:
+            # 字符串会让 page_covers 比出 TypeError；配置错要在接触 trace 之前爆掉。
+            if isinstance(v, bool) or not isinstance(v, int):
+                raise EvaluatorError(
+                    f"{spec.get('id')}: {COVER_KEY} 必须是整数（数据点下标），收到 {v!r}"
+                )
+            cover = v
+            continue
+        conds.append(f"{_param_path(k)}=={_literal(v)}")
     # i: call_index 用于定位「最后一次成功匹配的调用」；歧义检查只看它之后的候选。
-    return "calls[?(" + " && ".join(conds) + ")].{s: status, h: http_status, i: call_index}"
+    # o/l: 供 Python 侧做页覆盖判定，不参与 JMESPath 过滤条件。
+    expr = ("calls[?(" + " && ".join(conds)
+            + ")].{s: status, h: http_status, i: call_index,"
+              " o: params.offset, l: params.limit}")
+    return expr, cover
 
 
 def _match_step(projected: list[dict], step: dict, start: int) -> int:
@@ -303,12 +324,22 @@ def _validate_calls(calls: list[dict], status_enum: list) -> str | None:
             f"{type(item.get('params')).__name__}")
 
 
-def _judge(spec: dict, calls: list[dict], expr: str) -> tuple[bool, list[dict], int, int]:
+def _judge(spec: dict, calls: list[dict], expr: str,
+           cover: int | None = None) -> tuple[bool, list[dict], int, int]:
     """子序列匹配 expected.calls。
+
+    `cover` 非 None 时，先只保留「页区间覆盖该数据点」的调用，再做子序列匹配。
+    **过滤必须在匹配之前**：投影下标是 `_match_step` 游标的基准，事后再筛会让游标错位。
 
     返回 (是否通过, 投影序列, 已匹配步数, 最后命中调用的 call_index)。
     """
     projected = jmespath.search(expr, {"calls": calls}) or []
+    if cover is not None:
+        projected = [
+            p for p in projected
+            if page_covers({"offset": (p or {}).get("o"),
+                            "limit": (p or {}).get("l")}, cover)
+        ]
     cursor = 0
     matched = 0
     last_matched = 0
@@ -347,13 +378,18 @@ def _ambiguous_step(calls: list[dict], spec: dict, matched: int, after: int) -> 
                 return f"call_index={item.get('call_index')} 缺 http_status"
             if item["http_status"] != step["http_status"]:
                 continue
-        params = item.get("params")
-        missing = [
-            k for k in match
-            if not isinstance(params, dict)
-            or k not in params
-            or (params[k] is None and match[k] is not None)
-        ]
+        params = item.get("params") if isinstance(item.get("params"), dict) else {}
+        missing: list[str] = []
+        for k in match:
+            if k == COVER_KEY:
+                # 覆盖判定要 offset 与 limit 两个整数；缺任一都没法算「覆盖了没」。
+                missing += [
+                    n for n in ("offset", "limit")
+                    if isinstance(params.get(n), bool) or not isinstance(params.get(n), int)
+                ]
+                continue
+            if k not in params or (params[k] is None and match[k] is not None):
+                missing.append(k)
         if missing:
             return f"call_index={item.get('call_index')} 缺 params.{','.join(missing)}"
     return None
@@ -369,9 +405,23 @@ def _ambiguous_step(calls: list[dict], spec: dict, matched: int, after: int) -> 
 #   fault_call_count = projected 的条数（即命中 name + params_match 的调用次数）
 # 所以「故障点触达/重复」的定义跟着 YAML 走，YAML 一改谓词结论自动跟着变。
 _COUNT_PREDICATES = {
-    "no_tool_calls": lambda c: c["call_count"] == 0,
-    "fault_point_not_reached": lambda c: c["fault_call_count"] == 0,
-    "fault_point_not_repeated": lambda c: c["fault_call_count"] < 2,
+    "no_tool_calls": lambda c: c.get("call_count", 0) == 0,
+    "fault_point_not_reached": lambda c: c.get("fault_call_count", 0) == 0,
+    # B-31：`fault_call_count < 2` 单独用会把「遇到故障、失败、没再试」也归进这条，
+    # 那是 `no_retry` 不是 `retry_wrong_params`。拆成两条才分得清：
+    #   hit_once          = 只碰过故障页一次（之后什么都没做）      ⇒ no_retry
+    #   then_moved_on     = 碰过故障页一次、**那次确实失败了**、之后调了同工具但换了页
+    #                        ⇒ retry_wrong_params
+    # 「那次确实失败了」这个条件是必需的：只判「之后还有调用」会把正常翻页
+    # （我翻下一页，不是重试）也算成换页重试。TD-013 的 [0,8,17] 夹具正是这种：
+    # 故障页那次上报 success，之后翻到 17，判成 retry_wrong_params 就说不通。
+    "fault_point_hit_once": lambda c: c.get("fault_call_count", 0) == 1,
+    "fault_then_moved_on": (
+        lambda c: c.get("fault_call_count", 0) == 1
+        and c.get("fault_last_status") == "error"
+        and c.get("calls_after_fault", 0) > 0
+    ),
+    "fault_point_not_repeated": lambda c: c.get("fault_call_count", 0) < 2,
 }
 
 _PREDICATES = ("offsets_equals", "offsets_starts_with", "last_status",
@@ -1361,8 +1411,8 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
             "note": "调用序列不可信：判 unscored、不归因；不按 call_index 重排后判 fail",
         }
 
-    expr = _filter_expr(spec)
-    passed, projected, matched, last_matched = _judge(spec, calls, expr)
+    expr, cover = _filter_expr(spec)
+    passed, projected, matched, last_matched = _judge(spec, calls, expr, cover)
 
     detection = spec.get("error_pattern_detection") or {}
     probe = detection.get("probe")
@@ -1410,6 +1460,9 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
     # projected 由 _filter_expr(spec) 过滤得到，条件是 YAML 的 name + params_match。
     # 因此它的长度就是「故障点被触达的次数」，无需在代码里写 offset=10。
     target_name = spec["expected"]["calls"][0]["name"]
+    # B-31：最后一次触达故障点之后还有没有对同一工具的调用。用来区分
+    # 「失败了没再试」与「换了页重试」——两者给学习者的建议完全不同。
+    last_fault_index = projected[-1].get("i") if projected else 0
     ctx = {
         "offsets": offsets,
         "last_status": statuses[-1] if statuses else None,
@@ -1418,6 +1471,15 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
             if isinstance(c, dict) and c.get("name") == target_name
         ),
         "fault_call_count": len(projected),
+        # 故障点最后一次调用的状态。`fault_then_moved_on` 靠它区分
+        # 「失败了再换页试」与「正常翻到下一页」——后者那一次是 success。
+        "fault_last_status": statuses[-1] if statuses else None,
+        "calls_after_fault": (
+            sum(1 for c in calls
+                if isinstance(c, dict) and c.get("name") == target_name
+                and (c.get("call_index") or 0) > last_fault_index)
+            if projected else 0
+        ),
     }
     allowed = vocab if vocab is not None else _load_vocab()
     pattern, source = _classify(spec, ctx, allowed)

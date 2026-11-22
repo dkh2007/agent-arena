@@ -84,14 +84,43 @@ def test_interleaving_is_handled_by_filtering():
 
 
 def test_filter_expr_derives_from_yaml():
-    """把 YAML 的 params_match.offset 改成 20，表达式必须跟着变（防硬编码 10）。"""
+    """把 YAML 的故障点改成 20，判定必须跟着变（防硬编码 10）。
+
+    B-31：覆盖点不再写进 JMESPath（jmespath 没有算术），而是由 `_filter_expr`
+    作为第二个返回值交给 Python 侧。所以这里断言的是那个返回值，不是字符串。
+    """
     s = spec()
     for step in s["expected"]["calls"]:
-        step["params_match"]["offset"] = 20
-    expr = ae._filter_expr(s)
-    assert "params.offset==`20`" in expr and "`10`" not in expr
-    # 判定也要跟着变：只有 offset=10 的 trace 不再满足 offset=20 的契约
+        step["params_match"] = {"offset_covers": 20}
+    expr, cover = ae._filter_expr(s)
+    assert cover == 20
+    assert "10" not in expr and "20" not in expr, "覆盖点不该被烤进过滤表达式"
+    # 判定也要跟着变：覆盖第 10 条的 trace 不再满足「覆盖第 20 条」的契约
     assert ae.evaluate(s, trace(TRACES["真重试"]))["state"] == "fail"
+
+
+@pytest.mark.parametrize("limit,page_start", [(10, 10), (5, 10), (4, 8), (3, 9), (2, 10), (1, 10)])
+def test_b31_any_legal_page_size_can_pass_r3(limit, page_start):
+    """B-31：用任何合法页大小分页、正确重试，R3 都必须判 pass。
+
+    `page_start` 是覆盖第 10 条的页起点（=10 时从 10 开始，limit=3 时是 9，
+    limit=4 时是 8）。旧判据要求 offset 恰为 10，只有 limit 能整除 10 才过得了——
+    等于把「怎么分页」偷偷写进了评分标准。
+    """
+    calls = [
+        {"name": "fetch_orders", "params": {"offset": o, "limit": limit},
+         "status": "success", "http_status": 200}
+        for o in range(0, page_start, limit)
+    ]
+    calls.append({"name": "fetch_orders", "params": {"offset": page_start, "limit": limit},
+                  "status": "error", "http_status": 500})
+    calls.append({"name": "fetch_orders", "params": {"offset": page_start, "limit": limit},
+                  "status": "success", "http_status": 200})
+    r = ae.evaluate(spec(), trace(calls))
+    assert r["state"] == "pass", (
+        f"limit={limit}、在 offset={page_start} 失败后同参重试，"
+        f"却判 {r['state']} / {r.get('error_patterns')}"
+    )
 
 
 def test_http_status_constraint_is_enforced():
@@ -102,12 +131,19 @@ def test_http_status_constraint_is_enforced():
 
 
 def test_classification_rules_come_from_yaml():
-    """改 cases 的期望序列，分类结果必须跟着变（YAML 是唯一真相源）。"""
+    """改 cases 的 pattern，分类结果必须跟着变（YAML 是唯一真相源）。
+
+    B-31 后 cases 全换成相对谓词，第一条（no_tool_calls）与「假重试」无关，
+    所以改为掐住真正会命中的那条规则：把 fault_then_moved_on 的 pattern 换掉，
+    同一份 trace 的分类必须随之改变。
+    """
     s = spec()
-    s["error_pattern_detection"]["cases"][0]["match"]["offsets_equals"] = [0, 10, 0]
-    s["error_pattern_detection"]["cases"][0]["pattern"] = "no_retry"
+    hit = next(c for c in s["error_pattern_detection"]["cases"]
+               if "fault_then_moved_on" in (c.get("match") or {}))
+    assert hit["pattern"] == "retry_wrong_params"      # 先确认改的是对的那条
+    hit["pattern"] = "retry_exhausted"                 # 换成另一个已声明 pattern
     r = ae.evaluate(s, trace(TRACES["假重试"]))
-    assert r["error_patterns"] == ["no_retry"]
+    assert r["error_patterns"] == ["retry_exhausted"]
 
 
 def test_unknown_predicate_fails_loud():
@@ -154,13 +190,17 @@ def test_shuffled_call_index_is_unscored_not_pass():
 def test_why_we_do_not_sort_by_call_index():
     """驳回「排序预处理」处方的可执行证据。
 
-    同一组调用排序后会判 fail + retry_wrong_params —— 那是拿不可信的数据
-    断定「学生不会重试」，把数据问题记成能力不足。实现必须停在 unscored。
+    同一组调用排序后会判 fail —— 那是拿不可信的数据断定「学生不会重试」，
+    把数据问题记成能力不足。实现必须停在 unscored。
+
+    B-31 后具体 pattern 由 retry_wrong_params（走过 default）变成 retry_exhausted
+    （两条都覆盖故障页、末次是 error）。本条锁的是**排序后仍判 fail、不得变 pass**，
+    pattern 名不在锁的范围内——它随规则集走，写死会让这条测试变成规则表的副本。
     """
     ordered = sorted(copy.deepcopy(SHUFFLED), key=lambda c: c["call_index"])
     r = ae.evaluate(spec(), {"tool_calls": ordered})
     assert r["state"] == "fail"
-    assert r["error_patterns"] == ["retry_wrong_params"]
+    assert r["error_patterns"] == ["retry_exhausted"]
 
 
 @pytest.mark.parametrize("bad_calls", [
@@ -227,11 +267,16 @@ def test_pattern_must_be_declared_and_registered():
 def test_default_is_observable_when_rules_miss():
     """覆盖度证据：cases 都不命中时仍走 default，并把来源写进 evidence。
 
-    Q10-A 补了三条计数规则后，原来的 [0,10,0,0] 反例已命中明写规则，
-    这里换成「故障点触达两次、但整体序列未被枚举」的 [10,0,10]（两次 error）：
-    仍应落在 default —— 既证明兜底没被偷偷删掉，也证明覆盖度缺口依旧可观测。
+    B-31 之后线上规则集对「fail」是完备的：故障点被覆盖 0 次 / 1 次 / ≥2 次三种情况
+    各有明写规则，而 ≥2 次时若末次不是 error 就该判 pass、根本不会进分类。
+    **所以 default 在线上不可达**，不能再拿「某个真实 trace 恰好落兜底」来测机制——
+    那只是把规则集的巧合当成断言。这里人工把 cases 收窄成一条，测的是兜底机制本身。
     """
-    r = ae.evaluate(spec(), trace([call(10, "error", 500), call(0), call(10, "error", 500)]))
+    s = spec()
+    s["error_pattern_detection"]["cases"] = [
+        {"match": {"no_tool_calls": True}, "pattern": "no_retry"},
+    ]
+    r = ae.evaluate(s, trace(TRACES["假重试"]))
     assert r["state"] == "fail"
     assert r["evidence"]["extra"]["classification_source"] == "default"
     assert r["error_patterns"] == ["retry_wrong_params"]
@@ -298,14 +343,14 @@ def test_only_first_page_source_is_exact():
 def test_q10a_predicates_follow_yaml_fault_point():
     """计数谓词必须由 expected.calls 派生，不能硬编码 offset=10。
 
-    把 YAML 故障点改成 20 后，[0,20] 这组调用就「触达了故障点但没重复」，
-    应命中 fault_point_not_repeated；硬编码 10 的实现会误判为 not_reached。
+    把 YAML 故障点改成 20 后，[0,20] 这组调用（limit=10）就「覆盖了故障点、只碰一次」，
+    应命中 fault_point_hit_once；硬编码 10 的实现会误判为 not_reached。
     """
     s = spec()
     for step in s["expected"]["calls"]:
-        step["params_match"]["offset"] = 20
+        step["params_match"] = {"offset_covers": 20}
     r = ae.evaluate(s, trace([call(0), call(20, "error", 500)]))
-    assert "fault_point_not_repeated" in r["evidence"]["extra"]["classification_source"]
+    assert "fault_point_hit_once" in r["evidence"]["extra"]["classification_source"]
 
 
 def test_count_predicates_reject_silent_misuse():

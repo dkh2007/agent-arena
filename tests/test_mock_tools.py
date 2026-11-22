@@ -63,6 +63,27 @@ def test_fault_does_not_leak_to_other_offsets(svc):
     assert svc.call("fetch_orders", {"offset": 0, "limit": 10})[0] == 200
 
 
+@pytest.mark.parametrize("limit", [1, 2, 3, 4, 5, 10])
+def test_b31_fault_triggers_for_any_legal_page_size(task, limit):
+    """B-31：故障在「覆盖第 10 条的那一页」触发，不要求 offset 恰好等于 10。
+
+    旧实现是 `params.offset != 10` 精确相等：limit=3 时偏移序列 0/3/6/9/12…
+    永远不等于 10，学习者把 20 条全拉完了、一次故障都没遇到，R3 却判「没重试」。
+    这不是能力问题，是判据把页大小锁成了上限的整数倍。
+    """
+    svc = mt.MockToolService(task)          # 每个 limit 用干净的故障额度
+    hits = []
+    off = 0
+    while off < 20:
+        if svc.call("fetch_orders", {"offset": off, "limit": limit})[0] != 200:
+            hits.append(off)
+        off += limit
+    assert len(hits) == 1, f"limit={limit} 应恰好触发一次故障，实际在 {hits} 触发"
+    assert hits[0] <= 10 < hits[0] + limit, (
+        f"limit={limit} 在 offset={hits[0]} 触发，但那页并不覆盖第 10 条"
+    )
+
+
 # ── 分页语义 ────────────────────────────────────────────────────────────────
 
 def test_pagination_half_open_range_and_total_from_fixture(task, svc):

@@ -4,6 +4,15 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-22（**B-31 关闭：故障匹配从「offset 精确相等」改成「页区间覆盖」**（人拍板方案 A）。
+> 新键 `offset_covers: N` = 这次请求的页里含第 N 条；`offset` / `path` 的精确语义原样保留。
+> 学习者用 `limit=1..上限` 的任何合法页大小都能踩到故障，不再要求页大小整除故障点。
+> 连带修两处：① 非法 `limit=11` 的区间也覆盖故障点 ⇒ 错误码 400 变 500（参数校验前置）；
+> ② `fault_point_not_repeated`(count<2) 把「遇到但没失败」和「失败了但换页」混成一类 ⇒ 拆成
+> `fault_then_moved_on` / `fault_point_hit_once` 两条。新增 2 条回归测试（6 种页大小 × 触发 + 判分），
+> 变异 2/2 全红。分类的 `offsets_equals` 绝对序列全部删除 ⇒ `default` 线上不可达，
+> 兜底机制改用「人工收窄 cases」的测试来守，不再靠真实 trace 恰好落空。）
+>
 > 更新：2026-11-21 夜（**扩题第 1 道试点落地：12 → 13**。新增 `tasks/ret-004-narrow-page.yaml`，
 > `retry-drill` 家族首道 `page=5` 的题（上限 5 + 30 行 6 页 + 故障在第 5 页），补的是
 > 「页面上限紧只出现在 `param-surface` 家族」这格空格。任务层 171 条绿、两条全链路用例都覆盖到它、
@@ -1557,11 +1566,13 @@
   - 至少两处一致性判据做过**变异验证**（改一处 ⇒ 报出预期的断言消息）。
 - **已加**：`ret-004-narrow-page`（2026-11-21，`retry-drill` 家族首道 `page=5`：上限 5 + 故障在第 5 页 +
   30 行 6 页。变异 2/2：改 `valid_count` ⇒「两处不一致」；改故障码 ⇒「故障码不一致」）。
+  **加题顺带撞出一条全库判据缺口**（B-31：故障可达性依赖学习者页大小），已修并关闭。
+  这正说明「用真题检验规范」值当：12 道题跑了几个月没发现，写第 13 道时十分钟就撞上了。
 - **未决（挡在 40 之前）**：`ROADMAP` 记着「12 个 > 计划书的『≤10』」——扩到 40 前必须先定计划书措辞，
   否则对外材料与仓库数字不一致。另见 `authoring-tasks.md` §6 的骨架张力（到 20 题再决定要不要新建骨架）。
 - **谁推**：我（方式 A）；方式 C 需人拍。
 
-### [ ] B-31 故障可达性依赖学习者的页大小（全库，待人拍处置）
+### [x] B-31 故障可达性依赖学习者的页大小（全库）— 2026-11-22 关闭（方案 A，人拍板）
 
 - **是什么**：`fault_injection.match` 是**精确相等**匹配（`mock_tools._take_fault`：
   `if params.get(key) != want: return None`），而学习者有权用 1…上限之间任何 `limit`。
@@ -1591,6 +1602,36 @@
 - **我倾向 A**，但它动判定层，且现有 13 题的 `cases` 需全部改成相对谓词，工作量大于这一轮。
   **不拍的默认：维持现状，先只记录**（参考路径不受影响：参考 Agent 一律用页上限）。
 - **反证条件**：出现一份真实提交，用更小页大小但数据完整、仍被判 `no_retry` ⇒ 从"记录"升级为"必修"。
+
+- **落地（2026-11-22，人拍板 A）**：新键 `offset_covers: N` 表示「这次请求的页区间
+  `[offset, offset+limit)` 含第 N 条」。`offset` / `path` 的精确语义保留不动，同一字段名
+  不承载两种语义。改动分四处：
+
+  | 位置 | 改了什么 |
+  |---|---|
+  | `mock_tools.page_covers()` / `match_params()` | 触发条件；缺 offset/limit 或类型不对 ⇒ 判不覆盖 |
+  | `assertion_evaluator._filter_expr()` | 返回 `(expr, cover)`；覆盖点**不进** JMESPath（无算术） |
+  | `assertion_evaluator._judge()` | 在**匹配之前**按覆盖过滤（投影下标是游标基准，事后筛会错位） |
+  | `assertion_evaluator._COUNT_PREDICATES` | 新增 `fault_point_hit_once`、`fault_then_moved_on` |
+
+  `error_pattern_detection.cases` 的 `offsets_equals` 绝对序列**全部删除**（只有一种页大小成立），
+  换成相对谓词：`fault_point_not_reached`(count=0) → `fault_then_moved_on`(count=1 且那次
+  error 且之后有调用) → `fault_point_hit_once`(count=1) → `last_status: error`(count≥2 仍失败)。
+  **改完 `default` 在线上不可达**（0/1/≥2 三种情况都有明写规则），兜底机制改用"人工收窄 cases"
+  的测试来守，不再靠真实 trace 恰好落空。
+
+  顺带修掉两处**由覆盖语义引入或暴露的问题**：
+  ① `limit=11`（非法）的区间也覆盖第 10 条 ⇒ 错误码从 400 变 500。修法是把参数校验前置到
+     故障注入之前（`_pagination_problem()`，真实服务端也是先校验再处理）。
+  ② `fault_point_not_repeated`(count<2) 把「遇到但没失败」和「失败了但换页」混成一类
+     ⇒ 拆成两条，`fault_then_moved_on` 额外要求**那次确实是 error**，否则正常翻页会被
+     当成换页重试（TD-013 的 `[0,8,17]` 夹具正是这种）。
+
+  验证：`limit∈{1,2,3,4,5,10}` 六种页大小都能触发故障且正确重试判 pass（新增 2 条测试）；
+  变异 2/2 全红（覆盖退化成精确相等 ⇒ 4 条红；去掉"那次确实失败"条件 ⇒ 2 条红）。
+  `TD-013` 的 0.75 分数序保持不变——**A 只改执行侧，不改上报 trace 的判定**，两者独立。
+  `test_td018_no_retry_with_null_success_stays_fail` 的 pattern 从 `retry_wrong_params` 变
+  `no_retry`：那个用例**名字本来就叫** no_retry，新结果才与它自述的意图一致。
 - **谁推**：人拍（判分口径）；实现我来。
 
 

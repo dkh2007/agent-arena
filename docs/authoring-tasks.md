@@ -61,17 +61,21 @@
 不许凭印象预填。仓库里已经因此写错过两次（`BACKLOG` §61.7 / §63.7）。
 `test_inputs.expected` 与 `rubric_credit[R2].expected` 是同一件事的两处，必须相等。
 
-**第 6 步：若动了故障位，改三处。** 前两处有测试拦，第三处没有：
+**第 6 步：若动了故障位，改两处。** 两处都有测试拦：
 
-1. `fault_injection.match` 与 `rubric_credit[R3].expected.calls[0].params_match`——必须相等；
-2. `fault_injection.failures[0].http_status` 与 `calls[0].http_status`——必须相等；
-3. **`rubric_credit[R3].error_pattern_detection.cases` 里的 `offsets_equals` 序列必须按本变体的
-   页大小与故障位重算**（例：页 5、故障 20 ⇒ `[0,5,10,15,20]`）。这一处**没有任何测试**，
-   漏改的后果是静默的：R3 判定照常正确，但「没重试」会被归到兜底的 `retry_wrong_params`，
-   于是复习层推错题——**分数对、诊断错**。（2026-11-21 加 `ret-004` 时发现，上一版规范漏了这条。）
+1. `fault_injection.match` 与 `rubric_credit[R3].expected.calls[0].params_match`——必须相等，
+   键名是 **`offset_covers`**（页区间覆盖）不是 `offset`（精确相等），见下面一段；
+2. `fault_injection.failures[0].http_status` 与 `calls[0].http_status`——必须相等。
+
+`error_pattern_detection.cases` **不再需要按页大小重算**。B-31（2026-11-22）把分类规则
+统一换成相对谓词（`fault_point_not_reached` / `fault_then_moved_on` / `fault_point_hit_once`
+/ `last_status`），变体直接继承母本的 cases 即可。上一版规范（2026-11-21）要求重算
+`offsets_equals: [0,5,10,15,20]` 这类绝对序列——那是 `offset` 精确匹配时代的约束，
+现在这些序列**全部删掉了**，因为它们只有一种页大小才成立。
 
 **R3 的形状是写死的**（`test_fault_declaration_matches_retry_expectation`）：
-`expected.calls` **恰好两步**（失败 → 成功），且失败那步 `status` 只能是 `error`。
+`expected.calls` **恰好两步**（失败 → 成功），且失败那步 `status` 只能是 `error`，
+`params_match` 用 `offset_covers`（见 §1 第 6 步）。
 所以三种想法在现有骨架里**表达不出来**，别试：①连续失败两次；②用「超时」当故障
 （`status` 枚举里虽有 `timeout`，但 R3 期望只接受 `error`）；③让第 2 次调用才失败
 （`failures[].attempt: 2` 会让同一 offset 先成功一次再失败，两步期望对不上）。
@@ -127,7 +131,7 @@ PYTHONPATH=src python -m pytest tests -q
 | 引用了词表里不存在的错误模式 | 词表先行没遵守 | `test_error_patterns_registered_in_vocabulary` |
 | 两个家族都声明同一主技能顺序，`seen` 对不上 | 家族登记漏了 | `test_family_maps_to_declared_primary_skill_and_template` |
 | 变体把骨架整段抄了一遍 | 继承没发生（改母本时这题不跟着变） | `test_every_variant_declares_its_parent_and_does_not_restate_skeleton` |
-| 0 分但「没重试」被归成 `retry_wrong_params` | `error_pattern_detection.cases` 的 offset 序列没按本变体页大小重算 | **无测试**（静默漂移，分数还对） |
+| 学习者用 `limit=3` 正确重试却被判「没重试」 | 写了 `offset: N`（精确相等）而不是 `offset_covers: N`（页区间覆盖） | `test_b31_fault_triggers_for_any_legal_page_size` / `test_b31_any_legal_page_size_can_pass_r3` |
 
 ---
 
@@ -148,11 +152,12 @@ PYTHONPATH=src python -m pytest tests -q
 4. **题面有没有把解法写进去**——没有测试。`scenario` 里写"先看 A 再看 B"照样全绿，
    但那会把 R3/R4 变成照抄。只能人审（判据：把题面独立发给一个没看过代码的人，
    他能不能只靠题面写出正确流程；能写出，就是题面泄漏了解法）。
-5. **故障一定被踩到**——故障按 `offset` **精确匹配**，而学习者有权用更小的合法 `limit`。
-   用 `limit=3` 拉本题时偏移序列是 0/3/6/…，永远不等于 `offset=20`，故障不触发、也不需重试；
-   判定却给 `fail + no_retry`（2026-11-21 实测，母本同样复现）。全库共有，见 `BACKLOG` B-31。
-   **加题时选 `offset` 无法规避**：命中条件是「page 上限能整除 offset」且「学习者页大小能整除 offset」，
-   两个数都要满足，`lcm` 很快就没有公共解。
+5. **故障一定被踩到**——**已修（B-31，2026-11-22）**，但判据要记住：故障点写
+   `offset_covers: N`（这次请求的页区间含第 N 条），不是 `offset: N`（精确相等）。
+   写后者时学习者用 `limit=3` 就永远踩不到 N，数据拉全了却判 `fail + no_retry`。
+   回归测试是 `test_b31_fault_triggers_for_any_legal_page_size`（防 6 种页大小都覆盖到）
+   与 `test_b31_any_legal_page_size_can_pass_r3`（判分侧）。
+   写 `offset` 的残留处只剩 `fix-*` 两题的 `path` 精确匹配，那是另一回事（同一文件只读一次）。
 
 ---
 

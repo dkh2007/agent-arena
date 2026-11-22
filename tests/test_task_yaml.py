@@ -94,8 +94,9 @@ def test_r3_structured_no_natural_language():
     assert len(calls) == 2
     assert calls[0]["status"] == "error" and calls[0]["http_status"] == 500
     assert calls[1]["status"] == "success"
-    # 修正点：params_match 子集匹配，不限定 limit（合法分页方式不误伤）
-    assert calls[0]["params_match"] == {"offset": 10}
+    # B-31：`offset_covers` 而非 `offset`——判定「第 10 条所在的那页有没有被请求」，
+    # 与学习者选的页大小无关。写 `offset: 10` 是精确相等，只有 limit=10 才可能命中。
+    assert calls[0]["params_match"] == {"offset_covers": 10}
     assert "limit" not in calls[0]["params_match"]
     # P1 第 2 条：允许穿插其他调用，匹配器按子序列判定
     assert r3["expected"]["allow_interleaved"] is True
@@ -123,7 +124,8 @@ def test_retry_scope_is_agent():
     """P0 第 2 条：重试主体必须是 Agent，mock 不得内部自动重试，否则 R3 测不到。"""
     fi = _task()["fault_injection"]
     assert fi["retry_scope"] == "agent"
-    assert fi["match"] == {"offset": 10}
+    # B-31：覆盖语义。`{"offset": 10}` 要求请求的 offset 恰为 10（只有 limit=10 成立）。
+    assert fi["match"] == {"offset_covers": 10}
     assert fi["failures"][0]["http_status"] == 500
     assert fi["then"] == "success"
 

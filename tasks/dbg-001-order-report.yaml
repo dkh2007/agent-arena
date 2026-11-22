@@ -36,7 +36,9 @@ fault_injection:
   retry_scope: agent            # 重试主体=Agent；mock 绝不内部自动重试（评审第 2 条，P0）
   reset_policy: per_submission  # 每次提交评测前 mock 状态整体重置（第 3 轮评审 ①-2 的真实缺口：否则上一次用掉的故障额度会漏到下一次）
   match:
-    offset: 10                  # 匹配范围由 target_tool 限定；offset=10 是分页游标位置，无论 Agent 用何种合法子页大小都命中（评审第 5 条措辞修正）
+    offset_covers: 10           # 「第 10 条所在的页」被请求时触发；与页大小无关（B-31）。
+                                # 旧写法 offset: 10 是精确相等——注释当时写着「无论何种合法子页大小都命中」，
+                                # 实测是假的：limit=3 的偏移序列 0/3/6/9/12 永远不等于 10，故障从不触发。
   failures:
     - attempt: 1                # 该 (tool, match) 的第 1 次调用失败
       http_status: 500
@@ -271,9 +273,9 @@ rubric_credit:
       ordered: true
       allow_interleaved: true   # 两次 offset=10 调用之间允许穿插其他工具调用（评审第 2 条）——匹配器按子序列判定，不要求严格相邻
       calls:
-        - {name: fetch_orders, params_match: {offset: 10}, status: error, http_status: 500}
-        - {name: fetch_orders, params_match: {offset: 10}, status: success}
-      note: 'params_match 为子集匹配：只锁「故障页的起始 offset」（母本是 10，B-05 的变体各不相同：5/8/15/20/30），不限定 limit——Agent 用页大小上限以内的任何合法分页都应判过（对评审 R3 建议的修正）'
+        - {name: fetch_orders, params_match: {offset_covers: 10}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset_covers: 10}, status: success}
+      note: 'params_match 用 offset_covers：判据是「这次请求的页区间覆盖第 10 条」，不是「offset 恰为 10」。B-31 前写的是后者，等于要求学习者页大小必须整除 10——limit=3 时偏移序列 0/3/6/… 永远踩不到 10，数据拉全了却判「没重试」。现在页大小由学习者定（1..10 都合法），判据只看故障点有没有被翻到。'
     depends_on: []
     skill_id: failure_retry
     detects: 失败重试策略          # 仅供诊断报告展示，归因以上面的 skill_id 为准
@@ -285,18 +287,17 @@ rubric_credit:
       # 执行器原位还原成含 None 的标量序列；标量投影会把 null 静默省略，改短证据。
       probe: "calls[?name=='fetch_orders'].{offset: params.offset}"
       cases:                     # 顺序匹配，首命中即止
-        - {match: {offsets_equals: [0, 10]}, pattern: no_retry}
-        - {match: {offsets_equals: [0, 10, 0]}, pattern: retry_wrong_params}
-        - {match: {offsets_starts_with: [0, 10, 10], last_status: error}, pattern: retry_exhausted}
-        # ── Q10-A（round-10，人拍板选 A）────────────────────────────────
-        # 过去这三类边界全部落到 default，诊断失真且看不出是"没做事"还是"没重试"。
-        # 三个谓词的值由执行器从 expected.calls 派生的过滤表达式计算，
-        # 不写死 offset=10；只接受 true，写错会抛错而不是静默退回 default。
-        # 按 A 方案不新增 pattern_id：零调用/未触达故障点仍归 no_retry，
-        # 「应归 multi_step_planning」登记为 TD-001，等 M2 接状态层再动 DTO。
+        # ── B-31（人拍板方案 A）：故障按「页区间覆盖」触发，页大小由学习者定 ──
+        # 原来前三条是绝对序列（offsets_equals: [0,10] 等），只有 limit=10 才成立。
+        # 学习者用 limit=3 时序列是 0/3/6/9/9/12，一条都匹配不上，全部落到 default
+        # ⇒ 诊断从「没重试」错成「重试参数错」，分数对、复习建议错。现在只留相对谓词。
         - {match: {no_tool_calls: true}, pattern: no_retry}
         - {match: {fault_point_not_reached: true}, pattern: no_retry}
-        - {match: {fault_point_not_repeated: true}, pattern: retry_wrong_params}
+        # 打到故障页一次、之后换了页继续（重试了，但没重试故障页）⇒ 参数错
+        - {match: {fault_then_moved_on: true}, pattern: retry_wrong_params}
+        # 打到故障页一次、之后没再调工具（遇到失败就放弃）⇒ 没重试
+        - {match: {fault_point_hit_once: true}, pattern: no_retry}
+        - {match: {last_status: error}, pattern: retry_exhausted}
       default: retry_wrong_params   # 保留兜底；命中来源写进 evidence 供覆盖度审计
     weight: 1
   - id: R4_no_param_hallucination

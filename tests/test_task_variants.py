@@ -370,8 +370,12 @@ def test_page_ceiling_and_report_expectations_are_self_consistent(all_tasks):
         assert page == limit, f"{stem}: 分页上限 {page} 与 limit.maximum {limit} 不一致"
 
         rows = task["test_inputs"]["orders_fixture"]
-        offset = task["fault_injection"]["match"]["offset"]
-        assert offset % page == 0, f"{stem}: 故障偏移 {offset} 不是页大小 {page} 的整数倍，永远撞不上"
+        offset = task["fault_injection"]["match"]["offset_covers"]
+        # B-31 前这里还有一条 `assert offset % page == 0`（故障偏移必须是页上限的整数倍）。
+        # 它把「只能用最大页拉」写进了测试：limit 本就允许 1..上限，学习者用 limit=3 时
+        # 偏移序列是 0/3/6/…，永远踩不到 10，数据拉全了却被判「没重试」。
+        # 改覆盖语义后这条不再需要——按上限分页时 [0,page),[page,2page)… 必然有一页覆盖
+        # 任意 offset，是数学必然，不用断言。留下的只有「故障点必须在数据范围内」。
         assert 0 < offset < len(rows), f"{stem}: 故障偏移 {offset} 不在 {len(rows)} 条数据的有效页内"
 
         r2 = next(r for r in task["rubric_credit"] if r["id"] == "R2_report_correct")

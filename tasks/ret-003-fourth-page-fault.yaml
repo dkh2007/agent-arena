@@ -23,7 +23,7 @@ scenario: |
 
 fault_injection:
   match:
-    offset: 30
+    offset_covers: 30
   failures:
     - attempt: 1
       http_status: 500
@@ -92,14 +92,13 @@ rubric_credit:
   - id: R3_retry_evidence
     expected:
       calls:
-        - {name: fetch_orders, params_match: {offset: 30}, status: error, http_status: 500}
-        - {name: fetch_orders, params_match: {offset: 30}, status: success}
+        - {name: fetch_orders, params_match: {offset_covers: 30}, status: error, http_status: 500}
+        - {name: fetch_orders, params_match: {offset_covers: 30}, status: success}
     error_pattern_detection:
       cases:                     # 故障前已翻三页：偏移序列按本变体的页大小（10）与故障位（30）重算
-        - {match: {offsets_equals: [0, 10, 20, 30]}, pattern: no_retry}
-        - {match: {offsets_equals: [0, 10, 20, 30, 0]}, pattern: retry_wrong_params}
-        - {match: {offsets_starts_with: [0, 10, 20, 30, 30], last_status: error}, pattern: retry_exhausted}
         - {match: {no_tool_calls: true}, pattern: no_retry}
         - {match: {fault_point_not_reached: true}, pattern: no_retry}
-        - {match: {fault_point_not_repeated: true}, pattern: retry_wrong_params}
+        - {match: {fault_then_moved_on: true}, pattern: retry_wrong_params}
+        - {match: {fault_point_hit_once: true}, pattern: no_retry}
+        - {match: {last_status: error}, pattern: retry_exhausted}
       default: retry_wrong_params
