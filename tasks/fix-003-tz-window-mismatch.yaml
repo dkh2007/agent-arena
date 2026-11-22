@@ -1,0 +1,109 @@
+# 定位向任务 #3（B-05b 第二套骨架的变体，难度 2）
+#
+# 只写差异：题目换成「每日结算对账」，故障位留在**读日志**这一侧（与母本同侧、与 fix-002 相反），
+# 根因回到 type_mismatch 但换了比较对象（UTC 串 vs 本地 datetime）。
+# 骨架（断言 id / 权重 / 计分口径 / 执行契约 / 日志行格式 / 根因枚举）全部继承母本。
+base_task: fix-001-token-expiry
+task_id: fix-003-tz-window-mismatch
+task_version: "2026-11-22.1"
+title: 结算对账窗口报错定位（定位向）
+primary_skill_id: multi_step_planning
+scenario: |
+  你是这个服务的值班工程师，请定位刚才那次 500 的根因：
+  1. 调用 read_file 读取服务日志 /workspace/logs/reconcile.log
+  2. 调用 read_file 读取源码 /workspace/reconcile/settlement.py
+  3. 日志把每次异常压成一行：`时间 级别 request_id=.. <异常类> in <函数名>: <消息>`。
+     **最后一条 ERROR** 对应本次失败；更早的 ERROR 是别的已知问题，不是这次的根因
+  4. 根因取值必须是以下之一（按异常类判定，不要自创标签）：
+     - 异常类是 TypeError                      → type_mismatch
+     - 异常类是 IndexError                     → off_by_one
+     - 异常类是 AttributeError 且消息含 NoneType → null_deref
+     - 其余                                    → other
+  5. 出错行号按下面的规则从**源码**里定位（日志只给函数名，不含行号）：
+     - 消息形如 `'X' not supported ...` ⇒ 在报错的函数体内找第一处含运算符 X 的行
+     - 消息形如 `has no attribute 'Y'`  ⇒ 在报错的函数体内找第一处含 .Y 的行
+  6. 调用 write_report 把结论写入 /workspace/diagnosis.json，内容为 JSON：
+     {"root_cause": "<上面取值之一>", "offending_line": <1 基行号, 整数>}
+
+variant_meta:
+  family_id: locate-drill
+  difficulty: 2
+
+# 故障位落在**读日志**上（与母本同侧）：日志第一次读 503，源码一次就读到。
+# 与 fix-002（读源码失败）配成一对，学习者在两种时机都要决定「先重试还是先去读另一份」。
+fault_injection:
+  enabled: true
+  target_tool: read_file
+  retry_scope: agent
+  reset_policy: per_submission
+  match:
+    path: /workspace/logs/reconcile.log
+  failures:
+    - attempt: 1
+      http_status: 503
+      error: service_unavailable
+  then: success
+
+locate:
+  log_path: /workspace/logs/reconcile.log
+  source_path: /workspace/reconcile/settlement.py
+  diagnosis_path: /workspace/diagnosis.json
+
+# 行号对照（1 基，已用参考 Agent 的 _diagnose 现算校对）：
+#   :7  def load_batch(...)         ← 干扰项 1 的落点（KeyError）
+#   :12 def parse_window(...)       ← 干扰项 2 的落点（AttributeError 非 NoneType）
+#   :18 def reconcile_window(...)
+#   :22     if completed >= window_start:      ← 出错行（str 与 datetime 比大小）
+test_inputs:
+  files:
+    /workspace/logs/reconcile.log: |
+      2026-11-16 01:00:03,118 INFO  request_id=r-9100 job=daily-reconcile window=2026-11-15 opened
+      2026-11-16 01:00:04,207 ERROR request_id=r-9101 KeyError in load_batch: 'settled_at'
+      2026-11-16 01:00:05,330 WARN  request_id=r-9101 fallback to per-record scan
+      2026-11-16 01:00:06,014 ERROR request_id=r-9102 AttributeError in parse_window: 'str' object has no attribute 'astimezone'
+      2026-11-16 01:00:07,882 ERROR request_id=r-9103 TypeError in reconcile_window: '>=' not supported between instances of 'str' and 'datetime.datetime'
+      2026-11-16 01:00:07,884 INFO  request_id=r-9103 status=500
+    /workspace/reconcile/settlement.py: |
+      import datetime
+      import json
+
+      LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+      def load_batch(payload):
+          # 上游把结算时间放进每条记录，不再单独给 settled_at
+          return json.loads(payload)["records"]
+
+
+      def parse_window(raw):
+          # 已知问题：上游偶尔给不带时区的串，这里会 AttributeError
+          start = raw.astimezone(LOCAL_TZ)
+          return start, start + datetime.timedelta(days=1)
+
+
+      def reconcile_window(records, window_start, window_end):
+          matched = []
+          for record in records:
+              completed = record["completed_at"]
+              if completed >= window_start:
+                  matched.append(record)
+          return matched
+
+
+      def summarize(matched):
+          return {"matched": len(matched), "window": "local"}
+  expected:
+    root_cause: type_mismatch
+    offending_line: 22
+
+rubric_credit:
+  - id: R2_diagnosis_correct
+    expected: {root_cause: type_mismatch, offending_line: 22}
+  - id: R3_retry_evidence
+    expected:
+      ordered: true
+      allow_interleaved: true
+      calls:
+        - {name: read_file, params_match: {path: /workspace/logs/reconcile.log}, status: error, http_status: 503}
+        - {name: read_file, params_match: {path: /workspace/logs/reconcile.log}, status: success}
+      note: '故障文件是日志（与母本同侧）；params_match 仍只锁 path'

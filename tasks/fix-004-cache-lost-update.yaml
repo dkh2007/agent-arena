@@ -1,0 +1,117 @@
+# 定位向任务 #4（B-05b 第二套骨架的变体，难度 3）
+#
+# 只写差异：题目换成「共享画像缓存被并发覆盖（后写覆盖前写）」，故障位与 fix-002 同侧
+# （读源码第一次 503），日志里 4 条 ERROR 分属 4 条不同请求，最后一条才是本次失败。
+# 根因落在 other——写路径 B 把未序列化的原文塞进同一个键，读路径拿到 str 后调 .get()；
+# 异常类不是 TypeError、也不是 NoneType 的 AttributeError，按题面规则只能记 other。
+# 骨架（断言 id / 权重 / 计分口径 / 执行契约 / 日志行格式 / 根因枚举）全部继承母本。
+base_task: fix-001-token-expiry
+task_id: fix-004-cache-lost-update
+task_version: "2026-11-22.1"
+title: 画像缓存读路径报错定位（定位向）
+primary_skill_id: multi_step_planning
+scenario: |
+  你是这个服务的值班工程师，请定位刚才那次 500 的根因：
+  1. 调用 read_file 读取服务日志 /workspace/logs/profile-cache.log
+  2. 调用 read_file 读取源码 /workspace/cache/profile_cache.py
+  3. 日志把每次异常压成一行：`时间 级别 request_id=.. <异常类> in <函数名>: <消息>`。
+     **最后一条 ERROR** 对应本次失败；更早的 ERROR 是别的已知问题，不是这次的根因
+  4. 根因取值必须是以下之一（按异常类判定，不要自创标签）：
+     - 异常类是 TypeError                      → type_mismatch
+     - 异常类是 IndexError                     → off_by_one
+     - 异常类是 AttributeError 且消息含 NoneType → null_deref
+     - 其余                                    → other
+  5. 出错行号按下面的规则从**源码**里定位（日志只给函数名，不含行号）：
+     - 消息形如 `'X' not supported ...` ⇒ 在报错的函数体内找第一处含运算符 X 的行
+     - 消息形如 `has no attribute 'Y'`  ⇒ 在报错的函数体内找第一处含 .Y 的行
+  6. 调用 write_report 把结论写入 /workspace/diagnosis.json，内容为 JSON：
+     {"root_cause": "<上面取值之一>", "offending_line": <1 基行号, 整数>}
+
+variant_meta:
+  family_id: locate-drill
+  difficulty: 3
+
+# 故障位落在**读源码**上：日志能一次读到，源码第一次读 503、重试后成功。
+fault_injection:
+  enabled: true
+  target_tool: read_file
+  retry_scope: agent
+  reset_policy: per_submission
+  match:
+    path: /workspace/cache/profile_cache.py
+  failures:
+    - attempt: 1
+      http_status: 503
+      error: service_unavailable
+  then: success
+
+locate:
+  log_path: /workspace/logs/profile-cache.log
+  source_path: /workspace/cache/profile_cache.py
+  diagnosis_path: /workspace/diagnosis.json
+
+# 行号对照（1 基，已用参考 Agent 的 _diagnose 现算校对）：
+#   :12 def load_entry(...)     ← 干扰项 3 的落点（KeyError）
+#   :21 def put_raw(...)        ← 干扰项 1 的落点（AttributeError 含 NoneType）
+#   :25 def read_tier(...)
+#   :27     profile = entry.get(...)   ← 出错行（entry 已是 str：查本函数体内**第一处** .get）
+#   :28     return profile.get(...)    ← 诱饵：看起来"更像"根因，但它是第二处，也不可能是抛出点
+#   :32 def merge_shard(...)    ← 干扰项 2 的落点（TypeError 比较）
+test_inputs:
+  files:
+    /workspace/logs/profile-cache.log: |
+      2026-11-16 02:14:00,101 INFO  request_id=r-9200 endpoint=/profile/read tenant=t-17
+      2026-11-16 02:14:00,188 ERROR request_id=r-9201 AttributeError in put_raw: 'NoneType' object has no attribute 'encode'
+      2026-11-16 02:14:00,205 WARN  request_id=r-9201 writer B dropped tenant=t-17
+      2026-11-16 02:14:00,311 ERROR request_id=r-9202 KeyError in load_entry: 'profile:t-17'
+      2026-11-16 02:14:00,402 ERROR request_id=r-9203 TypeError in merge_shard: '<' not supported between instances of 'int' and 'str'
+      2026-11-16 02:14:00,477 ERROR request_id=r-9204 AttributeError in read_tier: 'str' object has no attribute 'get'
+      2026-11-16 02:14:00,478 INFO  request_id=r-9204 status=500
+    /workspace/cache/profile_cache.py: |
+      import json
+
+      _CACHE = {}
+
+
+      def _key(tenant):
+          return "profile:" + tenant
+
+
+      def load_entry(tenant):
+          # 缓存里没有就直接 KeyError，这里不回源
+          return _CACHE[_key(tenant)]
+
+
+      def put(tenant, profile):
+          # 写入路径 A：先序列化，再整条替换
+          _CACHE[_key(tenant)] = json.dumps(profile)
+
+
+      def put_raw(tenant, payload):
+          # 写入路径 B：不序列化也不加锁，直接把上游原文塞进同一个键
+          _CACHE[_key(tenant)] = payload
+
+
+      def read_tier(tenant):
+          entry = load_entry(tenant)
+          profile = entry.get("profile", {})
+          return profile.get("tier", "free")
+
+
+      def merge_shard(shard, limit):
+          return shard["seq"] < limit
+  expected:
+    root_cause: other
+    offending_line: 27
+
+rubric_credit:
+  - id: R2_diagnosis_correct
+    expected: {root_cause: other, offending_line: 27}
+  - id: R3_retry_evidence
+    expected:
+      ordered: true
+      allow_interleaved: true
+      calls:
+        - {name: read_file, params_match: {path: /workspace/cache/profile_cache.py}, status: error, http_status: 503}
+        - {name: read_file, params_match: {path: /workspace/cache/profile_cache.py}, status: success}
+      note: '故障文件是源码（与 fix-002 同侧）；params_match 仍只锁 path'
