@@ -18,6 +18,10 @@ Thumbs.db
 *.sqlite3
 .pytest_cache/
 
+# pytest 的 junit 报告（证据归档时临时放在根目录，交给 scripts/test_evidence.py --reuse 读）
+# 档案里只记相对名字，跑完即删；不忽略的话 `git add -A` 会把整份 junit 带进提交
+.junit*.xml
+
 # pytest 临时目录（`--basetemp=.pytest-tmp-xxx` 与 pytest 自建 cache 目录的产物）
 # 里面是各轮测试生成的 arena.db，可随时重建，不该留在工作区里给评审看到
 .pytest-tmp-*/
