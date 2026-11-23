@@ -157,7 +157,7 @@ python scripts/copy_inventory.py --check  # 只校验；不同步时退出 1
 |---|---|---|
 | **判一次提交**（`prepare` + `evaluate`） | **42 ms**；含落库 66 ms | 学习者每次提交，已经是 OJ 级 |
 | 改一道题后自检（`scripts/new_task.py --check <id>`） | 0.6 秒/题 | 加题、改数据 |
-| 评审包一致性（`src/arena/review_packet.py --check`） | 6 秒（其中 7 秒是那一次真收集，进程内只算一次） | 收工前 |
+| 评审包一致性（`src/arena/review_packet.py --check`） | 6 秒（大头是真收集一次用例数，进程内只算一次） | 收工前 |
 | 单文件回归（`pytest tests/test_mock_tools.py -q`） | 0.3–30 秒 | 改哪块跑哪块 |
 | **全量回归 · 并行**（`pytest tests -q -n 4 --dist loadfile`，1912 用例） | **237 秒（3 分 57 秒）** | 日常 |
 | **全量回归 · 串行**（`pytest tests -q`，1912 用例） | **758 秒（12 分 38 秒）** | 交付证据（更保守） |
