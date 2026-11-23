@@ -121,8 +121,9 @@ PYTHONPATH=src python -m pytest tests/test_task_yaml.py tests/test_task_variants
 # ② 只看新题能不能真跑通、能不能判对错（最有用的一条，参数化到每个任务）
 PYTHONPATH=src python -m pytest tests/test_task_variants.py -q -k "full_marks or own_failure"
 
-# ③ 全量（约 14 分钟 / 1902 用例，收工必跑；实测 830 秒，机器并发时 19 分钟）
-PYTHONPATH=src python -m pytest tests -q
+# ③ 全量（收工必跑）：并行 4 分钟 / 串行 12.6 分钟（约 1912 用例）
+PYTHONPATH=src python -m pytest tests -q -n 4 --dist loadfile   # 日常
+PYTHONPATH=src python -m pytest tests -q                        # 交付证据（更保守）
 ```
 
 第 ② 档解释：它跑两遍参考 Agent——一遍走到满分（`ratio == 1.0` 且 `skill_gaps == []`），

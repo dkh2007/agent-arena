@@ -3,6 +3,7 @@ rem verify.bat - one-click verification for agent-arena
 rem Usage: double-click, or run from cmd.
 rem   verify.bat            interactive: pause at the end so the window stays open
 rem   verify.bat /nopause   unattended/CI: no key prompt; exit code 0 only if all checks pass
+rem   verify.bat /fast     parallel test run (pytest -n 4 --dist loadfile, ~3.5 min vs ~16 min)
 rem   [1] pytest tests\        - product code behavior matches claims
 rem   [2] pytest spike\        - upstream A2E defect sentinel (skips if A2E source absent)
 rem   [3] DTO + full pipeline - 5 fixtures, schema, all 5 assertions recomputed from raw
@@ -19,6 +20,9 @@ rem Unattended mode: no trailing pause, and the exit code carries the verdict.
 rem Why it exists: without it this script cannot be run by CI or by another script
 rem (the pause blocks forever), so "did anyone ever run the whole thing?" stayed open.
 if /i "%~1"=="/nopause" set NOPAUSE=1
+rem /fast is opt-in on purpose: the serial run stays the default so that "serial and
+rem parallel agree" keeps being re-checked by the command people actually type.
+if /i "%~1"=="/fast" set FASTOPT=-n 4 --dist loadfile
 
 rem --- Python discovery (portable) ------------------------------------------
 rem A fresh collaborator follows README and gets .venv\Scripts\python.exe.
@@ -45,7 +49,7 @@ echo ==================================================
 echo [1/5] pytest tests\ + jmespath expressiveness
 echo ==================================================
 rem jmespath test belongs here: it needs only our own venv, no upstream A2E
-%PY% -m pytest tests\ spike\test_jmespath_expressiveness.py -v
+%PY% -m pytest tests\ spike\test_jmespath_expressiveness.py %FASTOPT% -v
 set PYEXIT=%ERRORLEVEL%
 
 echo.

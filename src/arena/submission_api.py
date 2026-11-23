@@ -659,14 +659,22 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def bootstrap(db_path: str | Path, registry: TaskRegistry) -> None:
-    """建库 + 种子导入（幂等）。技能 / 错误模式 / 任务三类种子都从仓库里的真相源读。"""
+    """建库 + 种子导入（幂等）。技能 / 错误模式 / 任务三类种子都从仓库里的真相源读。
+
+    **25 条任务注册包在一个事务里（2026-11-23，B-36）**：`register_task` 各自带
+    `atomic()`，逐条调用就是 25 次真正的事务提交 = 25 次 fsync。实测本机一条 60ms，
+    25 条 1.5 秒，而每次建临时库都要付——那是测试里最大的一笔固定开销。
+    外层再套一个 `atomic()` 后，内层 savepoint 嵌套、只有最外层 `RELEASE` 落盘，
+    语义反而更严：以前中途失败会留下"前 k 条已注册"的半成品库，现在全有或全无。
+    """
     conn = store.connect(db_path)
     try:
         store.init_db(conn)
         store.register_skills(conn)
         store.register_patterns(conn)
-        for tid, _task in registry.items():
-            store.register_task(conn, registry.path_of(tid))
+        with store.atomic(conn):
+            for tid, _task in registry.items():
+                store.register_task(conn, registry.path_of(tid))
     finally:
         conn.close()
 

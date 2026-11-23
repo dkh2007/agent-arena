@@ -94,12 +94,66 @@ def _git_log(ref: str) -> str:
     ).strip()
 
 
-def _pytest_count() -> int:
-    out = _run([sys.executable, "-m", "pytest", "tests/", "-q", "--collect-only"])
+def _parse_collect_count(out: str) -> int:
+    """从 `--collect-only` 输出数用例，**两条独立路径必须一致**。
+
+    A：汇总行 `N tests collected in Xs`（pytest 自己数的）
+    B：逐行 nodeid 的条数（我们自己数的，`-q --collect-only` 一行一个 nodeid）
+
+    A≠B 说明输出格式变了或正则抓错了数。宁可报错，也不写下一个没人核对过的数——
+    这个数的唯一用途就是让外部知道"测试规模多大"，抓错它会静默骗人。
+    """
     m = re.search(r"(\d+)\s+tests?\s+collected", out)
     if not m:
         raise PacketError("未能从 pytest --collect-only 输出中解析用例数")
-    return int(m.group(1))
+    listed = sum(1 for ln in out.splitlines() if "::" in ln)
+    summary = int(m.group(1))
+    if listed != summary:
+        raise PacketError(
+            f"两条计数路径不一致：汇总行说 {summary} 个，逐行 nodeid 数出 {listed} 个"
+            "（pytest 输出格式变了？先核对再生成，别让包里落一个错的数）"
+        )
+    if summary < 1:
+        raise PacketError(f"收集到 {summary} 个用例：这次收集本身就没成功，不能往下写")
+    return summary
+
+
+# 进程内缓存：同一份 `tests/` 快照只数一次。
+#
+# 为什么缓存不违背本脚本的立身之本：`_scores()` 明确不缓存，因为它的对象是"代码行为"，
+# 一变就该重算。而用例数是**测试文件集合的静态属性**，同一进程里改它的唯一方式是
+# 改 `tests/*.py`——下面用文件指纹盯着这件事，指纹一变立刻真收集。
+# 所以缓存跨越的是"同一快照的多次调用"，不是"跨时间"，与 `--check` 重放记录行是同一逻辑。
+_COUNT_CACHE: tuple[tuple, int] | None = None
+
+
+def _tests_fingerprint() -> tuple[tuple[str, int, int], ...]:
+    """`tests/*.py` 的 (名, 字节数, mtime_ns)。约 60 次 stat，微秒级。"""
+    return tuple(
+        sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns)
+               for p in (ROOT / "tests").glob("*.py"))
+    )
+
+
+def _pytest_count(*, refresh: bool = False) -> int:
+    """真实起一次 `pytest --collect-only` 数用例；同快照进程内只起一次。
+
+    `refresh=True` 强制重数（测试用它验证"绕过缓存走的仍是真收集"）。
+    """
+    global _COUNT_CACHE
+    key = _tests_fingerprint()
+    if not refresh and _COUNT_CACHE is not None and _COUNT_CACHE[0] == key:
+        return _COUNT_CACHE[1]
+    out = _run([sys.executable, "-m", "pytest", "tests/", "-q", "--collect-only"])
+    n = _parse_collect_count(out)
+    _COUNT_CACHE = (key, n)
+    return n
+
+
+def _reset_count_cache() -> None:
+    """仅测试用：让下一次 `_pytest_count()` 走真收集。"""
+    global _COUNT_CACHE
+    _COUNT_CACHE = None
 
 
 FAST_TEST_LINE = "- 单元测试实测：`--fast` 模式未执行测试（对外发正式评审包时请去掉 --fast）"
@@ -246,7 +300,11 @@ def _snapshot(ref: str, test_line: str, count: int | None = None) -> str:
 
 
 def _scores() -> str:
-    """现场跑五份夹具，把分数摊开。不缓存——缓存就是这个脚本想消灭的东西。"""
+    """现场跑五份夹具，把分数摊开。**不缓存**——它测的是"代码行为"，一变就该重算。
+
+    与 `_pytest_count` 的进程内缓存不冲突：那个数只取决于 `tests/*.py` 的文件集合
+    （用指纹盯着变没变），跨时间不跨快照；这里跨一次运行就不可信。
+    """
     out = _run(
         [sys.executable, str(ROOT / "src" / "arena" / "diagnosis_report.py"), "--fixture", "all"]
     )

@@ -151,9 +151,15 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 ```bash
 # 一键验证（Windows，含评审包检查与 push 闸门）
 verify.bat /nopause          # 期待末行 RESULT: ALL GREEN，退出码 RC=0（它不打印 VERIFY_EXIT 这种东西）
+verify.bat /nopause /fast    # 同上，测试段并行跑（约 4 分钟，日常用这个）
 
-# 全量测试（约 14 分钟 / 1902 用例；数字以现场输出为准，文档不写死）
-PYTHONPATH=src python -m pytest tests -q
+# 全量测试：并行 4 分钟 / 串行 12.6 分钟（约 1912 用例；数字以现场输出为准，文档不写死）
+PYTHONPATH=src python -m pytest tests -q -n 4 --dist loadfile   # 日常
+PYTHONPATH=src python -m pytest tests -q                        # 交付证据（更保守）
+
+# 为什么保留两条：并行快，但"串行与并行结果一致"这件事只能靠串行那一跑持续证伪。
+# 交付/归档的 junit 用串行那次；两者已做过逐用例 outcome 比对（BACKLOG B-36）。
+# 没装 pytest-xdist 的机器去掉 `-n 4 --dist loadfile` 即可，功能不受影响。
 
 # 掌握度成绩单（不带 --db 用内置演示数据，不碰库）
 PYTHONPATH=src python scripts/mastery_scorecard.py

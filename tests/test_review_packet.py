@@ -93,6 +93,97 @@ def test_test_count_matches_repo(body: str):
     assert " passed**" not in body
 
 
+def test_collect_count_needs_two_paths_to_agree():
+    """汇总行与逐行 nodeid 必须一致；抓错数就报错，不写一个没人核对过的数字。"""
+    ok = "tests/test_a.py::test_x\ntests/test_a.py::test_y\n\n3 tests collected in 0.1s"
+    with pytest.raises(review_packet.PacketError, match="两条计数路径不一致"):
+        review_packet._parse_collect_count(ok)
+    assert review_packet._parse_collect_count(
+        "tests/test_a.py::test_x\ntests/test_a.py::test_y\n\n2 tests collected in 0.1s"
+    ) == 2
+    with pytest.raises(review_packet.PacketError, match="未能从"):
+        review_packet._parse_collect_count("no tests ran in 0.01s")
+
+
+def test_collect_count_refuses_an_empty_run():
+    """0 个用例是"这次收集本身就没成功"，不能当成一个有效数字往下写。"""
+    with pytest.raises(review_packet.PacketError, match="收集到 0 个用例"):
+        review_packet._parse_collect_count("\n0 tests collected in 0.1s")
+
+
+def test_count_is_collected_once_per_snapshot(monkeypatch):
+    """同一份 `tests/` 快照只起一次 collect 子进程——这是本项提速的来源。"""
+    real_run = review_packet.subprocess.run
+    calls = []
+
+    def counting_run(cmd, *args, **kwargs):
+        if "--collect-only" in cmd:
+            calls.append(tuple(cmd))
+        return real_run(cmd, *args, **kwargs)
+
+    review_packet._reset_count_cache()
+    monkeypatch.setattr(review_packet.subprocess, "run", counting_run)
+    first = review_packet._pytest_count()
+    for _ in range(3):
+        assert review_packet._pytest_count() == first
+    assert len(calls) == 1, f"同一快照数了 {len(calls)} 次（应恰好 1 次）"
+
+
+def test_count_cache_is_invalidated_by_a_changed_test_file(monkeypatch):
+    """缓存不能挡住"测试文件变了"——指纹一变就必须真收集，否则缓存会静默报关值。"""
+    review_packet._reset_count_cache()
+    real_run = review_packet.subprocess.run
+    calls = []
+
+    def counting_run(cmd, *args, **kwargs):
+        if "--collect-only" in cmd:
+            calls.append(1)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(review_packet.subprocess, "run", counting_run)
+    monkeypatch.setattr(review_packet, "_tests_fingerprint", lambda: (("fake.py", 1, 1),))
+    review_packet._pytest_count()
+    monkeypatch.setattr(review_packet, "_tests_fingerprint", lambda: (("fake.py", 2, 2),))
+    review_packet._pytest_count()
+    assert len(calls) == 2, "测试文件指纹变了却还在用缓存"
+
+
+def test_count_refresh_bypasses_the_cache(monkeypatch):
+    """`refresh=True` 必须走真收集：变异验证靠它，靠缓存就等于自己证明自己。"""
+    review_packet._reset_count_cache()
+    real_run = review_packet.subprocess.run
+    calls = []
+
+    def counting_run(cmd, *args, **kwargs):
+        if "--collect-only" in cmd:
+            calls.append(1)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(review_packet.subprocess, "run", counting_run)
+    review_packet._pytest_count()
+    review_packet._pytest_count(refresh=True)
+    assert len(calls) == 2
+
+
+def test_count_agrees_with_this_session(request):
+    """第二条独立真相源：**本次 pytest 会话自己**收集到多少个用例。
+
+    生产代码那条路径是"起子进程、全新解释器里重新导入、再数"；这条是"当前进程里
+    pytest 自己数过的"。两者相等才说明包里的数字是一次真收集的结果，而不是常量、
+    缓存抄来的或手填的（B-36 验证④要的正是这个）。
+
+    只在"单进程、收集范围覆盖全仓"时可比：xdist 每个 worker 各数一遍，语义不同。
+    """
+    if hasattr(request.config, "workerinput"):
+        pytest.skip("xdist 下每个 worker 各收集一遍，与会话级总数语义不同")
+    targets = [a for a in request.config.args if not a.startswith("-")]
+    if targets not in ([], ["tests"], ["tests/"]):
+        pytest.skip(f"本次只收集了 {targets}，与会话级全仓计数不可比")
+    total = request.config._arena_collected_total
+    assert request.session.testscollected <= total
+    assert total == review_packet._pytest_count(refresh=True)
+
+
 def test_count_check_uses_the_right_reference_in_each_moment():
     """两个方向的参照物错法，都不会报错，只会判错东西。"""
     live = 72
