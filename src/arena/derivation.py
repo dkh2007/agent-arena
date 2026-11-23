@@ -32,10 +32,14 @@ derivation:
   valid_when:                          # 全部条件同时成立才算有效行；顺序即求值顺序
     - {field: amount, rule: not_null}
     - {field: amount, rule: gte, value: 0}
+    - {field: status, rule: ne, value: cancelled}   # 值域排除（标量比较，不吃数值）
   outputs:
     valid_count: {op: count}
     total_amount: {op: sum, field: amount}
 ```
+
+谓词只有五个：`not_null`（有没有值）、`ne`（标量不等，用于状态排除）、
+`gte` / `lte` / `eq`（数值比较）。写别的名字在加载期就报错——见下面第 1 条。
 
 ## 三条语义决定（都是选的，不是推出来的）
 
@@ -82,8 +86,8 @@ _OUT_KEYS = {"op", "field"}
 # `not_null` 不需要比较值；其余谓词必须有 `value`。
 # 刻意**没有** `present`：它和 `not_null` 的差别是"null 算不算存在"，没人需要这个区别，
 # 留着只会让规则出现两条写法却只生效一条。
-_PREDICATES = {"not_null", "gte", "lte", "eq"}
-_NEEDS_VALUE = {"gte", "lte", "eq"}
+_PREDICATES = {"not_null", "gte", "lte", "eq", "ne"}
+_NEEDS_VALUE = {"gte", "lte", "eq", "ne"}
 
 # `count` 不取字段；`sum` 必须有字段。
 _OPS = {"count", "sum"}
@@ -220,6 +224,15 @@ def _passes(index: int, row: dict, conds: list[dict]) -> bool:
                 f"{where} 是 null，而规则只用比较谓词（{rule}）碰它——"
                 "要把它判成无效行，请在 valid_when 里写明 not_null"
             )
+        if rule == "ne":
+            # 值域排除（第三套骨架 tpl-ask-first 需要 `status != cancelled`）。
+            # 放在 _number 之前是有意的：它比的是标量（字符串也能比），
+            # 而下面三个比较谓词只吃数值。与 not_null 的分工不变：
+            # 缺字段 / null 仍要由 not_null 声明，这里不代劳。
+            if value != cond["value"]:
+                continue
+            return False
+
         number = _number(value, where=where)
         if rule == "gte" and not number >= cond["value"]:
             return False
@@ -227,6 +240,10 @@ def _passes(index: int, row: dict, conds: list[dict]) -> bool:
             return False
         elif rule == "eq" and not number == cond["value"]:
             return False
+        elif rule not in ("gte", "lte", "eq"):
+            # 未知规则必须报错：静默"通过"会让一条写错的声明变成装饰，
+            # 而期望值算出来仍然自洽（因为两边用的是同一份坏规则）。
+            raise DerivationError(f"{where} 用了未实现的规则 {rule!r}（已有 not_null/ne/gte/lte/eq）")
     return True
 
 

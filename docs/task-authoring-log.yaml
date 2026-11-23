@@ -76,3 +76,6 @@ tasks:
     why: 33 行 4 页、故障在第 32 条（倒数第二页末尾）：重试后只剩一页，容易误判"已经拉完"。
   - id: ret-007-zero-amount
     why: 24 行 3 页、故障在第 22 条，且放入 3 条 amount=0 的记录：全库没有题考过 0 这个边界，把规则写成「大于 0」就会少算这 3 条——剔除规则的宽窄第一次真的影响分数
+  # ── 交接族 handover-drill（骨架 tpl-ask-first，主技能 multi_step_planning）──
+  - id: ask-001-report-handover
+    why: 第三套骨架母本。14 行 / 每页 3 / 三条口径（页大小、无效判定含 status=cancelled、取整）只在 ask_policy 的答复里，且刻意不注入故障。全库第一次有题考"先确认再动手"：不问就猜会少剔 3 条 cancelled（8/628.64 → 11/1598.64），而最后一页也放了无效行，逼每页都按规则看一遍

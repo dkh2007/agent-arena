@@ -14,7 +14,7 @@
 **最快路径（2026-11-22 起）**——一条命令生成、三秒自检，不用先读完整份文档：
 
 ```bash
-python scripts/new_task.py --list                       # 看四个家族各自的难度梯度，挑缺的那一档
+python scripts/new_task.py --list                       # 看各家族自己的难度梯度，挑缺的那一档
 python scripts/new_task.py --new --family retry-drill \
     --id ret-008-xxx --title "……" --rows 28 --page 10 --write
 python scripts/new_task.py --check ret-008-xxx          # 只查这一道，实测 0.6 秒
@@ -33,7 +33,7 @@ python scripts/new_task.py --check ret-008-xxx          # 只查这一道，实�
 |---|---|---|---|---|
 | **A. 新变体**（最常用） | 一个 YAML，`base_task` 继承母本，只写差异 | 情景、数据、故障位、参数上限、难度变 | 半小时级 | 我 |
 | **B. 新家族** | 新变体 + 在 `tests/test_task_variants.py` 的 `FAMILY_PRIMARY` / `FAMILY_TEMPLATE` 登记 | 主技能变了，但"分数怎么算"没变 | 半天级 | 我（改了要说明） |
-| **C. 新骨架** | 新母本 YAML + `MOTHER_OF` + 一套新断言 id + 新参考 Agent 流程 | **"分数怎么算"变了** | 天级，且牵动参考 Agent / mock / 错误模式 | **人拍** |
+| **C. 新骨架** | 新母本 YAML + `task-families.yaml` 一行 + 一套新断言 id + 新参考 Agent 流程（可能要新 mock 形态，如第三套的 `source: static` 固定应答） | **"分数怎么算"变了** | 天级，且牵动参考 Agent / mock / 错误模式；门槛见 §6 | **人拍** |
 
 选错方式的典型症状：想做 C 的效果，却用 A 硬凑——结果 28 道题共享 5 条断言，
 学习者第一次和第四十次看到的判分维度一模一样（这个张力的处理见 §6）。
@@ -56,6 +56,9 @@ python scripts/new_task.py --check ret-008-xxx          # 只查这一道，实�
 | `retry-drill` | `failure_retry` | `tpl-tool-debug` | 同上 |
 | `param-surface` | `tool_param_validation` | `tpl-tool-debug` | 同上 |
 | `locate-drill` | `multi_step_planning` | `tpl-bug-locate` | `fix-001-token-expiry` |
+| `handover-drill` | `multi_step_planning` | `tpl-ask-first` | `ask-001-report-handover` |
+
+（这张表是 `docs/task-families.yaml` 的人读版，改那里即可；手工抄错会被测试比对出来。）
 
 **不需要在任何清单里登记任务**：任务库靠 `tasks/*.yaml` 通配发现（`TASK_FILES = sorted(TASKS_DIR.glob("*.yaml"))`），
 放进去就会被所有测试遍历到。唯一要手改的清单是 §3 那四张映射表/常量。
@@ -108,7 +111,7 @@ python scripts/new_task.py --check ret-008-xxx          # 只查这一道，实�
 ## 2. 验收命令（快 → 慢，四档都要过）
 
 ```bash
-# ⓪ 只查这一道题（2026-11-22 新增）：实测 0.63 秒/题、24 题全库 1.75 秒，逐条列出还差什么
+# ⓪ 只查这一道题（2026-11-22 新增）：实测 0.63 秒/题、25 题全库 2.1 秒，逐条列出还差什么
 python scripts/new_task.py --check tasks/新题.yaml
 
 # ① 任务层的快门槛：141 条，实测 27 秒（2026-11-21）
@@ -118,7 +121,7 @@ PYTHONPATH=src python -m pytest tests/test_task_yaml.py tests/test_task_variants
 # ② 只看新题能不能真跑通、能不能判对错（最有用的一条，参数化到每个任务）
 PYTHONPATH=src python -m pytest tests/test_task_variants.py -q -k "full_marks or own_failure"
 
-# ③ 全量（约 12 分钟，收工必跑）
+# ③ 全量（约 14 分钟 / 1902 用例，收工必跑；实测 830 秒，机器并发时 19 分钟）
 PYTHONPATH=src python -m pytest tests -q
 ```
 
@@ -175,7 +178,7 @@ PYTHONPATH=src python -m pytest tests -q
 **锁得住**（都有测试，见 §4 与 §2）：
 骨架一致、家族↔技能↔骨架映射、难度单调、期望值与数据一致、故障位两处相等、
 参考 Agent 每题满分、每题的放弃重试都被判成 `no_retry`、词表引用、依赖无环、
-计分与执行口径全库一致、两套骨架的 credit 断言 id 真的不同。
+计分与执行口径全库一致、三套骨架的 credit 断言 id 真的不同（R2/R4 共用，R3 与 R6 分属不同能力）。
 
 2026-11-22 补的三条（B-30）：**台账 ↔ 磁盘双向一致**（加了题不登记 = 红，登记了但文件没了 = 红）、
 **why 有实义**（非空、≥12 字、不是「同上/略/TODO」）、**家族表自洽**（母本存在且骨架相符、
@@ -200,22 +203,28 @@ PYTHONPATH=src python -m pytest tests -q
 
 ---
 
-## 6. 一个已存在的张力（需人拍，扩题前先想清）
+## 6. 骨架张力的现状（2026-11-23 更新：第三套已投产）
 
-骨架只有 2 套，而"变体不许改断言结构"是硬约束（`SKELETON_FIELDS` 逐字段相等）。
-所以：**12 → 40 若全走 A（新变体），学习者第 1 次和第 40 次看到的判分维度完全一样**，
-只有情景与数据在变。这与"要改变学生要做的事"部分冲突——能做的是让**要做的事**变
-（翻几页、遇到哪种故障、参数上限多紧），不能让**怎么被判定**变。
+历史：骨架曾只有 2 套，而"变体不许改断言结构"是硬约束（`SKELETON_FIELDS` 逐字段相等），
+所以全走 A（新变体）的话，学习者第 1 次和第 40 次看到的判分维度完全一样——只有情景与数据在变。
+当初登记了三个选项（多家族同骨架 / 新建第 3-4 套 / 混合），并把决定推到"到 20 题再说"。
 
-三个选项（代价递增）：
+**现在（25 题）：走了 B，建了第三套 `tpl-ask-first`。** 它带来的是**新维度**而不是新场景：
 
-| 选项 | 效果 | 代价 | 备注 |
-|---|---|---|---|
-| A. 多家族、同骨架 | 技能覆盖更均，题型仍 2 种 | 低 | 现在 `failure_retry` 只有汇报族题（B-05b 边界③） |
-| B. 新建第 3、4 套骨架 | 判分维度真的变多 | 天级/套 | 要新母本 + 参考 Agent 流程 + `MOTHER_OF` + 新断言 id |
-| C. 混合 | 先 A 到 20 左右，再 B 一套 | 中 | 我倾向这个 |
+| 骨架 | 考的是 | credit 断言 |
+|---|---|---|
+| `tpl-tool-debug` | 拉全 + 剔除 + 汇总 | R2 结果 / R3 重试 / R4 参数 |
+| `tpl-bug-locate` | 读日志 + 读源码 → 根因与行号 | R2 结论 / R3 重试 / R4 参数 |
+| `tpl-ask-first` | **信息不全时先确认再动手** | R2 结果 / **R6 确认顺序** / R4 参数 |
 
-**这条不用现在拍**：A 可以一直做到 20 题不碰骨架；到 20 题再决定要不要 B。
+第四套骨架的门槛（写在这里，免得下次又从零讨论）：
+
+1. **必须是新维度**，不是"同样的三条断言换个场景"——否则它只是又一个变体，白付天级成本；
+2. **要能说清"哪条形态只打掉它"**（现有每套都有 correct / extra_param / 骨架专属形态，
+   每条形态必须只落在对应断言上）。说不清就是维度不独立，会污染归因；
+3. **优先复用现有 5 种断言类型**。第三套唯一的新能力是 `trace_sequence` 的**跨工具序列**
+   （原实现只支持同参重试），那是在执行器里加一个匹配器，不是加一种断言类型。
+   若新题型必须新增断言**类型**，成本再上一档，要单独评估（它会让"分数怎么算"多一套语义）。
 
 ---
 

@@ -51,11 +51,11 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 一次提交：取任务定义（**必须合并 base_task**，见 §7）→ 逐项判（确定性断言 + 语义双判，分歧进仲裁）
 → 先 gate 后 credit → 归因错误模式并绑技能 → 折熟练度、排复习 → 推荐下一题 → 渲染三页。
 
-任务库结构（**数字是 2026-11-22 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
-24 题 = 2 个基座 + 22 个参数变体，四族 7/7/5/5（`order-report` / `retry-drill` / `param-surface` / `locate-drill`），
+任务库结构（**数字是 2026-11-23 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
+25 题 = 3 个基座 + 22 个参数变体，五族 7/7/5/5/1（`order-report` / `retry-drill` / `param-surface` / `locate-drill` / `handover-drill`），
 难度 1/2/3 全档覆盖；每题合并后都是 5 个判分项（2 前提 + 3 得分）。
-（取样时点 2026-11-22；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l` 或 `python scripts/new_task.py --list` 末行。）
-技能 3 个；错误类型 17 条，其中 4 条不映射技能（`no_output_file` / `empty_output_file` /
+（取样时点 2026-11-23；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l` 或 `python scripts/new_task.py --list` 末行。）
+技能 3 个；错误类型 19 条，其中 4 条不映射技能（`no_output_file` / `empty_output_file` /
 `task_crashed` / `task_timeout`，属交付纪律类，语义上刻意如此）。
 **不会随扩题变的是结构**：每个变体合并后都必须是 5 项、未映射的那几条必须是前提失败类。
 
@@ -107,7 +107,7 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 ## 6. 当前阶段该干的活（按优先级）
 
 1. **扩题 12 → 40 左右**：变体不能只换业务名和期望值，要改变"学生要做的事"（判据待定，见 §5 未决项）。
-2. **17 条错误类型的人话模板**：挂在**错误类型**上（一次性），不挂在题目上（随题量线性增长）。
+2. **19 条错误类型的人话模板**：挂在**错误类型**上（一次性），不挂在题目上（随题量线性增长）。
    数据已经够（实测有 `10 > maximum 4` 这类明细，见 `docs/external-review-20261121b-question.md` §2.4），
    缺的只是拼接规则。
    若某类错误的明细数据拼不出人话，回判分层补数据，不要在模板里编。
@@ -152,7 +152,7 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 # 一键验证（Windows，含评审包检查与 push 闸门）
 verify.bat /nopause          # 期待末行 RESULT: ALL GREEN，退出码 RC=0（它不打印 VERIFY_EXIT 这种东西）
 
-# 全量测试（约 10 分钟；数字以现场输出为准，文档不写死）
+# 全量测试（约 14 分钟 / 1902 用例；数字以现场输出为准，文档不写死）
 PYTHONPATH=src python -m pytest tests -q
 
 # 掌握度成绩单（不带 --db 用内置演示数据，不碰库）

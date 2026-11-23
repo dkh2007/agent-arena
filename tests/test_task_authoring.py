@@ -96,14 +96,25 @@ def test_log_order_groups_families_together():
 
 
 def test_log_covers_every_template():
-    """两套骨架都要有题——只有一套骨架时，"改母本 ⇒ 该族全变"的另一套就被闲置了。"""
-    templates = set()
+    """登记表里的每一套骨架都必须有题在跑。
+
+    原来这里写死 `== {"tpl-tool-debug", "tpl-bug-locate"}`——加第三套骨架时它只逼人
+    改一行常量，改完就绿，没有任何判断。现在从 `docs/task-families.yaml` 推导：
+    表里登记了几套骨架，任务库就必须真的用到这几套，且不多不少。
+    （"表里能登记、现实却没人用"才是真正的失败模式：新骨架投产了却一题没有。）
+    """
+    families = yaml.safe_load(
+        (ROOT / "docs" / "task-families.yaml").read_text(encoding="utf-8")
+    )["families"]
+    declared = {f["template"] for f in families}
+    used = set()
     for path in TASKS_DIR.glob("*.yaml"):
         task = yaml.safe_load(path.read_text(encoding="utf-8"))
-        templates.add(task.get("variant_template_id") or "tpl-tool-debug")
-    assert templates == {"tpl-tool-debug", "tpl-bug-locate"}, (
-        f"实际用到的骨架是 {sorted(templates)}，应有且仅有两套均已投产"
+        used.add(task.get("variant_template_id") or "tpl-tool-debug")
+    assert used == declared, (
+        f"任务库用到 {sorted(used)}，登记表声明 {sorted(declared)}——两边必须一致"
     )
+    assert len(declared) >= 2, "至少要有两套骨架，否则'换题型'这件事没有被验证过"
 
 
 # ---------------------------------------------------------------------------

@@ -437,5 +437,9 @@ def test_every_task_declares_trace_and_execution_boundaries(path):
     assert minimum["final_status"]["required"] is True
     assert set(minimum["tool_calls"]["status_enum"]) == {"success", "error", "timeout"}
     assert task["execution"]["platform_retry"] == 0, "平台代劳重试会让 R3 测不到"
-    assert task["fault_injection"]["reset_policy"] == "per_submission"
-    assert task["fault_injection"]["retry_scope"] == "agent"
+    # 有故障注入的题必须声明"每次提交重置额度"；没有故障的题（交接骨架）不适用——
+    # 它没有 R3，也就没有额度可漏。
+    fi = task.get("fault_injection")
+    if fi:
+        assert fi["reset_policy"] == "per_submission"
+        assert fi["retry_scope"] == "agent"

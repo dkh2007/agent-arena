@@ -53,6 +53,9 @@ LOG_PATH = ROOT / "docs" / "task-authoring-log.yaml"
 TAXONOMY_PATH = ROOT / "docs" / "skill-taxonomy-v0.yaml"
 
 DEFAULT_TEMPLATE = "tpl-tool-debug"
+# 第三套骨架（2026-11-23）。自检要认识它，否则加一道交接题会报一堆"日志 0 条 ERROR"
+# 这种按定位骨架写的假错——那比没有自检更糟：人会学会忽略输出。
+ASK_TEMPLATE = "tpl-ask-first"
 
 # 难度 → "要处理多少东西"的下限。与 tests/test_task_variants.py::test_difficulty_is_not_decorative
 # 同源：汇报骨架看页数，定位骨架看 ERROR 条数。改这里必须同步改那条测试，否则自检与 pytest 会打架。
@@ -127,7 +130,30 @@ def _scale(task: dict) -> str:
     return f"{rows} 行 / 页 {page} / {pages} 页{tail}"
 
 
+def _static_text(task: dict) -> str:
+    """`mock.source=static` 那个工具的固定答复；没有就返回空串。
+
+    交接骨架把"口径"放在这里。自检要读它，才能验"答复里的页大小与分页声明一致"——
+    两者不一致时，学习者问了也做不对，而失败会被记成"能力不足"。
+    """
+    for tool in task.get("tools") or []:
+        mock = tool.get("mock") or {}
+        if mock.get("source") == "static":
+            return str(mock.get("text") or "")
+    return ""
+
+
 def _page_max(task: dict) -> int | None:
+    """页大小上限：优先 `mock.pagination.page_size_max`，回退 `limit.maximum`。
+
+    为什么优先 mock：交接骨架（tpl-ask-first）刻意**不**在工具参数上写 `maximum`——
+    上限属于"要问的口径"，写进 schema 等于把答案白送，`ask_policy` 就没意义了。
+    所以那套骨架的上限只存在于 mock 的分页声明里。
+    """
+    for tool in task.get("tools") or []:
+        pag = (tool.get("mock") or {}).get("pagination") or {}
+        if pag.get("page_size_max"):
+            return int(pag["page_size_max"])
     for tool in task.get("tools") or []:
         if tool.get("name") == "fetch_orders":
             for p in tool.get("parameters") or []:
@@ -223,7 +249,7 @@ def check_task(path: str | Path, *, families: Sequence[dict] | None = None,
     tpl = task.get("variant_template_id") or DEFAULT_TEMPLATE
     diff = meta.get("difficulty")
     if diff in (1, 2, 3):
-        if tpl == DEFAULT_TEMPLATE:
+        if tpl in (DEFAULT_TEMPLATE, ASK_TEMPLATE):
             rows = len((task.get("test_inputs") or {}).get("orders_fixture") or [])
             page = _page_max(task)
             if not page:
@@ -254,6 +280,37 @@ def check_task(path: str | Path, *, families: Sequence[dict] | None = None,
         ):
             out.append(Finding(OK if needle in scenario else X, hint if needle not in scenario
                                else f"题面含「{needle}」"))
+    elif tpl == ASK_TEMPLATE:
+        # 交接骨架与汇报骨架**刚好相反**：口径是那个要问的东西，题面写出来就作弊了。
+        # 两条一起构成口径：什么时候该告诉学习者，什么时候不该。
+        limit = _page_max(task)
+        rows = len((task.get("test_inputs") or {}).get("orders_fixture") or [])
+        out.append(Finding(
+            X if limit and f"{limit} 条" in scenario else OK,
+            "题面把每页条数写出来了——ask_policy 就成了摆设" if limit and f"{limit} 条" in scenario
+            else "题面没有泄漏页大小"))
+        out.append(Finding(
+            X if "invalid_limit" in scenario else OK,
+            "题面提了 invalid_limit，等于提示页大小有限制" if "invalid_limit" in scenario
+            else "题面没有泄漏越界错误码"))
+        # 正向：口径的来源必须写清，否则学习者会以为是自己漏读了文档（那就变成猜谜）
+        src_ok = any(w in scenario for w in ("值班同事", "口述", "当面", "只有人知道"))
+        out.append(Finding(OK if src_ok else X,
+                           "题面写明了口径来自人" if src_ok
+                           else "题面没说清口径来自人——不写就等于让学习者去猜文档在哪"))
+        # 答复里的页大小必须与分页声明一致：不一致时学习者问了也做不对，
+        # 而失败会记成"能力不足"，其实是题坏了。
+        policy = _static_text(task)
+        m = re.search(r"一页最多\s*(\d+)\s*条", policy)
+        if not policy:
+            out.append(Finding(X, "没有 mock.source=static 的工具——交接骨架靠它承载口径"))
+        elif not m:
+            out.append(Finding(WARN, "答复里没有「一页最多 N 条」，参考 Agent 读不出页大小"))
+        elif limit and int(m.group(1)) != limit:
+            out.append(Finding(
+                X, f"答复说一页 {m.group(1)} 条，而 mock.pagination 是 {limit} 条——问了也做不对"))
+        else:
+            out.append(Finding(OK, f"答复里的页大小与分页声明一致（{limit} 条）"))
     else:
         locate = task.get("locate") or {}
         for key in ("log_path", "source_path", "diagnosis_path"):

@@ -1,0 +1,277 @@
+# 交接向任务 #1（第三套骨架 tpl-ask-first 的母本）
+#
+# 【为什么需要第三套骨架】前两套覆盖的是「把数据拉全再算」（tpl-tool-debug）与
+# 「读日志读源码找根因」（tpl-bug-locate）。两者都假设**信息是齐的**：口径写在题面里，
+# 学习者只需要执行。真实工作里最先翻车的一步往往是——信息不全，而 Agent 直接开干。
+#
+# 本骨架把"先确认再动手"变成**可判**的：口径只写在人的嘴里（工具 ask_policy），
+# 题面只说"文档里没有"。于是 R6 能分开两种人：
+#   · 先问清口径，再按口径拉数      ⇒ 该拿分
+#   · 先猜着干，错了才想起去问      ⇒ R6 fail（clarified_too_late）
+#   · 从头到尾不问，纯靠试错碰对    ⇒ R6 fail（no_clarification）
+#
+# 【与前两套相同的地方（有意为之）】
+#   rubric_gate（R1 产物 / R5 正常退出）、R2 结果正确、R3 失败重试、R4 参数合规，
+#   以及 scoring / execution / trace_requirements 口径全部同构。跨骨架可比的维度不动，
+#   新维度只加不改——否则前三套的分数就没法放在一张表里看。
+#
+# 【新技术能力】R6 用 `trace_sequence` 的**跨工具序列**（ask_policy → fetch_orders）。
+#   原实现只支持"同一工具同参重试"，跨工具会直接报错。这次的放宽与边界见
+#   `tests/test_cross_tool_sequence.py` 的模块注释。
+task_id: ask-001-report-handover
+task_version: "2026-11-23.1"
+submission_requirements:
+  requires_process: true
+title: 订单汇总交接（信息不全，先确认再动手）
+domain: 工具调用与多步任务调试
+primary_skill_id: multi_step_planning
+secondary_skill_ids:
+  - tool_param_validation
+  - failure_retry
+variant_template_id: tpl-ask-first
+variant_meta:
+  family_id: handover-drill
+  difficulty: 1
+  # 与另两套骨架的母本保持一致（fix-001 也写 variant）：`kind` 是 data-model 的
+  # ReviewItem.kind 取值，不表达"这份文件是不是母本"——那是 `MOTHER_OF` 的事。
+  kind: variant
+
+# 【刻意没有故障注入】这道题只考一件事：信息不全时先确认。
+# 再叠一个"失败了要重试"，会让 no_retry 与 no_ask 两种错落在同一张分数表上，
+# 复习层就分不清该推"重试题"还是"澄清题"。所以 `fault_injection` 整块不写，
+# R3（失败重试）也不在本骨架里——它由另两套骨架负责，跨骨架仍可比。
+# 代价：`reference_agent._fetch_tool()` 不能再靠 `fault_injection.target_tool` 认分页工具，
+# 改成按 `mock.pagination` 声明认（见该函数的注释）。
+
+execution:
+  invoke_timeout_seconds: 60
+  platform_retry: 0
+  on_timeout: {final_status: timeout}
+
+scenario: |
+  你是刚接手这块业务的运营助理。11 月的订单汇总今天要交，但上周交接只当面说过口径，
+  任何文档里都查不到。
+
+  1. 用 fetch_orders 分页拉取全部订单（共 14 条），一条不剩地拉完。
+  2. 汇总两个数：有效订单条数、有效订单金额合计。
+  3. 三条口径——一页最多能拉几条、哪些订单算无效、合计怎么取整——只有值班同事知道。
+  4. 调用 write_report 写入 /workspace/report.json，内容为 JSON：
+     {"valid_count": <有效订单数, 整数>, "total_amount": <有效订单金额合计, 数字>}
+
+tools:
+  - name: ask_policy
+    description: '向值班同事提问，返回 {"answer": <他的答复>}。他只会告诉你当前生效的那套口径。'
+    parameters:
+      - name: question
+        type: string
+        required: true
+    additional_properties: false
+    mock:
+      # 第三种回放形态：不看入参，固定答一段话。理由是"问人"这件事本来就不因措辞而变。
+      # 做成按 topic 查表会让学习者必须猜中键名才拿得到答案——那考的是猜字符串。
+      source: static
+      text: |
+        上周我们定的是这三条：
+        ① 接口一页最多 3 条，多了会报 invalid_limit。
+        ② 无效订单：amount 缺失、amount 为 null、amount 为负数，或者 status 是 cancelled。
+        ③ 合计四舍五入保留两位小数。
+
+  - name: fetch_orders
+    description: '分页拉取订单，返回 {"orders": [...], "total": <总数>}'
+    parameters:
+      - name: offset
+        type: integer
+        required: true
+        minimum: 0
+      - name: limit
+        type: integer
+        required: true
+        minimum: 1
+    additional_properties: false
+    mock:
+      source: fixture_ref
+      fixture: test_inputs.orders_fixture
+      pagination:
+        page_size_max: 3
+        offset_base: 0
+        range: half_open
+        on_limit_exceed: error
+        error_code: invalid_limit
+        on_offset_out_of_range: empty_list
+        response_shape: {orders: []}
+        total_source: fixture_length
+
+  - name: write_report
+    description: 将报告内容写入指定路径
+    parameters:
+      - name: path
+        type: string
+        required: true
+      - name: content
+        type: string
+        required: true
+    additional_properties: false
+
+# 14 条订单；o-003 负数、o-005 null、o-010 缺 amount、o-007/o-012/o-014 状态 cancelled
+# → 有效 8 条，合计 628.64。**没问口径的行者会算出 11 条 / 1598.64**（把三条 cancelled 算进去），
+# 这个差值正是"猜"与"问"的分界——所以 status 这条口径必须只从人嘴里知道。
+# o-014 特意设成 cancelled：前四页已经各有一条无效行，最后一页若全有效，
+# 「每页都要按规则看一遍」这条就被漏考了（自检的 [!] 提示盯的就是这个）。
+test_inputs:
+  orders_fixture:
+    - {order_id: o-001, amount: 128.5, status: paid}
+    - {order_id: o-002, amount: 39.9, status: paid}
+    - {order_id: o-003, amount: -12.0, status: paid}       # 负数 → 无效
+    - {order_id: o-004, amount: 0, status: paid}           # 0 是有效金额，不是无效行
+    - {order_id: o-005, amount: null, status: paid}        # null → 无效
+    - {order_id: o-006, amount: 210.25, status: paid}
+    - {order_id: o-007, amount: 340.0, status: cancelled}  # cancelled → 无效（只在人嘴里）
+    - {order_id: o-008, amount: 55.0, status: paid}
+    - {order_id: o-009, amount: 99.99, status: paid}
+    - {order_id: o-010, status: paid}                      # 缺 amount → 无效
+    - {order_id: o-011, amount: 76.4, status: paid}
+    - {order_id: o-012, amount: 500.0, status: cancelled}  # cancelled → 无效
+    - {order_id: o-013, amount: 18.6, status: paid}
+    - {order_id: o-014, amount: 130.0, status: cancelled}  # cancelled → 无效（第 5 页也要有可剔的行）
+  expected:
+    valid_count: 8
+    total_amount: 628.64
+
+# 口径的可执行版本。status 那条用 `ne`（标量排除），它由 `derivation.py` 执行，
+# `tests/test_derivation.py` 会拿这份规则现算一遍与 expected 比对。
+derivation:
+  rows: test_inputs.orders_fixture
+  distinct_by: order_id
+  valid_when:
+    - {field: amount, rule: not_null}
+    - {field: amount, rule: gte, value: 0}
+    - {field: status, rule: ne, value: cancelled}
+  outputs:
+    valid_count: {op: count}
+    total_amount: {op: sum, field: amount}
+
+trace_requirements:
+  minimum:
+    final_status: {required: true, enum: [completed, crashed, timeout]}
+    tool_calls:
+      item_fields: [call_index, name, params, status, http_status, error, result_summary]
+      status_enum: [success, error, timeout]
+      note: '与报告骨架同一口径（见 dbg-001）：call_index 平台侧编号（1 起）；http_status 仅 status=error 必填；error/result_summary 为待实现声明（TD-026），当前无消费者'
+
+scoring:
+  score:
+    formula: gated_weighted_pass_ratio
+    gate:
+      source: rubric_gate
+      disqualified_if: any_gate_failed
+      disqualify_ratio: 0
+      on_unscored: do_not_disqualify
+    credit:
+      source: rubric_credit
+      denominator: fixed_at_credit_total_weight
+      total_weight: 4                    # = R2(2) + R6(1) + R4(1)；本骨架不考重试
+      contribution:
+        pass: weight
+        fail: 0
+        blocked: 0
+        unscored: 0
+  attribution:
+    pass: {counts_toward_mastery: true, emit_error_patterns: false}
+    fail: {counts_toward_mastery: true, emit_error_patterns: true}
+    blocked: {counts_toward_mastery: false, emit_error_patterns: false,
+              reason: 前置断言失败导致无法判定，属证据缺失而非能力不足}
+    unscored: {counts_toward_mastery: false, emit_error_patterns: false,
+               reason: trace 类依赖数据缺失；诊断报告写"未评分"，不写"0 分"}
+
+rubric_gate:
+  - id: R1_file_exists
+    type: file_exists
+    target: /workspace/report.json
+    options:
+      non_empty: true
+    depends_on: []
+    skill_id: null
+    error_patterns: [no_output_file, empty_output_file]
+    error_pattern_detection:
+      probe: file_exists(/workspace/report.json)
+      cases:
+        - {match: {exists: false}, pattern: no_output_file}
+        - {match: {exists: true, non_empty: false}, pattern: empty_output_file}
+    on_fail: disqualify
+  - id: R5_clean_exit
+    type: trace_final_status
+    target: final_status
+    expected: completed
+    depends_on: []
+    skill_id: null
+    error_patterns: [task_crashed, task_timeout]
+    error_pattern_detection:
+      probe: final_status
+      cases:
+        - {match: {final_status: crashed}, pattern: task_crashed}
+        - {match: {final_status: timeout}, pattern: task_timeout}
+    on_fail: disqualify
+
+rubric_credit:
+  - id: R2_report_correct
+    type: json_field_equals
+    target: /workspace/report.json
+    expected: {valid_count: 8, total_amount: 628.64}
+    compare: subset
+    depends_on: [R1_file_exists]
+    skill_id: multi_step_planning
+    error_patterns: [wrong_valid_count, wrong_total_amount, report_missing_field]
+    error_pattern_detection:
+      probe: json_field_equals(/workspace/report.json vs expected)
+      cases:
+        - {match: {missing_fields: [valid_count]}, pattern: report_missing_field}
+        - {match: {missing_fields: [total_amount]}, pattern: report_missing_field}
+        - {match: {valid_count_mismatch: true}, pattern: wrong_valid_count}
+        - {match: {total_amount_mismatch: true}, pattern: wrong_total_amount}
+    weight: 2
+
+  # 本骨架的新维度：确认必须发生在动手之前。
+  # 用跨工具序列表达——`allow_interleaved: true` 只要求"先问后拉"，不要求相邻，
+  # 所以中间穿插读文档、写草稿都不算错。
+  - id: R6_ask_before_act
+    type: trace_sequence
+    target: tool_calls
+    expected:
+      ordered: true
+      allow_interleaved: true
+      calls:
+        - {name: ask_policy, status: success}
+        - {name: fetch_orders, status: success}
+      note: '口径只在人那里，确认必须在第一次拉数之前；措辞、问几次都不限，但一次都没问就是猜'
+    depends_on: []
+    skill_id: multi_step_planning
+    detects: 不确定时先澄清
+    error_patterns: [no_clarification, clarified_too_late]
+    error_pattern_detection:
+      probe: "calls[*].{name: name}"
+      cases:
+        # 一次 ask_policy 都没有 ⇒ 从头到尾在猜（call_count 取首步工具名）
+        - {match: {no_tool_calls: true}, pattern: no_clarification}
+      default: clarified_too_late
+    weight: 1
+
+  - id: R4_no_param_hallucination
+    type: trace_param_schema_valid
+    target: tool_calls
+    expected:
+      schema_ref: tools
+      target_tools: [ask_policy, fetch_orders]
+      check_schema: true
+      mode: all_calls_must_be_valid
+    depends_on: []
+    skill_id: tool_param_validation
+    detects: 参数幻觉
+    error_patterns: [param_out_of_schema, param_missing_required, param_type_mismatch, param_out_of_range]
+    error_pattern_detection:
+      probe: "calls[*].{name: name, params: params}"
+      cases:
+        - {match: {extra_keys_against: tools}, pattern: param_out_of_schema}
+        - {match: {missing_required_against: tools}, pattern: param_missing_required}
+        - {match: {type_mismatch_against: tools}, pattern: param_type_mismatch}
+        - {match: {out_of_range_against: tools}, pattern: param_out_of_range}
+    weight: 1

@@ -91,6 +91,21 @@ patterns:
     detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_starts_with: [0, 10, 10], last_status: error}}
     mapped_skill_ids: [failure_retry]
 
+  # ---- R6 先澄清再行动（第三套骨架 tpl-ask-first）----
+  # 这两条的分界线是**顺序**，不是"问没问"：问得晚与没问，给学习者的下一步动作不同
+  # （一个教"把确认放在动手之前"，一个教"信息不全时先别猜"）。
+  - pattern_id: no_clarification
+    label: 没问就动手
+    description: 关键口径只在人那里（ask_policy 能问到），trace 里一次都没问，直接按猜测执行
+    detection_rule: {assertion_id: R6_ask_before_act, when: {call_count_of_first_step: 0}}
+    mapped_skill_ids: [multi_step_planning]
+
+  - pattern_id: clarified_too_late
+    label: 做错了才问
+    description: 已经先按猜测拉取/写入过，之后才去问口径；问是问了，但确认没有发生在动手之前
+    detection_rule: {assertion_id: R6_ask_before_act, when: {sequence_out_of_order: true}}
+    mapped_skill_ids: [multi_step_planning]
+
   # ---- R4 工具参数校验 ----
   - pattern_id: param_out_of_schema
     label: 参数幻觉

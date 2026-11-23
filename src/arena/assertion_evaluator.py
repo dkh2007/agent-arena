@@ -353,6 +353,85 @@ def _judge(spec: dict, calls: list[dict], expr: str,
     return True, projected, matched, last_matched
 
 
+def _is_cross_tool(steps: list[dict]) -> bool:
+    """`expected.calls` 里出现了不同工具 ⇒ 走跨工具匹配器。
+
+    单纯"两个不同 name"就是判据：不需要额外的开关字段。多一个 `matcher: cross`
+    之类的显式声明，只会让"写了跨工具配置但忘了开开关"变成一类新的静默错误。
+    """
+    return len({s.get("name") for s in steps}) > 1
+
+
+def _validate_sequence_steps(spec: dict) -> None:
+    """跨工具序列的加载期校验：配置错必须在接触 trace 之前爆。
+
+    为什么不做成"缺 status 就当任意状态"：那会让一条永远为真的步骤静默通过，
+    配置错的表现变成"这条断言从不失败"——比直接报错难查得多。
+    """
+    rid = spec.get("id")
+    expected = spec.get("expected") or {}
+    steps = expected.get("calls") or []
+    if len(steps) < 2:
+        raise EvaluatorError(f"{rid}: expected.calls 至少需要两步")
+    if not expected.get("ordered"):
+        raise EvaluatorError(f"{rid}: 只支持 ordered=true 的序列")
+    if not expected.get("allow_interleaved"):
+        raise EvaluatorError(
+            f"{rid}: allow_interleaved=false 需要严格相邻匹配，本实现不支持"
+        )
+    for i, step in enumerate(steps, 1):
+        if not isinstance(step, dict) or not step.get("name"):
+            raise EvaluatorError(f"{rid}: 第 {i} 步缺 name")
+        if not step.get("status"):
+            raise EvaluatorError(f"{rid}: 第 {i} 步缺 status（每步都必须锁状态）")
+
+
+def _judge_cross(spec: dict, calls: list[dict]) -> tuple[bool, list[dict], int, int]:
+    """跨工具子序列匹配：按 `expected.calls` 的顺序，在 trace 里依次找。
+
+    与 `_judge` 的区别只在**候选集**：那边先用 jmespath 按 (name, params) 过滤出
+    「同一页的多次尝试」，这边不预过滤——候选就是全部调用，逐步按
+    (name, status, 可选 http_status, 可选 params_match) 匹配。
+    返回值形状与 `_judge` 一致，所以下游 `ctx` 构造与分类逻辑可以原样复用。
+    """
+    steps = spec["expected"]["calls"]
+    projected = [
+        {
+            "s": c.get("status"),
+            "h": c.get("http_status"),
+            "i": c.get("call_index"),
+            "n": c.get("name"),
+            "p": c.get("params") or {},
+            "o": (c.get("params") or {}).get("offset"),
+            "l": (c.get("params") or {}).get("limit"),
+        }
+        for c in calls
+        if isinstance(c, dict)
+    ]
+    cursor = 0
+    matched = 0
+    last_matched = 0
+    for step in steps:
+        want = step.get("params_match") or {}
+        hit = -1
+        for i in range(cursor, len(projected)):
+            item = projected[i]
+            if item["n"] != step.get("name") or item["s"] != step.get("status"):
+                continue
+            if "http_status" in step and item["h"] != step["http_status"]:
+                continue
+            if any(item["p"].get(k) != v for k, v in want.items()):
+                continue
+            hit = i
+            break
+        if hit < 0:
+            return False, projected, matched, last_matched
+        last_matched = projected[hit]["i"] or last_matched
+        cursor = hit + 1
+        matched += 1
+    return True, projected, matched, last_matched
+
+
 def _ambiguous_step(calls: list[dict], spec: dict, matched: int, after: int) -> str | None:
     """失败步所需的匹配字段缺失时，无法排除「数据缺失」解释了这次失败。
 
@@ -1386,6 +1465,11 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
 
     # TD-003：配置错在接触任何 trace 之前失败，不许被 unscored 分支吞掉。
     _validate_classification_spec(spec)
+    # 第三套骨架（tpl-ask-first）：跨工具序列的加载期校验，同样在任何 trace 之前。
+    steps = (spec.get("expected") or {}).get("calls") or []
+    cross_tool = _is_cross_tool(steps)
+    if cross_tool:
+        _validate_sequence_steps(spec)
 
     base = {"expected": spec["expected"]}
 
@@ -1411,8 +1495,12 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
             "note": "调用序列不可信：判 unscored、不归因；不按 call_index 重排后判 fail",
         }
 
-    expr, cover = _filter_expr(spec)
-    passed, projected, matched, last_matched = _judge(spec, calls, expr, cover)
+    if cross_tool:
+        passed, projected, matched, last_matched = _judge_cross(spec, calls)
+        expr, cover = None, None
+    else:
+        expr, cover = _filter_expr(spec)
+        passed, projected, matched, last_matched = _judge(spec, calls, expr, cover)
 
     detection = spec.get("error_pattern_detection") or {}
     probe = detection.get("probe")
@@ -1436,6 +1524,9 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
             "expected": spec["expected"],
             "extra": {
                 "filter_expr": expr,
+                # 哪条匹配器判的：跨工具序列没有 jmespath 过滤表达式（filter_expr=None），
+                # 报告里只写 None 会让人以为是漏填。
+                "matcher": "cross_tool" if cross_tool else "same_tool",
                 "probe": probe,
                 "matched_steps": matched,
                 "total_steps": len(spec["expected"]["calls"]),
@@ -1447,7 +1538,9 @@ def evaluate(spec: dict, trace: dict | None, vocab: set[str] | None = None,
 
     # 失败步所需的匹配字段（params_match 键 / 该步声明的 http_status）缺失时，
     # 失败可能只是「数据缺字段」，不是「不会重试」。判据缺输入 → unscored，不归因。
-    ambiguity = _ambiguous_step(calls, spec, matched, last_matched)
+    # 跨工具序列不做歧义检查：`_ambiguous_step` 的判据是「失败步的匹配字段缺失」，
+    # 它假设各步同参。跨工具时"字段缺失"不适用，硬套会把真实失败误判成 unscored。
+    ambiguity = None if cross_tool else _ambiguous_step(calls, spec, matched, last_matched)
     if ambiguity:
         result["state"] = "unscored"
         result["reason_code"] = "trace_invalid"

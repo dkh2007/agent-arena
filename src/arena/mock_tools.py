@@ -16,6 +16,10 @@ R3（失败重试证据）能满分，只是因为夹具里**恰好**写了一�
 任务 YAML 只声明了两件与工具行为有关的事：分页语义、故障注入。
 其余行为（额外参数要不要拒、缺必填怎么答）**没有任何声明**，所以：
 
+三种回放形态，全部由 `mock` 块声明、彼此互斥：
+`fixture_ref` + `pagination`（按 offset 切片）、`fixture_ref` + `lookup`（按某个入参查表）、
+`static`（**不看入参**，固定答一段话 —— 对应"问人"：措辞不同，答案相同）。
+
 - 额外参数 → **忽略**（R4「参数越界/多余」是从 trace 判的，不靠服务端拒绝）；
 - 缺必填参数 → 返回 `400 missing_param`。这是本模块**自己定的**边界，之所以要定，
   是因为没有它服务端就得假装能分页；已在该行标注「本模块定义，非 YAML 声明」。
@@ -118,15 +122,32 @@ class ToolSpec:
         # 分页是「按 offset 切片」，本形态是「按 path 查表」；两者都只回放夹具，
         # 不判断对错（判断是断言层的事，mock 一旦开始判分就成了第二个真相源）。
         self.lookup = None
+        # 第三套骨架（tpl-ask-first）：第三种回放形态——**不看入参**，固定答一段话。
+        # 对应"问人"这一动作：真实的值班同事不会因为你措辞不同就答得不一样。
+        # 之所以不做成 lookup，是因为 lookup 要求学习者猜中一个键名（topic），
+        # 猜不中就 404——那考的是"猜字符串"，不是"意识到该问"。
+        self.static_text = None
         if not mock:
             self.pagination = None
             self.rows = []
             return
 
         src = mock.get("source")
+        if src == "static":
+            text = mock.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise MockConfigError(f"{name}: mock.source=static 需要非空的 mock.text")
+            if mock.get("lookup") is not None or mock.get("pagination") is not None:
+                raise MockConfigError(
+                    f"{name}: mock.source=static 与 lookup/pagination 互斥（一次只回放一种）"
+                )
+            self.static_text = text
+            self.pagination = None
+            self.rows = []
+            return
         if src != "fixture_ref":
             raise MockConfigError(
-                f"{name}: mock.source={src!r} 未实现（当前只有 fixture_ref）"
+                f"{name}: mock.source={src!r} 未实现（当前有 fixture_ref / static）"
             )
         self.fixture_path = mock.get("fixture")
         if not self.fixture_path:
@@ -178,7 +199,7 @@ class MockToolService:
         # 夹具在这里一次性解析并**深拷贝**：mock 绝不能改到任务原文，
         # 否则第二次提交看到的就是被上一次污染的数据。
         for spec in self._specs.values():
-            if spec.has_mock:
+            if spec.has_mock and spec.static_text is None:
                 spec.rows = copy.deepcopy(_dotted(task, spec.fixture_path))
                 if spec.lookup is not None and not isinstance(spec.rows, dict):
                     raise MockConfigError(
@@ -246,6 +267,12 @@ class MockToolService:
             return int(fault.get("http_status", 500)), {
                 "error": fault.get("error", "internal_error")
             }
+
+        if spec.static_text is not None:
+            # 固定应答不看入参（理由见 ToolSpec）：问什么、怎么措辞都答同一段。
+            # 键名用 answer 而不是 content，是为了和 read_file 的返回形状区分开——
+            # 两者若同名，学习者可以把"问人"和"读文件"混为一谈。
+            return 200, {"answer": spec.static_text}
 
         if spec.lookup is not None:
             return self._replay_by_param(spec, params)

@@ -237,12 +237,35 @@ def test_two_skeletons_are_really_different(all_tasks):
         assert "fetch_orders" not in names, f"{stem} 仍在拉订单，不是定位题"
 
 
+def _scoring_shape(task: dict) -> dict:
+    """`scoring` 去掉 `total_weight` 之后的形状。
+
+    `total_weight` 是**由该骨架的权重推出来的量**（R2=2 + ...），不是"全库口径"。
+    第三套骨架（tpl-ask-first）多了一条 R6，它的分母就是 5，硬与 dbg-001 的 4 比对
+    只会逼人把 R6 的权重藏到别处。真正该钉的是"分母等于权重之和"——那条在下面单独断言。
+    """
+    shape = json.loads(json.dumps(task["scoring"]))
+    shape["score"]["credit"].pop("total_weight", None)
+    return shape
+
+
 def test_scoring_and_execution_blocks_agree(all_tasks):
-    """计分与执行契约**全库**统一：换题型不该换"分数怎么算"和"平台怎么跑"。"""
+    """计分与执行契约**全库**统一：换题型不该换"分数怎么算"和"平台怎么跑"。
+
+    唯一允许逐骨架不同的是 `credit.total_weight`，见 `_scoring_shape`；
+    它必须等于本骨架各条 credit 断言的权重之和（下面逐题验）。
+    """
     base = all_tasks[MOTHER_OF[DEFAULT_TEMPLATE].stem]
     for stem, task in all_tasks.items():
-        for key in ("scoring", "execution", "submission_requirements"):
+        assert _scoring_shape(task) == _scoring_shape(base), f"{stem} 的 scoring 与全库口径不一致"
+        for key in ("execution", "submission_requirements"):
             assert task[key] == base[key], f"{stem} 的 {key} 与全库口径不一致"
+        declared = task["scoring"]["score"]["credit"]["total_weight"]
+        actual = sum(r["weight"] for r in task["rubric_credit"])
+        assert declared == actual, (
+            f"{stem}: total_weight={declared} 但各条 credit 权重之和是 {actual}"
+            "——分母与权重脱节，分数就不再是 0..1"
+        )
 
 
 def test_trace_requirements_mechanical_parts_agree(all_tasks):
@@ -306,20 +329,24 @@ def test_difficulty_is_not_decorative(all_tasks):
         for stem, task in tasks.items():
             diff = task["variant_meta"]["difficulty"]
             levels.add(diff)
-            if tpl == "tpl-tool-debug":
-                page = task["tools"][0]["mock"]["pagination"]["page_size_max"]
-                rows = len(task["test_inputs"]["orders_fixture"])
-                pages = -(-rows // page)
-                need = {1: 1, 2: 3, 3: 4}[diff]
-                assert pages >= need, (
-                    f"{stem} 标了难度 {diff}，但只需翻 {pages} 页（难度 {diff} 至少要 {need} 页）"
-                )
-            else:
+            if tpl == "tpl-bug-locate":
                 log = task["test_inputs"]["files"][task["locate"]["log_path"]]
                 errors = sum(1 for ln in log.splitlines() if " ERROR " in ln)
                 need = {1: 2, 2: 3, 3: 4}[diff]
                 assert errors >= need, (
                     f"{stem} 标了难度 {diff}，但日志只有 {errors} 条 ERROR（难度 {diff} 至少要 {need} 条）"
+                )
+            else:
+                # 汇报族与交接族都靠"翻几页"撑难度。分页工具按**声明**找，不按位置：
+                # 交接题的第一个工具是 ask_policy，`tools[0]["mock"]["pagination"]` 会 KeyError。
+                tool = next(t for t in task["tools"]
+                            if (t.get("mock") or {}).get("pagination"))
+                page = tool["mock"]["pagination"]["page_size_max"]
+                rows = len(task["test_inputs"]["orders_fixture"])
+                pages = -(-rows // page)
+                need = {1: 1, 2: 3, 3: 4}[diff]
+                assert pages >= need, (
+                    f"{stem} 标了难度 {diff}，但只需翻 {pages} 页（难度 {diff} 至少要 {need} 页）"
                 )
     assert levels == {1, 2, 3}, f"难度没有梯度：只有 {levels}"
 
@@ -336,8 +363,17 @@ def test_fault_declaration_matches_retry_expectation(all_tasks):
     写死一个键名就等于默认只有一种骨架（round-86 把 `["offset"]` 去掉了）。
     """
     for stem, task in all_tasks.items():
-        fi = task["fault_injection"]
-        calls = next(r for r in task["rubric_credit"] if r["id"] == "R3_retry_evidence")["expected"]["calls"]
+        fi = task.get("fault_injection")
+        r3 = next((r for r in task["rubric_credit"] if r["id"] == "R3_retry_evidence"), None)
+        if fi is None or r3 is None:
+            # 交接骨架（tpl-ask-first）刻意不注入故障、也不放 R3：它只考"先确认再动手"，
+            # 再叠一个重试会让 no_retry 与 no_ask 落在同一张分数表上，归因就混了。
+            # 但"有故障没 R3"或"有 R3 没故障"仍然不许——那是漏写，不是设计。
+            assert fi is None and r3 is None, (
+                f"{stem}: 故障声明与 R3 必须同时存在或同时缺席（fi={fi is not None}, r3={r3 is not None}）"
+            )
+            continue
+        calls = r3["expected"]["calls"]
         assert len(calls) == 2, f"{stem}: R3 期望应为「失败 → 成功」两步"
         assert calls[0]["params_match"] == fi["match"], (
             f"{stem}: R3 与 fault_injection 的匹配条件不一致"
@@ -353,7 +389,10 @@ def test_fault_declaration_matches_retry_expectation(all_tasks):
 def test_fault_target_tool_is_declared(all_tasks):
     """故障打在一个必须真的会被调用的工具上，否则故障永远不会触发、R3 永远判失败。"""
     for stem, task in all_tasks.items():
-        target = task["fault_injection"]["target_tool"]
+        fi = task.get("fault_injection")
+        if fi is None:
+            continue                       # 交接骨架不注入故障（见上一条的说明）
+        target = fi["target_tool"]
         names = {t["name"] for t in task["tools"]}
         assert target in names, f"{stem}: 故障目标 {target!r} 不在工具表里"
         r3 = next(r for r in task["rubric_credit"] if r["id"] == "R3_retry_evidence")
@@ -412,9 +451,17 @@ def test_locate_paths_and_expectations_are_self_consistent(all_tasks):
 def test_expected_values_match_the_fixture(all_tasks):
     """期望值必须能从数据现算出来：口径取自参考 Agent 的同一段代码，不另写一份。"""
     for stem, task in all_tasks.items():
-        if _template(task) == "tpl-tool-debug":
+        tpl = _template(task)
+        if tpl == "tpl-tool-debug":
             rows = task["test_inputs"]["orders_fixture"]
             got = ra._summarize_orders(rows)
+        elif tpl == "tpl-ask-first":
+            # 交接题的口径在**人嘴里**，所以现算时也要从那段答复里读"要不要剔 cancelled"。
+            # 写死 True 会让"改口径（不再剔 cancelled）"的变体仍然算出旧答案——而全绿。
+            policy = next(t for t in task["tools"]
+                          if (t.get("mock") or {}).get("source") == "static")["mock"]["text"]
+            rows = task["test_inputs"]["orders_fixture"]
+            got = ra._summarize_orders(rows, drop_cancelled="cancelled" in policy)
         else:
             files = task["test_inputs"]["files"]
             got = ra._diagnose(files[task["locate"]["log_path"]],
@@ -504,6 +551,8 @@ def test_each_task_classifies_its_own_failure(path):
     `retry_wrong_params`——分数对、诊断错，复习层就会推错题。
     """
     task = dr.load_task(path)
+    if not any(r["id"] == "R3_retry_evidence" for r in task["rubric_credit"]):
+        pytest.skip(f"{path.stem} 不考重试（交接骨架没有 R3）")
     report = _drive(task, flaw="no_retry")
     states = {a["id"]: a["state"] for a in report["assertions"]}
     assert states["R3_retry_evidence"] == "fail", f"{path.stem}: 放弃重试却没判 R3 失败"

@@ -168,6 +168,48 @@ def test_each_predicate_means_its_own_thing():
     assert one({"field": "amount", "rule": "eq", "value": 3}, {"amount": 3.01}) == 0
 
 
+def test_ne_excludes_by_scalar_value():
+    """`ne` 用来做值域排除（如 `status != cancelled`）：它比标量，不是数值比较。
+
+    典型错法是把 `status: cancelled` 塞进 `gte/eq`——那会在 `_number()` 里就抛
+    "不是数值"，报错指向的却是"金额不是数字"，完全误导。
+    """
+    def count(rows):
+        rule = _norm(_rule(
+            valid_when=[{"field": "status", "rule": "ne", "value": "cancelled"}],
+            distinct_by="order_id",
+            outputs={"n": {"op": "count"}},
+        ))
+        return dv.derive(rows, rule)["n"]
+
+    assert count([{"order_id": "a", "status": "paid"}]) == 1
+    assert count([{"order_id": "a", "status": "cancelled"}]) == 0
+    # 字符串比较是精确相等：大小写不同不等于同一个值（口径由任务 YAML 写死）
+    assert count([{"order_id": "a", "status": "Cancelled"}]) == 1
+
+
+def test_ne_still_needs_not_null_for_missing_fields():
+    """`ne` 不替 `not_null` 干活：缺字段仍然拒跑，逼规则把"缺失算无效"写明白。"""
+    rule = _norm(_rule(
+        valid_when=[{"field": "status", "rule": "ne", "value": "cancelled"}],
+        distinct_by=None,
+        outputs={"n": {"op": "count"}},
+    ))
+    with pytest.raises(dv.DerivationError, match="not_null"):
+        dv.derive([{"order_id": "a"}], rule)
+
+
+def test_unknown_rule_is_loud():
+    """写错的规则名必须报错。静默通过会让声明变成装饰，而期望值仍然自洽。"""
+    with pytest.raises(dv.DerivationError, match="未实现"):
+        # 加载期就拦：不等算出数才发现——那时两边的期望值都来自这份坏规则，照样自洽
+        dv.derive([{"order_id": "a", "amount": 5}], _norm(_rule(
+            valid_when=[{"field": "amount", "rule": "gt", "value": 0}],
+            distinct_by=None,
+            outputs={"n": {"op": "count"}},
+        )))
+
+
 def test_non_numeric_values_are_refused():
     """字符串金额 / 布尔金额：没有口径，拒跑而不是替它决定算不算有效。"""
     rule = _norm(_rule(valid_when=[{"field": "amount", "rule": "not_null"}]))

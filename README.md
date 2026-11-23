@@ -63,10 +63,10 @@ curl -s -X POST http://127.0.0.1:8765/tools/fetch_orders \
 
 ## 加一道题（内容维护侧）
 
-任务库现在 24 道（四个家族 7/7/5/5，难度 1/2/3 全档覆盖）。加题**不用改测试代码**：
+任务库现在 25 道（五个家族 7/7/5/5/1，难度 1/2/3 全档覆盖；三套判分骨架）。加题**不用改测试代码**：
 
 ```bash
-python scripts/new_task.py --list                      # 四族梯度，看缺哪一档
+python scripts/new_task.py --list                      # 各家族梯度，看缺哪一档
 python scripts/new_task.py --new --family retry-drill \
     --id ret-008-xxx --title "……" --rows 28 --page 10 --write
 python scripts/new_task.py --check ret-008-xxx         # 只查这一道，实测 0.6 秒
@@ -149,11 +149,33 @@ python scripts/copy_inventory.py --check  # 只校验；不同步时退出 1
 （扫到的条数少于阈值就红，否则空表对空文件也会「一致」），二是**页面不许出现评价性用词**
 （「不错」「加油」「满分」这类，那是「复述不判分」这条对外承诺的机器判据）。
 
+### 跑测试到底要多久（2026-11-23 实测）
+
+三个不同的事情，速度差三个数量级，别混着算：
+
+| 做什么 | 花多久 | 谁在用 |
+|---|---|---|
+| **判一次提交**（`prepare` + `evaluate`） | **42 ms**；含落库 66 ms | 学习者每次提交，已经是 OJ 级 |
+| 改一道题后自检（`scripts/new_task.py --check <id>`） | 0.6 秒/题 | 加题、改数据 |
+| 评审包一致性（`src/arena/review_packet.py --check`） | 6.4 秒 | 收工前 |
+| 单文件回归（`pytest tests/test_mock_tools.py -q`） | 0.3–30 秒 | 改哪块跑哪块 |
+| **全量回归**（`pytest tests -q`，1902 用例） | **830 秒（13 分 50 秒）** | 收工必跑 |
+
+洛谷那种「几秒出结果」是**判一道题**，对应第一行：我们比它快——它还要编译 + 跑测试点，
+我们只读 trace 判断言。第三行以下是**给整个仓库做体检**（1902 个用例，其中一批要起子进程、
+起 HTTP 服务、建 SQLite 库），性质不同。
+
+全量为什么慢，账很清楚：`tests/test_review_packet.py` 的 20 条用例每条都要跑一次
+`pytest --collect-only` 子进程（单条 5–21 秒），合计约 4 分钟；剩下 12 分钟摊在 1880 条用例上
+（多数要新建 `TaskRegistry()`，冷启动读 25 个 YAML ≈ 1 秒）。**要压到分钟级有两条路**：
+① 装 `pytest-xdist` 并行（`pytest -n 4`，未装，装了要重跑一轮确认没有端口/临时目录打架）；
+② 给评审包用例打 `slow` 标记，日常 `-m "not slow"` 跑剩下的。两条都还没做，等人拍。
+
 两点实话，免得复核时误会：
 
-- 全量跑一次约 10 分钟（605 秒），不是秒级命令；
+- 全量跑一次约 14 分钟（830 秒，2026-11-23 实测；机器上有并发时会到 19 分钟），不是秒级命令；
 - 跑完可能看到一段 `atexit cleanup_numbered_dir` 的 traceback——那是 pytest 收尾时删自己的临时目录，
   被本机沙箱的批量删除保护拦下了。它发生在**测试结束之后**，不影响用例结果；档案里的数字取自 junit。
-- 只改了档案模板、不想再等十分钟时：`python scripts/test_evidence.py --rerender docs/test-evidence/<档案>.json`，
+- 只改了档案模板、不想再等十四分钟时：`python scripts/test_evidence.py --rerender docs/test-evidence/<档案>.json`，
   按同一份运行数据重排 `.md`（不重算、不追加索引行）。
 

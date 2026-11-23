@@ -182,12 +182,27 @@ def test_crashed_run_submits_no_artifact(task, tools_server):
 
 # ── 配置错误在构造期暴露 ────────────────────────────────────────────────────
 
-def test_missing_fault_target_raises_at_construction(task, tools_server):
-    """任务没声明 target_tool ⇒ 构造期就报错，不带着半句话跑到崩溃。"""
+def test_missing_paging_tool_raises_at_construction(task, tools_server):
+    """任务没有任何分页声明 ⇒ 构造期就报错，不带着半句话跑到崩溃。"""
     url, _ = tools_server
-    broken = {k: v for k, v in task.items() if k != "fault_injection"}
-    with pytest.raises(ra.AgentError, match="target_tool"):
+    broken = dict(task, tools=[t for t in task["tools"]
+                               if not (t.get("mock") or {}).get("pagination")])
+    with pytest.raises(ra.AgentError, match="分页工具"):
         ra.ReferenceAgent(broken, ra.ToolClient(url))
+
+
+def test_no_fault_declaration_still_runs(task, tools_server):
+    """**没有故障声明也要能跑**（2026-11-23 交接题引入的契约）。
+
+    认分页工具曾靠 `fault_injection.target_tool`，前提是「故障一定打在分页工具上」。
+    交接题刻意不注入故障（只考先问再动手），那条前提不成立——按故障声明认会让
+    一道合法任务在构造期崩掉，看起来像任务坏了。改按 `mock.pagination` 认之后，
+    这道用例锁住"以后别滑回去"：删掉 fault_injection，构造期必须照常通过。
+    """
+    url, _ = tools_server
+    no_fault = {k: v for k, v in task.items() if k != "fault_injection"}
+    agent = ra.ReferenceAgent(no_fault, ra.ToolClient(url))
+    assert agent._fetch_tool() == "fetch_orders"
 
 
 def test_unknown_flaw_is_refused(task, tools_server):

@@ -54,3 +54,10 @@ families:
     template: tpl-bug-locate
     mother: fix-001-token-expiry
     about: 给日志与源码，要求指出根因类别与出错行；难度靠 ERROR 噪声条数与干扰线索撑。
+
+  - id: handover-drill
+    prefix: ask-
+    primary_skill: multi_step_planning
+    template: tpl-ask-first
+    mother: ask-001-report-handover
+    about: 口径只在人嘴里（ask_policy 能问到），题面明说文档里没有。考「先确认再动手」：不问就干是 no_clarification，先干后问是 clarified_too_late。难度靠无效行数 × 页数 × 故障位撑。

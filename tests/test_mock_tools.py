@@ -161,3 +161,53 @@ def test_extra_param_is_ignored_by_server(svc):
     """额外参数由服务端忽略，是否算幻觉交给 R4 从 trace 判——不在这层判分。"""
     status, body = svc.call("fetch_orders", {"offset": 0, "limit": 10, "debug": True})
     assert status == 200 and len(body["orders"]) == 10
+
+
+# ── 第三种回放形态：static（tpl-ask-first 的"问人"） ─────────────────────────
+
+def _ask_task(**mock_extra) -> dict:
+    """一个只有 ask_policy 的最小任务，用来单独验证 static 形态。"""
+    mock = {"source": "static", "text": "一页最多 3 条。"}
+    mock.update(mock_extra)
+    return {
+        "tools": [{
+            "name": "ask_policy",
+            "description": "向值班同事提问",
+            "parameters": [{"name": "question", "type": "string", "required": True}],
+            "additional_properties": False,
+            "mock": mock,
+        }],
+    }
+
+
+def test_static_answer_ignores_the_question_text():
+    """问什么、怎么措辞，都答同一段——真实同事不会因措辞不同改口。
+
+    这条是**有意为之的弱化**：如果按 question 文本查表（lookup），
+    学习者必须猜中键名才拿得到答案，考的就变成"猜字符串"了。
+    """
+    svc = mt.MockToolService(_ask_task())
+    a = svc.call("ask_policy", {"question": "上限是多少？"})
+    b = svc.call("ask_policy", {"question": "请问一页能拉几条"})
+    assert a[0] == b[0] == 200
+    assert a[1]["answer"] == b[1]["answer"] == "一页最多 3 条。"
+
+
+def test_static_answer_still_enforces_required_params():
+    """固定应答不等于放弃参数校验：缺必填仍是 400，且不消耗任何状态。"""
+    svc = mt.MockToolService(_ask_task())
+    status, body = svc.call("ask_policy", {})
+    assert status == 400 and body["error"] == "missing_param"
+
+
+def test_static_without_text_is_config_error():
+    """声明了 static 却没给 text ⇒ 构造期报错，不假装答空字符串。"""
+    with pytest.raises(mt.MockConfigError, match="mock.text"):
+        mt.MockToolService(_ask_task(text=""))
+
+
+def test_static_cannot_be_combined_with_lookup_or_pagination():
+    """三种回放形态互斥：同时声明会让人分不清这次到底按哪种答。"""
+    with pytest.raises(mt.MockConfigError, match="互斥"):
+        mt.MockToolService(_ask_task(pagination={"page_size_max": 3}))
+

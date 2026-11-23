@@ -1,7 +1,7 @@
 # 执行器判定语义（M0 第 8 步实现前必读）
 
-> 状态：v0（2026-11-06 建，round-24 补 §4，round-32 补 §5）。本页锁定已定稿、且历史上被评审指出
-> "容易实现错"的规则。与任务 YAML 内注释冲突时，以本页为准并修 YAML。
+> 状态：v0（2026-11-06 建，round-24 补 §4，round-32 补 §5，2026-11-23 补 §1.1 跨工具序列）。
+> 本页锁定已定稿、且历史上被评审指出"容易实现错"的规则。与任务 YAML 内注释冲突时，以本页为准并修 YAML。
 
 ## 1. trace_sequence 的子序列匹配（R3）
 
@@ -49,6 +49,41 @@
 
 重开条件：若将来某条断言真的需要读 `error` 文案（例如判错误信息是否含关键线索），
 应当在**断言的 expected 里声明**，而不是回到 trace 结构层做条件必填。
+
+### 1.1 跨工具序列（R6 / 第三套骨架，2026-11-23）
+
+`expected.calls` 里出现**两个不同的工具名**时，`evaluate()` 改走 `_judge_cross()`。
+触发条件就是"name 不唯一"，没有额外开关字段——多一个 `matcher: cross` 只会让
+"写了跨工具配置但忘了开开关"变成一类新的静默错误。
+
+与 §1 的三点差别：
+
+1. **不预过滤**。候选集是全部调用，逐步按 `(name, status[, http_status][, params_match])` 匹配；
+   同工具路径仍用 jmespath 过滤 + 页覆盖，**一行没改**（`test_same_tool_spec_still_uses_the_old_path` 钉住）。
+2. **每步的 `params_match` 可以不同，也可以留空**。留空＝该步只锁 name + status。
+   同工具路径禁止各步不一致（它只支持"同参重试"），跨工具没有这个限制。
+3. **不做 `_ambiguous_step()` 歧义检查**。那个判据是"失败步的匹配字段缺失"，前提是各步同参；
+   硬套会把真实失败判成 `unscored`。
+
+加载期硬约束（`_validate_sequence_steps()`，在任何 trace 进入之前跑）：
+
+- `ordered: true` + `allow_interleaved: true`（无序语义仍未定义，与 §1 同）；
+- **每一步必须写 `status`**。允许"不写就当任意状态"会让一条永远为真的步骤静默通过，
+  配置错的表现变成"这条断言从不失败"，比直接报错难查。
+
+语义举例（`ask-001` 的 R6）：
+
+```yaml
+calls:
+  - {name: ask_policy,    status: success}     # 先问
+  - {name: fetch_orders,  status: success}     # 再动手
+```
+
+`allow_interleaved: true` ⇒ 中间可以有写草稿、读文档等任意调用；
+"先拉后问"必然不匹配（找 fetch 时游标已经跳过 ask 之后的位置），
+所以一次都没问与问得太晚都能判 fail，区别靠 `error_pattern_detection` 的
+`no_tool_calls`（首步工具调用次数为 0 ⇒ `no_clarification`）与 `default`（`clarified_too_late`）。
+
 
 ## 2. trace_param_schema_valid 的校验范围（R4）
 
