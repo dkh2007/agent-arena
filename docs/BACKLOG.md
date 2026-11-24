@@ -1640,7 +1640,7 @@
   ③ **家族表单一来源**：`docs/task-families.yaml`（含 `prefix` 字段），测试、脚本、文档共用一份，
      原来三份 Python 字典 + 文档表格各写一遍；
   ④ **`scripts/new_task.py`**：`--list`（看四族梯度缺哪档）/ `--new`（生成骨架，**期望值按 derivation 现算**，
-     自动登记台账）/ `--check`（单题自检，实测**单题 0.63 秒 / 全库 25 题 2.1 秒**，逐条说明还差什么，
+     自动登记台账）/ `--check`（单题自检，实测**单题 0.6 秒 / 全库 27 题 2.2 秒**，逐条说明还差什么，
      每条对应 tests/ 里一条用例——对比全量 15 分钟，差两个数量级）。
   验证方式不是自评：`--new` 生成的 `prm-005` 与 `dbg-007` **零人工修改**就过了
   `test_task_runs_to_full_marks` + `test_each_task_classifies_its_own_failure` 两条。
@@ -1684,8 +1684,37 @@
 - **反方向锁住的一条**：汇报族有测试逼题面**必须**写页大小上限；交接族反过来——
   `test_scenario_must_not_reveal_the_policy` 断言题面**不得**出现页大小与 `invalid_limit`，
   否则学习者照着题面抄就能绕过 ask_policy，R6 变成背课文。
-- **已知边界**：交接族现在只有 1 题（`ask-001`）。一族一题谈不上"家族"，下一步按 A 方式扩到 3–5 道
-  （改数据/故障位——本题没有故障，所以靠页数、无效行数、口径条数撑难度）。
+- **已知边界（2026-11-23 时）**：交接族当时只有 1 题（`ask-001`）。一族一题谈不上"家族"，
+  下一步按 A 方式扩到 3–5 道（改数据/故障位——本题没有故障，所以靠页数、无效行数、口径条数撑难度）。
+  → **已于 2026-11-24 扩到 3 道，见 B-30c。**
+
+### [x] B-30c 交接族扩到 3 道 + 加题工具认第三套骨架 — 2026-11-24
+
+- **做了什么**：`ask-002-return-handover`（16 行 / 页 4 / 4 页，d3）、
+  `ask-003-monthly-recon`（13 行 / 页 5 / 3 页，末页只 3 条，d2）。家族梯度变成 d1×1 d2×1 d3×1。
+- **判分维度一个字没动**：两道变体只改数据与页大小，`tpl-ask-first` 的 R2/R6/R4 全靠深合并继承母本。
+  这是"扩题不扩口径"的对照实验——若哪天有人为了新题改了断言，`test_every_variant_declares_its_parent…`
+  与 `test_ask_skeleton` 的形态矩阵会同时变脸。
+- **扩题前先修了工具的两处缺口**（都是 B-30b 落地时留下的，会误导后来加题的人）：
+  1. `_scale()` 只有「默认骨架 / 其它」两支，交接题被当成定位题去数日志，
+     `--list` 显示成 `0 行日志 / 0 条 ERROR`。**看着像题坏了**——这类假错比没有输出更糟，
+     因为人会学会忽略自检报告。改为三支，交接族报「N 行 / 页 P / K 页 / 无故障」。
+  2. `scaffold()` 对非默认骨架一律走 `_scaffold_locate`，于是 `--new --family handover-drill`
+     产出一份**定位题**（read_file + diagnosis.json），却挂着 `variant_template_id: tpl-ask-first`。
+     新增 `_scaffold_ask`：只写差异（scenario / 两个工具的 mock 片段 / 数据 / R2 期望），
+     且**不给 `limit` 写 `maximum`**——上限是要问出来的口径，写进 schema 等于白送。
+- **三条测试钉住**（`tests/test_new_task.py`）：
+  `test_generated_ask_task_passes_its_own_check`（生成物自检无 X + 断言 schema 里没有 `maximum`）、
+  `test_generated_ask_task_is_solvable_by_reference_agent`（页大小真能从「一页最多 N 条」读出来，
+  起 mock server 跑参考 Agent 全流程）、`test_scale_of_a_handover_task_counts_pages_not_log_lines`。
+- **数据的考点是分工的，不是"变大"**：
+  · ask-002 四种无效原因在四页各出现一次（cancelled / null / 负数 / 缺字段），且**第 1 页末就是 cancelled**
+    ——不问题的人从第一页就开始错；
+  · ask-003 是 13/5 的**非整数页**（末页 3 条），考「offset=10 返回 3 条 → 下一跳 offset=13 返回空列表」
+    的收尾；无效行只有三种、没有缺字段，用来证明 derivation 的三条规则可被单条违反。
+  两题互补：一题考"每页都看"，一题考"怎么停"。
+- **代价**：任务层三文件从 141 条 / 27 秒变成 258 条 / 65 秒（参数化按题数线性涨）。
+  全量回归仍靠 `/fast` 并行压住，见 B-36。
 
 ### [x] B-31 故障可达性依赖学习者的页大小（全库）— 2026-11-22 关闭（方案 A，人拍板）
 

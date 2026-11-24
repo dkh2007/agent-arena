@@ -114,8 +114,20 @@ def siblings(family_id: str, families: Sequence[dict] | None = None) -> list[str
 # ── 单题自检 ────────────────────────────────────────────────────────────────
 
 def _scale(task: dict) -> str:
-    """一句话概括"这题要处理多少东西"——自检报告与 --list 共用。"""
+    """一句话概括"这题要处理多少东西"——自检报告与 --list 共用。
+
+    三套骨架各有各的"量"：汇报/交接看页数，定位看 ERROR 条数。
+    原来只分「默认骨架 / 其它」，于是交接题被当成定位题去数日志，
+    在 `--list` 里显示成 `0 行日志 / 0 条 ERROR`——**看着像题坏了**，
+    后来加题的人会以为是自己的 YAML 有问题。三套骨架就得三个分支。
+    """
     tpl = task.get("variant_template_id") or DEFAULT_TEMPLATE
+    if tpl == ASK_TEMPLATE:
+        rows = len((task.get("test_inputs") or {}).get("orders_fixture") or [])
+        page = _page_max(task)
+        pages = -(-rows // page) if page else 0
+        # 交接族刻意不注入故障（只考"先问再动手"），所以这里没有故障位可报。
+        return f"{rows} 行 / 页 {page} / {pages} 页 / 无故障（只考先问再动手）"
     if tpl != DEFAULT_TEMPLATE:
         log = (task.get("test_inputs") or {}).get("files", {}).get(
             (task.get("locate") or {}).get("log_path", ""), "")
@@ -504,6 +516,10 @@ def scaffold(*, family_id: str, task_id: str, title: str, rows: int, page: int,
     if (TASKS_DIR / f"{task_id}.yaml").exists():
         raise ValueError(f"tasks/{task_id}.yaml 已存在")
 
+    if fam["template"] == ASK_TEMPLATE:
+        # 交接族没有故障位（只考"先问再动手"），`fault_at` 在这里没有意义，直接忽略。
+        return _scaffold_ask(fam=fam, task_id=task_id, title=title,
+                             rows=rows, page=page, version=version)
     if fam["template"] != DEFAULT_TEMPLATE:
         return _scaffold_locate(fam=fam, task_id=task_id, title=title,
                                 version=version)
@@ -756,6 +772,132 @@ def _scaffold_locate(*, fam: dict, task_id: str, title: str, version: str) -> tu
         "",
     ])
     return text, "（待填）定位题：说清这题的根因类别与干扰线索与同族其它题有何不同"
+
+
+def _ask_amounts(rows: int, *, page: int) -> tuple[list[dict], list[str]]:
+    """造交接题数据：**每页末一条**是无效行，四种原因轮换（缺 / null / 负数 / cancelled）。
+
+    为什么按页放而不是按「每 N 条」放：交接骨架有一条自检「每页都要有无效行」——
+    最后一页若全有效，"每页都按规则看一遍"这个考点就漏掉了。按页放是唯一能保证它的做法。
+    （汇报族按 `invalid_every` 放，是因为它的难度靠"无效行多不多"撑；两族的考点不同。）
+
+    第 1 页末放 `status=cancelled`——那是**唯一只在人嘴里**的规则。不问题的行者会把
+    本该剔除的行算进去，R2 因此变错；这正是 no_ask 形态能区分开的前提。
+    所以 cancelled 行必须带**正常金额**：金额也缺失的话，算错也算不出差。
+    """
+    if rows < 1 or page < 1:
+        raise ValueError(f"交接题需要 rows>=1 且 page>=1（收到 rows={rows}, page={page}）")
+    pages = -(-rows // page)
+    kinds = ("cancelled", "null", "negative", "missing")
+    mark = {min((p + 1) * page, rows): kinds[p % len(kinds)] for p in range(pages)}
+
+    fixture: list[dict] = []
+    notes: list[str] = []
+    seq = 0
+    for i in range(1, rows + 1):
+        oid = f"hv-{i:03d}"
+        kind = mark.get(i)
+        if kind is None or kind == "cancelled":
+            seq += 1
+            fixture.append({
+                "order_id": oid,
+                "amount": round(100 + 12.5 * seq, 2),
+                "status": "cancelled" if kind else "paid",
+            })
+            notes.append(f"# status=cancelled → 无效（口径只在人嘴里，第 {i} 条）" if kind else "")
+        elif kind == "null":
+            fixture.append({"order_id": oid, "amount": None, "status": "paid"})
+            notes.append(f"# 金额为 null（第 {i} 条）")
+        elif kind == "negative":
+            fixture.append({"order_id": oid, "amount": -round(100 + 12.5 * i, 2),
+                            "status": "paid"})
+            notes.append(f"# 负数（第 {i} 条）")
+        else:                                  # missing
+            fixture.append({"order_id": oid, "status": "paid"})
+            notes.append(f"# 缺 amount 字段（第 {i} 条）")
+    return fixture, notes
+
+
+def _scaffold_ask(*, fam: dict, task_id: str, title: str, rows: int, page: int,
+                  version: str) -> tuple[str, str]:
+    """交接族：只写差异（题面 / 两个工具的口径 / 数据 / 期望值），骨架全部继承母本。
+
+    生成器必须认识这套骨架，因为有两处**没有通用模板能替人记住**：
+      ① `fetch_orders.limit` 刻意不写 `maximum`——上限是要问出来的口径，写进 schema 等于白送；
+      ② `ask_policy` 的固定答复里必须复述**同一个**页大小。
+    写错任一处就是「问了也做不对」，而失败会被记成学习者"能力不足"。
+    """
+    fixture, notes = _ask_amounts(rows, page=page)
+    rule = {
+        "valid_when": [
+            {"field": "amount", "rule": "not_null"},
+            {"field": "amount", "rule": "gte", "value": 0},
+            {"field": "status", "rule": "ne", "value": "cancelled"},
+        ],
+        "outputs": {"valid_count": {"op": "count"},
+                    "total_amount": {"op": "sum", "field": "amount"}},
+        "rows": "test_inputs.orders_fixture",
+    }
+    got = dv.derive(fixture, dv.load_rule({"derivation": rule}))
+    valid, total = int(got["valid_count"]), round(float(got["total_amount"]), 2)
+    pages = -(-rows // page)
+    invalid = sum(1 for n in notes if n)
+
+    text = "\n".join([
+        _HEADER,
+        f"base_task: {fam['mother']}",
+        f"task_id: {task_id}",
+        f'task_version: "{version}"',
+        f"title: {title}",
+        f"primary_skill_id: {fam['primary_skill']}",
+        "secondary_skill_ids: ['tool_param_validation', 'multi_step_planning']",
+        f"variant_template_id: {ASK_TEMPLATE}",
+        "variant_meta:",
+        f"  family_id: {fam['id']}",
+        f"  difficulty: {_suggest_difficulty(pages)}          "
+        f"# {rows} 行 / 每页 ≤{page} ⇒ {pages} 页；改页数记得同步这一行",
+        "  kind: variant",
+        "",
+        "scenario: |",
+        "  你是刚接手这块业务的运营助理。这份汇总今天要交，但上周交接只当面说过口径，",
+        "  任何文档里都查不到。",
+        "",
+        f"  1. 用 fetch_orders 分页拉取全部记录（共 {rows} 条），一条不剩地拉完。",
+        "  2. 汇总两个数：有效记录条数、有效记录金额合计。",
+        "  3. 三条口径——一页最多能拉几条、哪些记录算无效、合计怎么取整——只有值班同事知道。",
+        "  4. 调用 write_report 写入 /workspace/report.json，内容为 JSON：",
+        '     {"valid_count": <有效记录数, 整数>, "total_amount": <有效记录金额合计, 数字>}',
+        "",
+        "# 只覆盖 mock.text：ask_policy 的 description/parameters 与 fetch_orders 的分页语义",
+        "# （offset_base / range / error_code …）全部继承母本，改一处不会漂另一处。",
+        "tools:",
+        "  - name: ask_policy",
+        "    mock:",
+        "      text: |",
+        "        上周我们定的是这三条：",
+        f"        ① 接口一页最多 {page} 条，多了会报 invalid_limit。",
+        "        ② 无效记录：amount 缺失、amount 为 null、amount 为负数，或者 status 是 cancelled。",
+        "        ③ 合计四舍五入保留两位小数。",
+        "  - name: fetch_orders",
+        "    mock:",
+        "      pagination:",
+        f"        page_size_max: {page}",
+        "",
+        "test_inputs:",
+        f"  # {rows} 条记录，{pages} 页；每页末一条被剔除，原因逐行标注（共 {invalid} 条无效）。",
+        "  orders_fixture:",
+        _render_fixture(fixture, notes),
+        "  expected:",
+        f"    valid_count: {valid}",
+        f"    total_amount: {total}",
+        "",
+        "rubric_credit:",
+        "  - id: R2_report_correct",
+        f"    expected: {{valid_count: {valid}, total_amount: {total}}}",
+        "",
+    ])
+    return text, (f"（待填）交接题：{rows} 行 / 每页 ≤{page} / {pages} 页，"
+                  "说清它与同族其它题的口径或数据有何不同")
 
 
 # ── 台账写入 ────────────────────────────────────────────────────────────────

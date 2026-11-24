@@ -51,10 +51,10 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 一次提交：取任务定义（**必须合并 base_task**，见 §7）→ 逐项判（确定性断言 + 语义双判，分歧进仲裁）
 → 先 gate 后 credit → 归因错误模式并绑技能 → 折熟练度、排复习 → 推荐下一题 → 渲染三页。
 
-任务库结构（**数字是 2026-11-23 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
-25 题 = 3 个基座 + 22 个参数变体，五族 7/7/5/5/1（`order-report` / `retry-drill` / `param-surface` / `locate-drill` / `handover-drill`），
+任务库结构（**数字是 2026-11-24 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
+27 题 = 3 个基座 + 24 个参数变体，五族 7/7/5/5/3（`order-report` / `retry-drill` / `param-surface` / `locate-drill` / `handover-drill`），
 难度 1/2/3 全档覆盖；每题合并后都是 5 个判分项（2 前提 + 3 得分）。
-（取样时点 2026-11-23；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l` 或 `python scripts/new_task.py --list` 末行。）
+（取样时点 2026-11-24；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l` 或 `python scripts/new_task.py --list` 末行。）
 技能 3 个；错误类型 19 条，其中 4 条不映射技能（`no_output_file` / `empty_output_file` /
 `task_crashed` / `task_timeout`，属交付纪律类，语义上刻意如此）。
 **不会随扩题变的是结构**：每个变体合并后都必须是 5 项、未映射的那几条必须是前提失败类。

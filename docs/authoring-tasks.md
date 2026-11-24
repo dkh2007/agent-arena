@@ -111,10 +111,10 @@ python scripts/new_task.py --check ret-008-xxx          # 只查这一道，实�
 ## 2. 验收命令（快 → 慢，四档都要过）
 
 ```bash
-# ⓪ 只查这一道题（2026-11-22 新增）：实测 0.63 秒/题、25 题全库 2.1 秒，逐条列出还差什么
+# ⓪ 只查这一道题（2026-11-22 新增）：实测 0.6 秒/题、27 题全库 2.2 秒，逐条列出还差什么
 python scripts/new_task.py --check tasks/新题.yaml
 
-# ① 任务层的快门槛：141 条，实测 27 秒（2026-11-21）
+# ① 任务层的快门槛：258 条，实测 65 秒（2026-11-24；25 题时是 141 条 / 27 秒）
 PYTHONPATH=src python -m pytest tests/test_task_yaml.py tests/test_task_variants.py \
   tests/test_task_executability.py -q
 
@@ -210,7 +210,7 @@ PYTHONPATH=src python -m pytest tests -q                        # 交付证据�
 所以全走 A（新变体）的话，学习者第 1 次和第 40 次看到的判分维度完全一样——只有情景与数据在变。
 当初登记了三个选项（多家族同骨架 / 新建第 3-4 套 / 混合），并把决定推到"到 20 题再说"。
 
-**现在（25 题）：走了 B，建了第三套 `tpl-ask-first`。** 它带来的是**新维度**而不是新场景：
+**现在（27 题）：走了 B，建了第三套 `tpl-ask-first`，并已扩到 3 道。** 它带来的是**新维度**而不是新场景：
 
 | 骨架 | 考的是 | credit 断言 |
 |---|---|---|

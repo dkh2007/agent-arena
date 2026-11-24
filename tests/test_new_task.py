@@ -33,13 +33,15 @@ from arena import authoring as auth  # noqa: E402
 
 MOTHER = ROOT / "tasks" / "dbg-001-order-report.yaml"
 LOCATE_MOTHER = ROOT / "tasks" / "fix-001-token-expiry.yaml"
+ASK_MOTHER = ROOT / "tasks" / "ask-001-report-handover.yaml"
 
 
 @pytest.fixture()
 def sandbox(tmp_path, monkeypatch):
-    """临时任务库：复制两套骨架的母本过去，其余指向 tmp。"""
+    """临时任务库：复制三套骨架的母本过去，其余指向 tmp。"""
     shutil.copy(MOTHER, tmp_path / MOTHER.name)
     shutil.copy(LOCATE_MOTHER, tmp_path / LOCATE_MOTHER.name)
+    shutil.copy(ASK_MOTHER, tmp_path / ASK_MOTHER.name)
     monkeypatch.setattr(auth, "TASKS_DIR", tmp_path)
     log_path = tmp_path / "authoring-log.yaml"
     monkeypatch.setattr(auth, "LOG_PATH", log_path)
@@ -94,6 +96,63 @@ def test_generated_locate_task_is_solvable_by_reference_agent(sandbox):
                        files[task["locate"]["source_path"]])
     assert got == task["test_inputs"]["expected"], (
         f"参考 Agent 推出 {got}，与答案键 {task['test_inputs']['expected']} 不符"
+    )
+
+
+def test_generated_ask_task_passes_its_own_check(sandbox):
+    """交接族：生成器必须认识第三套骨架，且不许把页大小写进工具 schema。
+
+    B-30b 刚落地时这个分支掉进了 `else`，`--new --family handover-drill` 产出的是一份
+    **定位题**（read_file + diagnosis.json），却挂着 `variant_template_id: tpl-ask-first`。
+    两份口径互相矛盾，`--check` 报一屏假错——后来加题的人会以为"第三套骨架不能用"。
+    """
+    text, why = auth.scaffold(family_id="handover-drill", task_id="ask-900-smoke",
+                              title="交接冒烟", rows=12, page=5, fault_at=None)
+    path = _write(sandbox, text, "ask-900-smoke")
+    findings = auth.check_task(path, families=auth.load_families(),
+                               log=[{"id": "ask-900-smoke", "why": why}])
+    assert not _errors(findings), _errors(findings)
+
+    task = auth.load_task(path)
+    assert task["variant_template_id"] == "tpl-ask-first"
+    fetch = next(t for t in task["tools"] if t["name"] == "fetch_orders")
+    limit = next(p for p in fetch["parameters"] if p["name"] == "limit")
+    assert "maximum" not in limit, (
+        "交接题不许在 schema 里写页大小上限——那是要问出来的口径，写进 schema 等于白送")
+    assert not task.get("fault_injection"), "交接族刻意不注入故障（只考先问再动手）"
+
+
+def test_generated_ask_task_is_solvable_by_reference_agent(sandbox):
+    """交接题真能被解出来：页大小必须能从「一页最多 N 条」那句里读出来。
+
+    `--check` 只比对"答复里的数与分页声明一致"，它不知道参考 Agent 的正则认不认这句话。
+    两者不一致时，学习者问了也做不对，而失败会记成"能力不足"。
+    """
+    import threading
+
+    from arena import mock_tools as mt
+    from arena import reference_agent as ra
+
+    text, why = auth.scaffold(family_id="handover-drill", task_id="ask-901-solvable",
+                              title="可解性", rows=16, page=4, fault_at=None)
+    path = _write(sandbox, text, "ask-901-solvable")
+    task = auth.load_task(path)
+
+    srv, svc = mt.make_server(task, port=0)
+    host, port = srv.server_address[:2]
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        svc.reset()
+        run = ra.ReferenceAgent(task, ra.ToolClient(f"http://{host}:{port}")).run()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        th.join(timeout=5)
+
+    assert run.trace["final_status"] == "completed", run.notes
+    assert run.answer == task["test_inputs"]["expected"], (
+        f"参考 Agent 算出 {run.answer}，与答案键 {task['test_inputs']['expected']} 不符"
     )
 
 
@@ -283,10 +342,22 @@ def test_register_keeps_the_ledger_parsable(sandbox):
 def test_catalog_report_groups_families_and_marks_gaps(capsys):
     auth.main(["--list"])
     out = capsys.readouterr().out
-    for fam in ("order-report", "retry-drill", "param-surface", "locate-drill"):
+    for fam in ("order-report", "retry-drill", "param-surface", "locate-drill", "handover-drill"):
         assert fam in out, f"--list 没列出家族 {fam}"
     assert "梯度：" in out
     assert "道（台账" in out
+
+
+def test_scale_of_a_handover_task_counts_pages_not_log_lines():
+    """`--list` 里交接题曾显示成「0 行日志 / 0 条 ERROR」。
+
+    看着像题坏了（"日志呢？"），实际是 `_scale` 把"非默认骨架"一律当定位题。
+    这类假错比没有输出更糟：人会被训练成忽略自检报告。
+    """
+    task = auth.load_task(ASK_MOTHER)
+    scale = auth._scale(task)
+    assert "ERROR" not in scale, f"交接题被当成定位题数日志了：{scale}"
+    assert "页" in scale and "无故障" in scale, scale
 
 
 def test_check_exit_code_is_one_when_something_is_wrong(tmp_path, capsys):

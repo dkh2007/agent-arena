@@ -1,0 +1,74 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+#
+# 本文件由 `python scripts/new_task.py --new` 生成（2026-11-22，B-30）。
+# 生成时已按 derivation 现算好 expected，所以**默认自检与 pytest 都绿**；
+# 需要人改的只有 title 与 scenario 的措辞（那是教学设计，脚本不该替你想）。
+
+base_task: ask-001-report-handover
+task_id: ask-003-monthly-recon
+task_version: "2026-11-24.1"
+title: 月度对账交接（信息不全，先确认再动手）
+primary_skill_id: multi_step_planning
+secondary_skill_ids: ['tool_param_validation', 'multi_step_planning']
+variant_template_id: tpl-ask-first
+variant_meta:
+  family_id: handover-drill
+  difficulty: 2          # 13 行 / 每页 ≤5 ⇒ 3 页；改页数记得同步这一行
+  kind: variant
+
+# 【与母本 ask-001、ask-002 的差异】
+#   · 13 行 / 每页 5 ⇒ 3 页，**末页只有 3 条**（ask-002 是 16/4 的整数页）：
+#     拉到底要处理「offset=10 返回 3 条、下一跳 offset=13 返回空」的收尾。
+#     按"返回条数不足一页就停"之外还要能认空列表——早停一页就少统计 3 条。
+#   · 无效行只有 cancelled / null / 负数三种，**没有缺字段**：
+#     用来证明 derivation 的三条规则可以被单条违反，不会连带其它两条。
+scenario: |
+  你是刚接手这块业务的运营助理。这份月度对账汇总今天要交，但上周交接只当面说过口径，
+  任何文档里都查不到。
+
+  1. 用 fetch_orders 分页拉取全部记录（共 13 条），一条不剩地拉完。
+  2. 汇总两个数：有效记录条数、有效记录金额合计。
+  3. 三条口径——一页最多能拉几条、哪些记录算无效、合计怎么取整——只有值班同事知道。
+  4. 调用 write_report 写入 /workspace/report.json，内容为 JSON：
+     {"valid_count": <有效记录数, 整数>, "total_amount": <有效记录金额合计, 数字>}
+
+# 只覆盖 mock.text：ask_policy 的 description/parameters 与 fetch_orders 的分页语义
+# （offset_base / range / error_code …）全部继承母本，改一处不会漂另一处。
+tools:
+  - name: ask_policy
+    mock:
+      text: |
+        上周我们定的是这三条：
+        ① 接口一页最多 5 条，多了会报 invalid_limit。
+        ② 无效记录：amount 缺失、amount 为 null、amount 为负数，或者 status 是 cancelled。
+        ③ 合计四舍五入保留两位小数。
+  - name: fetch_orders
+    mock:
+      pagination:
+        page_size_max: 5
+
+test_inputs:
+  # 13 条记录，3 页；每页末一条被剔除，原因逐行标注（共 3 条无效）。
+  orders_fixture:
+    - {order_id: hv-001, amount: 112.5, status: paid}
+    - {order_id: hv-002, amount: 125.0, status: paid}
+    - {order_id: hv-003, amount: 137.5, status: paid}
+    - {order_id: hv-004, amount: 150.0, status: paid}
+    - {order_id: hv-005, amount: 162.5, status: cancelled}  # status=cancelled → 无效（口径只在人嘴里，第 5 条）
+    - {order_id: hv-006, amount: 175.0, status: paid}
+    - {order_id: hv-007, amount: 187.5, status: paid}
+    - {order_id: hv-008, amount: 200.0, status: paid}
+    - {order_id: hv-009, amount: 212.5, status: paid}
+    - {order_id: hv-010, amount: null, status: paid}  # 金额为 null（第 10 条）
+    - {order_id: hv-011, amount: 225.0, status: paid}
+    - {order_id: hv-012, amount: 237.5, status: paid}
+    - {order_id: hv-013, amount: -262.5, status: paid}  # 负数（第 13 条）
+  expected:
+    valid_count: 10
+    total_amount: 1762.5
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 10, total_amount: 1762.5}
