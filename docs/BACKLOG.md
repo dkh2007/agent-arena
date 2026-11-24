@@ -4,6 +4,15 @@
 > 骨架与分层进度在 `docs/ROADMAP.md`；口径真相源仍是 `data-model.md` / `review-packet-manual.md` §3 /
 > `executor-semantics.md` / `../项目计划书草稿-v0.4.md`。本文件不定义口径，只记状态。
 >
+> 更新：2026-11-24 下午（**B-37：19 条错误模式的人话模板 + 报告页不再显示机器码**。
+> 模板挂在错误模式上（词表 `human` 字段），句子里的数字由 `arena/error_notes.py` 从本次 `evidence` 取值，
+> 填不满就降级成词表 `description` 并标 `degraded`，**不现编**——五份夹具要求零降级。
+> 报告新增 `assertions[].title` / `pattern_notes` / `display_labels.fields`，Android 侧那份
+> `fieldLabel` 映射表随之删除（第二处真相源）。顺带发现样例报告是「手写夹具」产物、与执行器
+> 现算的证据形状已不一致（`why`/`matched_pairs` vs `matched_steps`），已改用真实管线重生成——
+> 代价是复述页「当时现场」提示从四条降到三条，宁可少一条材料也不留只在演示里成立的证据。
+> 训练单页仍列断言 id、复述页「这个错法叫什么」仍用词表 description，两条都留了理由。详见 B-37。）
+>
 > 更新：2026-11-24（**人拍板三条：语音走输入法 / App 内 ASR 暂不做 / 展示走视频但先攒素材**。
 > 决策、前置条件与行动顺序全文见 **`docs/decisions-20261124.md`**。随之修掉一个**页面级的假话**：
 > `scheduler` 给 `task_id` 填的永远是刚提交那道题，`kind` 却给 `variant`（词表标签"同族换一道"）——
@@ -1691,8 +1700,8 @@
   `dbg-003/004` 文件里没写，不等于"没有故障"，而是照抄母本的第 10 条 500。
   台账初稿按"不注入故障"给这两道写了 why，`--check` 的 `[!]` 提示把它顶了出来。
   现在 `--new` 一律显式写故障位，`--check` 也会对"没写但继承了"单独提醒。
-- **仍未做**：19 条错误类型的人话模板（B-30 时是 17 条，第三套骨架加了 2 条）；
-  其余 24 道的区分度夹具（只有 dbg-001 有）；
+- **仍未做**：其余 24 道的区分度夹具（只有 dbg-001 有）；
+  19 条错误类型的人话模板已由 **B-37（2026-11-24）** 关闭；
   §6 的骨架张力已解（第三套骨架 2026-11-23 投产，见 B-30b），第四套的门槛写在 `authoring-tasks.md` §6。
 - **一条偶发（登记，暂不修）**：本轮四次全量里，有一次在
   `tests/test_b04d_guardrail.py::test_disputed_submission_does_not_lift_p_but_still_schedules`
@@ -2101,6 +2110,41 @@
 **没做的（明确不做，理由在上一条）**：`slow` 标记分级、`PRAGMA synchronous=NORMAL`（改变
 持久性语义）、把 HTTP/SQLite 换成 mock（红线）、拿并行结果当"没有并发副作用"的唯一证据
 （已用串行逐用例比对替代）。
+
+### [x] B-37 19 条错误类型的人话模板 + 报告页去机器码 — 2026-11-24 关闭
+
+- **为什么做**：判分链路的诊断数据已经很细（`diffs` 有期望/实际，`violations` 有参数名与越界值），
+  但学生看到的是「总额算错」四个字 + 一行 `R2_report_correct`。**判据是给人看的那一刻才产生价值**，
+  而报告页当时把断言 id 当标题、把 `valid_count` 当字段名——第一批字全是机器码。
+- **模板挂在哪**：挂在**错误模式**上（`docs/error-patterns-v0.yaml` 的 `human`），不挂题目上。
+  挂题目会随题量线性增长（24 题写得完，40 题就要写 40 遍），而错误类型只有 19 条。
+- **分层**（这条是整轮最关键的判断）：词表仍是唯一真相源，句中每个数字由
+  `src/arena/error_notes.py` 从**本次 evidence** 取值填槽。
+  - 填不满槽 ⇒ 抛 `NoteError`，报告层退回词表 `description` 并标 `degraded:true`：
+    **不静默丢、不现编默认值**。`tests/test_error_notes.py` 要求五份夹具零降级。
+  - 某一类错误的明细拼不出人话 ⇒ **回执行器补结构化字段**，不是在模板里凑字。
+    本轮实测就撞到一处：参数越界原先只有 `detail="20 > maximum 10"` 这句给工程师看的字符串，
+    现已补 `value` / `bound` / `bound_kind`（类型错补 `expected_type` / `actual_type`）。
+    加字段不改判定语义，但让「给了 20，超过上限 10」这句话有据可依。
+- **报告新增三个键**（`docs/diagnosis-report-schema.md` §4.2）：
+  `assertions[].title`（按 type 翻的中文标题）、`assertions[].pattern_notes`（每条模式一句人话 + 一句动作）、
+  `display_labels.fields`（字段名中文，`valid_count` → 有效条数）。
+- **顺手修掉的一处第二真相源**：Android 的 `ReportModel.kt` 里原有一份 `fieldLabel` 映射表，
+  与 `error_notes.FIELD_LABELS` 重复。现在字段中文名由报告下发，Kotlin 侧映射表删除；
+  `feynman.py` 生成复述材料时也用同一份 `FIELD_LABELS`。
+- **撞到的事实偏差（值得记）**：`assets/sample-report.json` 之前是 `build_report(手写夹具)` 的产物，
+  而主链路早已改成「执行器现算」。两份证据形状已经不同——手写那份有 `extra.why` 和
+  `matched_pairs`，执行器给的是 `matched_steps`/`total_steps`。于是模板在演示数据上会「看起来能跑」、
+  在真实报告上却降级。**处置：样例报告改用 `trace_pipeline.run_fixture('raw-fake-retry')` 重生成**，
+  承认代价：手写的 `note`（「只统计了第一页 10 条…」）不再出现，复述页的「当时现场」提示
+  因此从四条变三条。宁可少一条材料，也不留一份「只在演示里成立」的证据。
+- **判据**：`pytest tests/test_error_notes.py`（39 条）——19 条模式全部由**真实执行器**触发后渲染，
+  逐条检查无降级、无内部词（`R2_`/`valid_count`/`case:`/未替换大括号）、文本互不相同、
+  缺证据时抛错而不是补默认值；五份夹具报告零降级；`display_labels.fields` 键集合正确。
+- **没做的**：训练单页「练完回来看哪一条」仍列断言 id（`R2_report_correct`）——
+  那一页有文档写死的验收口径（`android-ui-handoff.md` 对账清单），改它要一起改文档与截图，
+  本轮不动；复述页「这个错法叫什么」仍显示词表 `description`（含 `valid_count`、`fixture` 这类词），
+  而 description 同时是 judge 模型的判据清单，改它要先评估对判分一致性的影响。
 
 
 ---

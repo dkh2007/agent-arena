@@ -31,14 +31,14 @@
       "weight_lost": 2,
       "patterns": [
         {
-          "id": "wrong_total_amount",
-          "label": "总额算错",
-          "description": "total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算"
-        },
-        {
           "id": "wrong_valid_count",
           "label": "有效数算错",
           "description": "valid_count 与依据 fixture 剔除规则现算的条数不符（漏剔或多剔）；具体条数见各任务的 test_inputs.expected"
+        },
+        {
+          "id": "wrong_total_amount",
+          "label": "总额算错",
+          "description": "total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算"
         }
       ]
     },
@@ -60,28 +60,26 @@
   "checks": [
     {
       "assertion_id": "R2_report_correct",
+      "title": "结论是否与判据一致",
       "diffs": [
         {
-          "field": "valid_count",
+          "field": "有效条数",
           "expected": "17",
           "actual": "9"
         },
         {
-          "field": "total_amount",
+          "field": "合计金额",
           "expected": "1837.99",
           "actual": "861.24"
         }
       ],
-      "scene": [
-        "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取"
-      ]
+      "scene": []
     },
     {
       "assertion_id": "R3_retry_evidence",
+      "title": "关键步骤是否走到",
       "diffs": [],
-      "scene": [
-        "offset=10 失败后所有重试都退回 offset=0，游标没有向前推进"
-      ]
+      "scene": []
     }
   ],
   "checklist": [
@@ -112,15 +110,15 @@
     {
       "key": "R2_report_correct",
       "kind": "missed",
-      "text": "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取",
+      "text": "有效条数你填了 9，按剔除规则应为 17，相差 8 条。；合计金额你填了 861.24，正确是 1837.99，相差 976.75。",
       "diffs": [
         {
-          "field": "valid_count",
+          "field": "有效条数",
           "expected": "17",
           "actual": "9"
         },
         {
-          "field": "total_amount",
+          "field": "合计金额",
           "expected": "1837.99",
           "actual": "861.24"
         }
@@ -129,7 +127,7 @@
     {
       "key": "R3_retry_evidence",
       "kind": "missed",
-      "text": "R3_retry_evidence",
+      "text": "重试了，但没重试出问题的那一处——判据要求的 2 步只走成 1 步。",
       "diffs": []
     }
   ],
@@ -148,25 +146,17 @@
       "key": "diffs",
       "label": "把期望和实际念一遍",
       "lines": [
-        "R2_report_correct · valid_count：期望 17，实际 9",
-        "R2_report_correct · total_amount：期望 1837.99，实际 861.24"
+        "结论是否与判据一致 · 有效条数：期望 17，实际 9",
+        "结论是否与判据一致 · 合计金额：期望 1837.99，实际 861.24"
       ]
     },
     {
       "key": "patterns",
       "label": "这个错法叫什么",
       "lines": [
-        "总额算错：total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算",
         "有效数算错：valid_count 与依据 fixture 剔除规则现算的条数不符（漏剔或多剔）；具体条数见各任务的 test_inputs.expected",
+        "总额算错：total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算",
         "重试参数错误：确实重试了，但游标退回首页（偏移序列在故障页之后又出现 0）；耗时增加且分页永不收敛"
-      ]
-    },
-    {
-      "key": "scene",
-      "label": "当时现场是什么样",
-      "lines": [
-        "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取",
-        "offset=10 失败后所有重试都退回 offset=0，游标没有向前推进"
       ]
     }
   ],

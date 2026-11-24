@@ -18,6 +18,20 @@ data class DiffRow(
     val actual: String,
 )
 
+/**
+ * 一条错误模式的人话。
+ *
+ * `text` 里每个数字都来自本次评测证据（由 `arena/error_notes.py` 按词表模板拼），
+ * 页面只负责显示——它既不可以改写措辞，也不可以自己补一句「你可能还漏了……」。
+ * `hint` 是一句动作（这类错下次怎么改），没有就不显示那一行。
+ */
+data class PatternNote(
+    val patternId: String,
+    val label: String,
+    val text: String,
+    val hint: String?,
+)
+
 data class Gap(
     val skillId: String,
     val skillLabel: String,
@@ -34,6 +48,8 @@ data class AssertionRow(
     val weight: Double,
     val skillId: String?,
     val skillLabel: String?,
+    val title: String,
+    val notes: List<PatternNote>,
     val note: String?,
     val diffs: List<DiffRow>,
     val why: String?,
@@ -78,6 +94,9 @@ fun parseReport(text: String): Report {
     val labels = root.optJSONObject("display_labels")
     val skillLabels = labels?.optJSONObject("skills").toMap()
     val patternLabels = labels?.optJSONObject("patterns").toMap()
+    // 差异行字段的中文名（valid_count → 有效条数）。旧报告没有这张表，
+    // 回退到字段原名即可——宁可露出一处英文，也不在页面里另存一份映射。
+    val fieldLabels = labels?.optJSONObject("fields").toMap()
 
     val byState = mutableListOf<Pair<String, Int>>()
     score.optJSONObject("by_state")?.let { obj ->
@@ -108,15 +127,20 @@ fun parseReport(text: String): Report {
         val ev = o.optJSONObject("evidence")
         val extra = ev?.optJSONObject("extra")
         val skillId = if (o.isNull("skill_id")) null else o.optString("skill_id")
+        val id = o.optString("id")
         AssertionRow(
-            id = o.optString("id"),
+            id = id,
             state = o.optString("state"),
             layer = o.optString("layer"),
             weight = o.optDouble("weight", 0.0),
             skillId = skillId,
             skillLabel = skillId?.let { skillLabels[it] ?: it },
+            // 标题由报告下发（按断言 type 翻的中文）。旧报告没有这个键时退回 id，
+            // 那只是兼容路径：新报告一律带 title。
+            title = o.optString("title").takeIf { it.isNotBlank() } ?: id,
+            notes = parsePatternNotes(o.optJSONArray("pattern_notes"), patternLabels),
             note = if (o.isNull("note")) null else o.optString("note"),
-            diffs = parseDiffs(extra),
+            diffs = parseDiffs(extra, fieldLabels),
             why = extra?.optString("why")?.takeIf { it.isNotBlank() },
         )
     }
@@ -140,12 +164,29 @@ fun parseReport(text: String): Report {
     )
 }
 
-private fun parseDiffs(extra: JSONObject?): List<DiffRow> {
+private fun parsePatternNotes(arr: JSONArray?, labels: Map<String, String>): List<PatternNote> {
+    if (arr == null) return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        val pid = o.optString("pattern_id")
+        val text = o.optString("text")
+        if (text.isBlank()) return@mapNotNull null
+        PatternNote(
+            patternId = pid,
+            label = labels[pid] ?: pid,
+            text = text,
+            hint = o.optString("hint").takeIf { it.isNotBlank() },
+        )
+    }
+}
+
+private fun parseDiffs(extra: JSONObject?, fieldLabels: Map<String, String>): List<DiffRow> {
     val arr = extra?.optJSONArray("diffs") ?: return emptyList()
     return (0 until arr.length()).mapNotNull { i ->
         val d = arr.optJSONObject(i) ?: return@mapNotNull null
+        val field = d.optString("field")
         DiffRow(
-            field = fieldLabel(d.optString("field")),
+            field = fieldLabels[field] ?: field,
             expected = cell(d.opt("expected")),
             actual = cell(d.opt("actual")),
         )
@@ -185,14 +226,8 @@ private fun JSONObject?.toMap(): Map<String, String> {
 
 // skillLabel / patternLabel 已删除。中文只能来自报告里的 display_labels（源自 docs 下两份词表），
 // 页面不许再维护第二份映射表——2026-11-20 就是因为这里手写了一张表，与词表三条全不一致。
-
-/** 报告字段的中文叫法（valid_count → 有效条数）。这是 JSON 字段的展示名，不是词表内容。 */
-fun fieldLabel(id: String): String = when (id) {
-    "valid_count" -> "有效条数"
-    "total_amount" -> "合计金额"
-    "offset" -> "翻页游标"
-    else -> id
-}
+// 同一理由，2026-11-24 删掉了本文件里的 fieldLabel（valid_count → 有效条数）：
+// 那份表与 arena/error_notes.py 的 FIELD_LABELS 是两处真相源，现在字段中文名由报告下发。
 
 fun stateLabel(state: String): String = when (state) {
     "pass" -> "通过"
@@ -200,4 +235,11 @@ fun stateLabel(state: String): String = when (state) {
     "blocked" -> "受阻"
     "unscored" -> "未计分"
     else -> state
+}
+
+/** 层级的中文叫法。gate 本来是「门槛」，页面上一直写的就是「门槛项」。 */
+fun layerLabel(layer: String): String = when (layer) {
+    "gate" -> "门槛项"
+    "credit" -> "计分项"
+    else -> layer
 }

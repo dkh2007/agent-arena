@@ -263,7 +263,7 @@ private fun GapCard(g: Gap, totalWeight: Double) {
             }
             Spacer(Modifier.height(10.dp))
         }
-        Text("依据 ${g.failedAssertions.joinToString("、")}", style = TMicro)
+        Text("依据 ${g.failedAssertions.size} 条判据，逐条见下方", style = TMicro)
     }
 }
 
@@ -319,7 +319,7 @@ private fun AssertionItem(a: AssertionRow) {
             StatusDot(a.state)
             Spacer(Modifier.width(10.dp))
             Text(
-                a.id,
+                a.title,
                 modifier = Modifier.weight(1f),
                 fontSize = 13.5.sp,
                 fontWeight = FontWeight.Medium,
@@ -328,10 +328,21 @@ private fun AssertionItem(a: AssertionRow) {
             WeightChip(a.weight)
         }
 
-        val attribution = a.skillLabel?.let { "归因 $it" }
-        if (attribution != null) {
-            Spacer(Modifier.height(5.dp))
-            Text(attribution, style = TMicro, modifier = Modifier.padding(start = 18.dp))
+        // 失败项：每条错误模式一句人话。句子由报告下发（数字来自本次证据），
+        // 页面不改写、不补句——改写一句就可能把「这一步没做」说成「你不行」。
+        a.notes.forEach { note ->
+            Spacer(Modifier.height(8.dp))
+            Column(Modifier.padding(start = 18.dp)) {
+                Text(
+                    "${note.label}：${note.text}",
+                    style = TSmall,
+                    color = Ink,
+                )
+                note.hint?.let {
+                    Spacer(Modifier.height(3.dp))
+                    Text("→ $it", style = TMicro, color = Ink3)
+                }
+            }
         }
 
         if (a.diffs.isNotEmpty()) {
@@ -358,6 +369,15 @@ private fun AssertionItem(a: AssertionRow) {
             Spacer(Modifier.height(6.dp))
             Text(it, style = TMicro, modifier = Modifier.padding(start = 18.dp))
         }
+
+        // 页脚只留「状态 · 归因」：断言 id（R2_report_correct）是给审计追踪用的，
+        // 学生读不懂，也会让页面看起来像技术日志。要追 ID 请看报告 JSON。
+        Spacer(Modifier.height(6.dp))
+        Text(
+            listOfNotNull(stateLabel(a.state), a.skillLabel?.let { "归因 $it" }).joinToString(" · "),
+            style = TMicro,
+            modifier = Modifier.padding(start = 18.dp),
+        )
     }
 }
 

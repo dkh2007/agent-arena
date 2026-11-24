@@ -92,9 +92,10 @@ fun parseFeynmanPrompt(text: String): FeynmanPrompt {
             FeynmanCheck(
                 assertionId = o.optString("assertion_id"),
                 diffs = o.optJSONArray("diffs").mapObjects { d ->
-                    // 字段名复用 ReportModel.kt 的 fieldLabel：同一份映射，两处各写一份迟早不一致
+                    // 字段名由 feynman.py 按 error_notes.FIELD_LABELS 翻好再下发：
+                    // 页面侧一份映射表都不留（2026-11-20 的四张表就是这么坏掉的）
                     FeynmanDiff(
-                        field = fieldLabel(d.optString("field")),
+                        field = d.optString("field"),
                         expected = d.optString("expected"),
                         actual = d.optString("actual"),
                     )
@@ -109,7 +110,7 @@ fun parseFeynmanPrompt(text: String): FeynmanPrompt {
                 text = o.optString("text"),
                 diffs = o.optJSONArray("diffs").mapObjects { d ->
                     FeynmanDiff(
-                        field = fieldLabel(d.optString("field")),
+                        field = d.optString("field"),
                         expected = d.optString("expected"),
                         actual = d.optString("actual"),
                     )

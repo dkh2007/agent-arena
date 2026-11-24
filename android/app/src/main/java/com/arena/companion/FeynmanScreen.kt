@@ -505,7 +505,16 @@ private fun HintSheet(prompt: FeynmanPrompt, unlocked: Boolean, onDismiss: () ->
             )
             visible.forEach { hint -> HintRow(hint) }
             if (!unlocked) {
-                Text("还有 ${prompt.hints.size - visible.size} 条锁着：期望和实际、错法解释、当时现场。", style = TMicro)
+                // 锁着的条数与名字都从数据包来：写死「期望和实际、错法解释、当时现场」时，
+                // 报告里没有 note/why（按当前链路重算就没有）会让页面承诺一条永远不出现的提示。
+                val locked = prompt.hints.filter { it.key != "asks" }
+                if (locked.isNotEmpty()) {
+                    Text(
+                        "还有 ${locked.size} 条锁着：" +
+                            locked.joinToString("、") { it.label.removeSuffix("是什么样") } + "。",
+                        style = TMicro,
+                    )
+                }
             }
         }
     }

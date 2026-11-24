@@ -74,13 +74,15 @@
       "evidence": {
         "observed": {
           "exists": true,
-          "size_bytes": 58
+          "non_empty": true,
+          "size_bytes": 42
         },
         "expected": {
           "exists": true,
           "non_empty": true
         }
-      }
+      },
+      "title": "交付物是否存在"
     },
     {
       "id": "R5_clean_exit",
@@ -93,7 +95,8 @@
       "evidence": {
         "observed": "completed",
         "expected": "completed"
-      }
+      },
+      "title": "流程是否正常结束"
     },
     {
       "id": "R2_report_correct",
@@ -103,8 +106,8 @@
       "state": "fail",
       "skill_id": "multi_step_planning",
       "error_patterns": [
-        "wrong_total_amount",
-        "wrong_valid_count"
+        "wrong_valid_count",
+        "wrong_total_amount"
       ],
       "evidence": {
         "observed": {
@@ -116,6 +119,9 @@
           "total_amount": 1837.99
         },
         "extra": {
+          "tolerance": {
+            "total_amount": 0.01
+          },
           "diffs": [
             {
               "field": "valid_count",
@@ -128,10 +134,23 @@
               "actual": 861.24,
               "tolerance": 0.01
             }
-          ]
+          ],
+          "classification_source": "case:total_amount_mismatch,valid_count_mismatch"
         }
       },
-      "note": "只统计了第一页 10 条（其中 o-007 金额为负被剔除），第二页从未成功拉取"
+      "title": "结论是否与判据一致",
+      "pattern_notes": [
+        {
+          "pattern_id": "wrong_valid_count",
+          "text": "有效条数你填了 9，按剔除规则应为 17，相差 8 条。",
+          "hint": "先定清「哪些算无效」，再逐页数，别边翻边估。"
+        },
+        {
+          "pattern_id": "wrong_total_amount",
+          "text": "合计金额你填了 861.24，正确是 1837.99，相差 976.75。",
+          "hint": "汇总前确认每页都拉到了；金额只加有效行。"
+        }
+      ]
     },
     {
       "id": "R3_retry_evidence",
@@ -152,25 +171,20 @@
             0
           ],
           "statuses": [
-            "success",
-            "error",
-            "success",
-            "success"
+            "error"
           ],
           "http_statuses": [
-            200,
-            500,
-            200,
-            200
+            500
           ]
         },
         "expected": {
           "ordered": true,
+          "allow_interleaved": true,
           "calls": [
             {
               "name": "fetch_orders",
               "params_match": {
-                "offset": 10
+                "offset_covers": 10
               },
               "status": "error",
               "http_status": 500
@@ -178,18 +192,30 @@
             {
               "name": "fetch_orders",
               "params_match": {
-                "offset": 10
+                "offset_covers": 10
               },
               "status": "success"
             }
-          ]
+          ],
+          "note": "params_match 用 offset_covers：判据是「这次请求的页区间覆盖第 10 条」，不是「offset 恰为 10」。B-31 前写的是后者，等于要求学习者页大小必须整除 10——limit=3 时偏移序列 0/3/6/… 永远踩不到 10，数据拉全了却判「没重试」。现在页大小由学习者定（1..10 都合法），判据只看故障点有没有被翻到。"
         },
         "extra": {
-          "probe": "calls[?name=='fetch_orders'].params.offset",
-          "matched_pairs": 0,
-          "why": "offset=10 失败后所有重试都退回 offset=0，游标没有向前推进"
+          "filter_expr": "calls[?(name==`\"fetch_orders\"`)].{s: status, h: http_status, i: call_index, o: params.offset, l: params.limit}",
+          "matcher": "same_tool",
+          "probe": "calls[?name=='fetch_orders'].{offset: params.offset}",
+          "matched_steps": 1,
+          "total_steps": 2,
+          "classification_source": "case:fault_then_moved_on"
         }
-      }
+      },
+      "title": "关键步骤是否走到",
+      "pattern_notes": [
+        {
+          "pattern_id": "retry_wrong_params",
+          "text": "重试了，但没重试出问题的那一处——判据要求的 2 步只走成 1 步。",
+          "hint": "重试要落在失败的那一页／那一次调用上，换位置重来等于没重试。"
+        }
+      ]
     },
     {
       "id": "R4_no_param_hallucination",
@@ -206,8 +232,13 @@
         },
         "expected": {
           "mode": "all_calls_must_be_valid"
+        },
+        "extra": {
+          "schema_ref": "tools",
+          "probe": "calls[*].{name: name, params: params}"
         }
-      }
+      },
+      "title": "工具调用参数是否合规"
     }
   ],
   "skill_gaps": [
@@ -217,8 +248,8 @@
         "R2_report_correct"
       ],
       "patterns": [
-        "wrong_total_amount",
-        "wrong_valid_count"
+        "wrong_valid_count",
+        "wrong_total_amount"
       ],
       "weight_lost": 2,
       "attributed_by": "assertion"
@@ -236,6 +267,45 @@
     }
   ],
   "unattributed_patterns": [],
+  "trace_view": [
+    {
+      "call_index": 1,
+      "name": "fetch_orders",
+      "params": {
+        "offset": 0,
+        "limit": 10
+      },
+      "status": "success"
+    },
+    {
+      "call_index": 2,
+      "name": "fetch_orders",
+      "params": {
+        "offset": 10,
+        "limit": 10
+      },
+      "status": "error",
+      "http_status": 500
+    },
+    {
+      "call_index": 3,
+      "name": "fetch_orders",
+      "params": {
+        "offset": 0,
+        "limit": 10
+      },
+      "status": "success"
+    },
+    {
+      "call_index": 4,
+      "name": "fetch_orders",
+      "params": {
+        "offset": 0,
+        "limit": 10
+      },
+      "status": "success"
+    }
+  ],
   "display_labels": {
     "skills": {
       "failure_retry": "失败重试策略",
@@ -246,13 +316,17 @@
       "retry_wrong_params": "重试参数错误",
       "wrong_total_amount": "总额算错",
       "wrong_valid_count": "有效数算错"
+    },
+    "fields": {
+      "total_amount": "合计金额",
+      "valid_count": "有效条数"
     }
   },
-  "rubric_fingerprint": "c7235a2f803744d3f386ba40525aaeee28c31f922e9b8aac8b745e68fe65431e",
+  "rubric_fingerprint": "76dec0abcf966302f56cb00c9c82b4241cc65b12374043d26fcfb10769f8b86f",
   "rubric_rule_fingerprints": {
     "R1_file_exists": "b068cbadf32a836052f35f7438ad43f3bbf22260de916e2a11a3447d7459970d",
     "R2_report_correct": "e601fcd7c0444b82b57e0b664118ca75a9a31e6a906feeedd6b42e448b0c0e43",
-    "R3_retry_evidence": "edf85ffbfa3b193033d0f9bbc1b13a8573f50abc60d3de2d39de56574d443f73",
+    "R3_retry_evidence": "047da73e1c6dac6e2fea350b9e0aad298330235c05533c55d73bf76f3eb56225",
     "R4_no_param_hallucination": "3785659afb050f8cd32f392c23f2afec50d51831c5ec43d3ab6ecf969ff026f7",
     "R5_clean_exit": "c6c87dcdc52ea4ed985444cbf06da6d3e7c6502f14715b8d7a14eedf6dad1d1e"
   }

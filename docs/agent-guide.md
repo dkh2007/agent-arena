@@ -91,7 +91,9 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 
 ## 5. 已落地 / 暂缓 / 待确认
 
-- **已落地**：B-26（待仲裁证据不进熟练度）；用户可见文案总表 153 条 + 一致性校验；复述页"先交后看"。
+- **已落地**：B-26（待仲裁证据不进熟练度）；用户可见文案总表 153 条 + 一致性校验；复述页"先交后看"；
+  **19 条错误模式的人话模板 + 报告页去机器码**（2026-11-24：`error-patterns-v0.yaml` 的 `human` +
+  `arena/error_notes.py` + 报告 `assertions[].title` / `pattern_notes` / `display_labels.fields`）。
 - **已拍板并落地（不要再当"待确认"重问一遍）**：
   - **"整份不合格"提交的部分给分**：拍板选**只计机器判得死的部分**。核证结论比"留了切换位"更硬——
     当前所有 credit 断言都由确定性执行器判，**没有过滤对象**，A 口径与 B 口径恒等；
@@ -107,10 +109,13 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 ## 6. 当前阶段该干的活（按优先级）
 
 1. **扩题 12 → 40 左右**：变体不能只换业务名和期望值，要改变"学生要做的事"（判据待定，见 §5 未决项）。
-2. **19 条错误类型的人话模板**：挂在**错误类型**上（一次性），不挂在题目上（随题量线性增长）。
-   数据已经够（实测有 `10 > maximum 4` 这类明细，见 `docs/external-review-20261121b-question.md` §2.4），
-   缺的只是拼接规则。
-   若某类错误的明细数据拼不出人话，回判分层补数据，不要在模板里编。
+2. ~~**19 条错误类型的人话模板**~~（2026-11-24 已落地）：模板在
+   `docs/error-patterns-v0.yaml` 的 `human` 字段，**挂在错误类型上**（一次性），不挂在题目上
+   （随题量线性增长）。渲染在 `src/arena/error_notes.py`，报告以 `pattern_notes` 下发给页面。
+   两条纪律值得留着：**槽只许读本次 evidence 里有的字段**（缺了就抛 `NoteError` 降级成
+   description，标 `degraded`，测试要求零降级）；**拼不出人话的类别回执行器补结构化字段**
+   （参数越界原先只有 `"20 > maximum 10"` 一句字符串，现已补 `value`/`bound`/`bound_kind`），
+   不在模板里编。
 3. **其余 12 道题的区分度实验**：照 `dbg-001` 的五份夹具
    （`raw-perfect` / `raw-empty` 空文件 / `raw-no-file` 无产物 / `raw-no-trace` 有答案无过程 / `raw-fake-retry` 假重试，
    在 `fixtures/raw-*.json`），每道题验出分数差异。
