@@ -2263,6 +2263,38 @@
 - **判据**：`pytest tests/test_discrimination.py`（111 条 / 90 秒，27 题各多 2 条）。
 
 
+### [ ] B-42 「缺席即通过」+「门禁失败照记」= 0 分提交把熟练度记成满分（2026-11-24 发现，待人拍板）
+
+- **现象**（五道题全部复现）：一份"什么都没交"的提交，`score.ratio=0.00`、`disqualified=true`，
+  断言状态是 `R1_file_exists: fail` / `R2: blocked` / `R5_clean_exit: pass` /
+  `R3_retry_evidence: pass` / `R4_no_param_hallucination: pass`。
+  `skill_evidence()` 因此给出 **failure_retry c=1.0、tool_param_validation c=1.0**
+  （交接族 `ask-001` 还额外给 `multi_step_planning` c=1.0，因为 `R6_ask_before_act` 也是 pass）。
+- **根因是两层叠加**：
+  ① `mastery.py` 按 B-07b 的 A 口径，`disqualified` **照记**，只有 `voided` 与
+  `process_fact.missing` 整份排除；
+  ② `R3` / `R4` / `R6` 属"缺席即通过"：没调用工具就没瞎填参数、没失败就没漏重试、
+  没动手就算"没有不先问就动手"。它们判的是**没有反例**，不是**做对了**。
+- **为什么到现在才发现**：区分度矩阵只看 `(分数, 失败断言, 错误模式)` 三元组，不看熟练度证据。
+  分数 0 是正确答案，所以 2145 条测试没有一条会红。
+- **三条修法与代价**（已写进 `外部确认清单-20261124.md` Q3 作为本轮外发问题之一）：
+  a 判分层整份排除（代价：真做了事的那部分观测一起丢）；
+  b 断言层空 trace 判 `blocked`（代价：改判分口径，27 题矩阵与历史报告要重算）；
+  c 保留观测但按证据强度降权。
+  **未动手**：它动的是判分口径与状态层，属于要人拍的格子。
+- **复现**（五道题都可重复）：
+  ```
+  PYTHONPATH="src;tests" python -c "
+  from arena import diagnosis_report as dr, mastery as m
+  import test_discrimination as td
+  t=dr.load_task('tasks/dbg-001-order-report.yaml'); f,_=td._forms_of(t)
+  print(f['no_artifact']['score']['disqualified'],
+        m.skill_evidence(f['no_artifact'],'failure_retry').c)"
+  ```
+- **可选的临时护栏**（未实施）：报告页对 `disqualified` 的技能证据加一句"仅供参考，未计入熟练度"，
+  免得读的人把 c=1.0 看成"做对了"。
+
+
 ---
 
 ## 5. 收工清单（每次改完必跑，按顺序）
