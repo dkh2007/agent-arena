@@ -91,9 +91,13 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 
 ## 5. 已落地 / 暂缓 / 待确认
 
-- **已落地**：B-26（待仲裁证据不进熟练度）；用户可见文案总表 153 条 + 一致性校验；复述页"先交后看"；
+- **已落地**：B-26（待仲裁证据不进熟练度）；用户可见文案总表 194 条 + 一致性校验；复述页"先交后看"；
   **19 条错误模式的人话模板 + 报告页去机器码**（2026-11-24：`error-patterns-v0.yaml` 的 `human` +
-  `arena/error_notes.py` + 报告 `assertions[].title` / `pattern_notes` / `display_labels.fields`）。
+  `arena/error_notes.py` + 报告 `assertions[].title` / `pattern_notes` / `display_labels.fields`）；
+  **区分度机制化**（`tests/test_discrimination.py`：27 题 × 5–6 形态，骨架级判据）；
+  **训练单页与复述页去机器码**（`focus_assertions` 带中文标题；复述页改读词表 `plain`，
+  `description` 留给 judge）。**页面上现在不出现任何断言 id / 字段名**——这是三条线合起来的结果，
+  新加页面时照这个标准来。
 - **已拍板并落地（不要再当"待确认"重问一遍）**：
   - **"整份不合格"提交的部分给分**：拍板选**只计机器判得死的部分**。核证结论比"留了切换位"更硬——
     当前所有 credit 断言都由确定性执行器判，**没有过滤对象**，A 口径与 B 口径恒等；

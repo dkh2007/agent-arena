@@ -65,14 +65,21 @@ SOURCE_NOTE = (
 )
 
 
-def load_pattern_descriptions(path: str | Path = VOCAB_PATH) -> dict[str, str]:
-    """`pattern_id -> description`。词表里每条都有 description，缺失即为词表破损。"""
+def load_pattern_plains(path: str | Path = VOCAB_PATH) -> dict[str, str]:
+    """`pattern_id -> plain`（这个词错在哪，一句大白话）。
+
+    为什么不用 `description`：那个字段同时是 judge 判定时读的清单
+    （`llm_judge.load_pattern_catalog`），里面必然带 `valid_count`、`fixture`、
+    `ask_policy` 这类内部词——它要精确到能判分。把它搬到页面上，学习者读到的第一句
+    就是"valid_count 与依据 fixture 剔除规则现算的条数不符"。
+    两个读者、两种口径，就不该共用一处文本；`plain` 只面向人，不含字段名与枚举值。
+    """
     out: dict[str, str] = {}
     for pattern in yaml.safe_load(Path(path).read_text(encoding="utf-8"))["patterns"]:
-        desc = (pattern.get("description") or "").strip()
-        if not desc:
-            raise FeynmanError(f"错误模式 {pattern['pattern_id']} 在词表里没有 description")
-        out[pattern["pattern_id"]] = desc
+        plain = (pattern.get("plain") or "").strip()
+        if not plain:
+            raise FeynmanError(f"错误模式 {pattern['pattern_id']} 在词表里没有 plain")
+        out[pattern["pattern_id"]] = plain
     return out
 
 
@@ -154,14 +161,12 @@ def build_prompt(
     *,
     skill_labels: Mapping[str, str] | None = None,
     pattern_labels: Mapping[str, str] | None = None,
-    pattern_descriptions: Mapping[str, str] | None = None,
+    pattern_plains: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """组装费曼复述页的数据包。每个字段都能追到报告、任务 YAML 或词表。"""
     skill_labels = load_skill_labels() if skill_labels is None else skill_labels
     pattern_labels = load_pattern_labels() if pattern_labels is None else pattern_labels
-    pattern_descriptions = (
-        load_pattern_descriptions() if pattern_descriptions is None else pattern_descriptions
-    )
+    pattern_plains = load_pattern_plains() if pattern_plains is None else pattern_plains
 
     submission = report.get("submission") or {}
     reported = submission.get("task_id")
@@ -181,7 +186,7 @@ def build_prompt(
             if pattern_id not in used_patterns:
                 used_patterns.append(pattern_id)
 
-    missing = [p for p in used_patterns if p not in pattern_labels or p not in pattern_descriptions]
+    missing = [p for p in used_patterns if p not in pattern_labels or p not in pattern_plains]
     if missing:
         raise FeynmanError(f"错误模式 {missing} 出现在报告里，但 {VOCAB_PATH.name} 里查不到")
 
@@ -194,7 +199,7 @@ def build_prompt(
             {
                 "id": pid,
                 "label": pattern_labels[pid],
-                "description": pattern_descriptions[pid],
+                "plain": pattern_plains[pid],
             }
             for pid in gap.get("patterns") or ()
         ]
@@ -266,7 +271,7 @@ def build_prompt(
                 "key": "patterns",
                 "label": "这个错法叫什么",
                 "lines": [
-                    f"{pattern_labels[p]}：{pattern_descriptions[p]}" for p in used_patterns
+                    f"{pattern_labels[p]}：{pattern_plains[p]}" for p in used_patterns
                 ],
             }
         )

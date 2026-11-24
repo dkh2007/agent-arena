@@ -16,6 +16,13 @@
 #   - detection_rule.when 记的是**母本 dbg-001 的判据形状**（给人读，说明这条规则长什么样）；
 #     真正执行的是各任务 YAML 里的 `error_pattern_detection.cases`（偏移、状态码、阈值随变体不同）。
 #     两者不一致时以任务 YAML 为准——那里是执行器的输入，这里是说明书。
+#   - plain：给学习者的一句话「这个错法是什么」（2026-11-24 新增）。
+#     * **与 description 是两个读者两种口径**：description 是 judge 判定时读的清单
+#       （`llm_judge.load_pattern_catalog`），要精确到能判分，必然带 `valid_count`、
+#       `fixture`、`ask_policy` 这类内部词；plain 只面向人，不出现字段名 / 文件名 / 枚举值。
+#       `tests/test_feynman.py` 有两条硬判据：plain 不得含内部标识符、不得与 description 一字不差。
+#     * 不要把 description 原样搬过来——那等于换了个字段名，页面上的字一点没变。
+#     * 不用全角冒号：页面把它拼成 `label：plain`，plain 里再有冒号就成了两个冒号。
 #   - human：给学习者看的人话模板（2026-11-24 新增），由 `src/arena/error_notes.py` 渲染。
 #     * 一条模式至少一条，最后一条必须无 `when`（兜底）；其余分支用 `when` 表达
 #       「证据长这样时换一句话」（如整份 JSON 解析失败 vs 只缺一个字段）。
@@ -31,6 +38,7 @@ patterns:
   - pattern_id: no_output_file
     label: 未产出文件
     description: 任务要求写入 /workspace/report.json，但该文件不存在
+    plain: 任务要你交一个文件，评测时那个文件根本不存在——这次等于没交付。
     detection_rule: {assertion_id: R1_file_exists, when: {exists: false}}
     mapped_skill_ids: []
     human:
@@ -40,6 +48,7 @@ patterns:
   - pattern_id: empty_output_file
     label: 产出空文件
     description: 文件存在但内容为空，等价于未交付
+    plain: 文件交上去了，但里面什么都没有，和没交一样。
     detection_rule: {assertion_id: R1_file_exists, when: {non_empty: false}}
     mapped_skill_ids: []
     human:
@@ -50,6 +59,7 @@ patterns:
   - pattern_id: wrong_valid_count
     label: 有效数算错
     description: valid_count 与依据 fixture 剔除规则现算的条数不符（漏剔或多剔）；具体条数见各任务的 test_inputs.expected
+    plain: 合格数据的条数算错了——该剔除的算进去了，或者该留的被剔掉了。
     detection_rule: {assertion_id: R2_report_correct, when: {valid_count_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -59,6 +69,7 @@ patterns:
   - pattern_id: wrong_total_amount
     label: 总额算错
     description: total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算
+    plain: 合计金额对不上，常见是把不该算的金额算进去了，或者有数据没拉全。
     detection_rule: {assertion_id: R2_report_correct, when: {total_amount_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -68,6 +79,7 @@ patterns:
   - pattern_id: report_missing_field
     label: 报告缺字段
     description: report.json 未包含 valid_count 或 total_amount（或字段名拼错）
+    plain: 交上去的内容读不出来，该有的两项结论至少缺了一项。
     detection_rule: {assertion_id: R2_report_correct, when: {missing_fields: [valid_count, total_amount]}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -84,6 +96,7 @@ patterns:
   - pattern_id: wrong_root_cause
     label: 根因判错
     description: diagnosis.json 的 root_cause 与日志最后一条 ERROR 对应的取值不一致（见各任务 scenario 的取值域）
+    plain: 对问题原因的判断，和日志里最后那次报错对不上。
     detection_rule: {assertion_id: R2_diagnosis_correct, when: {root_cause_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -93,6 +106,7 @@ patterns:
   - pattern_id: wrong_offending_line
     label: 出错行定位错
     description: 行号与该函数体内符合定位规则的那一行不符；常见于定位到别的函数，或取错第一条匹配
+    plain: 指出是哪一行出的问题，但指的不是真正出问题的那一行。
     detection_rule: {assertion_id: R2_diagnosis_correct, when: {offending_line_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -102,6 +116,7 @@ patterns:
   - pattern_id: diagnosis_missing_field
     label: 定位结论缺字段
     description: diagnosis.json 未包含 root_cause 或 offending_line（或字段名拼错）
+    plain: 诊断结论读不出来，原因和位置至少缺了一项。
     detection_rule: {assertion_id: R2_diagnosis_correct, when: {missing_fields: [root_cause, offending_line]}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -115,6 +130,7 @@ patterns:
   - pattern_id: no_retry
     label: 未重试
     description: 首次失败后没有再对**故障页**（同一 offset）发起调用，直接放弃或退回首页；判定不依赖具体页号
+    plain: 某一步失败之后没有再试一次，直接放弃或者退回去了。
     detection_rule: {assertion_id: R3_retry_evidence, when: {fault_point_hit_once: true}}
     mapped_skill_ids: [failure_retry]
     human:
@@ -127,6 +143,7 @@ patterns:
   - pattern_id: retry_wrong_params
     label: 重试参数错误
     description: 确实重试了，但游标退回首页（偏移序列在故障页之后又出现 0）；耗时增加且分页永不收敛
+    plain: 试了，但试的不是出问题的那一步，等于白试一次。
     detection_rule: {assertion_id: R3_retry_evidence, when: {fault_then_moved_on: true}}
     mapped_skill_ids: [failure_retry]
     human:
@@ -136,6 +153,7 @@ patterns:
   - pattern_id: retry_exhausted
     label: 重试耗尽
     description: 同一故障页连续重试仍失败（最后一次仍是 error）；缺退避或重试上限设置不当
+    plain: 同一处反复试都失败，最后一次还是错——既没换办法，也没停手。
     detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_starts_with: [0, 10, 10], last_status: error}}
     mapped_skill_ids: [failure_retry]
     human:
@@ -148,6 +166,7 @@ patterns:
   - pattern_id: no_clarification
     label: 没问就动手
     description: 关键口径只在人那里（ask_policy 能问到），trace 里一次都没问，直接按猜测执行
+    plain: 关键说法只有人知道，你一次都没问，直接按猜的做了。
     detection_rule: {assertion_id: R6_ask_before_act, when: {call_count_of_first_step: 0}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -157,6 +176,7 @@ patterns:
   - pattern_id: clarified_too_late
     label: 做错了才问
     description: 已经先按猜测拉取/写入过，之后才去问口径；问是问了，但确认没有发生在动手之前
+    plain: 问是问了，但排在动手之后——先按猜的做完，发现不对才回头确认。
     detection_rule: {assertion_id: R6_ask_before_act, when: {sequence_out_of_order: true}}
     mapped_skill_ids: [multi_step_planning]
     human:
@@ -167,6 +187,7 @@ patterns:
   - pattern_id: param_out_of_schema
     label: 参数幻觉
     description: 调用中出现了 tools 未声明的参数名（additional_properties=false 时即违规）
+    plain: 调用时带了一个这个工具根本没有的选项。
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {extra_keys_against: tools}}
     mapped_skill_ids: [tool_param_validation]
     human:
@@ -176,6 +197,7 @@ patterns:
   - pattern_id: param_missing_required
     label: 漏传必填参数
     description: required=true 的参数未出现在调用中
+    plain: 调用时漏了必须填的那一项。
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {missing_required_against: tools}}
     mapped_skill_ids: [tool_param_validation]
     human:
@@ -185,6 +207,7 @@ patterns:
   - pattern_id: param_type_mismatch
     label: 参数类型错误
     description: 参数类型与声明不符（如 limit 传成字符串 "10"）
+    plain: 该填数字的地方填了文字（或者反过来）。
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {type_mismatch_against: tools}}
     mapped_skill_ids: [tool_param_validation]
     human:
@@ -194,6 +217,7 @@ patterns:
   - pattern_id: param_out_of_range
     label: 参数越界
     description: 取值超出 minimum/maximum（如试探超过页大小上限的 limit，触发 invalid_limit）
+    plain: 填的数超出了允许范围，比如一页要得比上限还多。
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {out_of_range_against: tools}}
     mapped_skill_ids: [tool_param_validation]
     human:
@@ -207,6 +231,7 @@ patterns:
   - pattern_id: task_crashed
     label: 任务崩溃
     description: final_status=crashed，Agent 未走完流程即异常终止
+    plain: 流程跑到一半异常终止，没走完。
     detection_rule: {assertion_id: R5_clean_exit, when: {final_status: crashed}}
     mapped_skill_ids: []
     human:
@@ -216,6 +241,7 @@ patterns:
   - pattern_id: task_timeout
     label: 任务超时
     description: final_status=timeout，超出调用时限
+    plain: 没在时限内跑完，被强制结束。
     detection_rule: {assertion_id: R5_clean_exit, when: {final_status: timeout}}
     mapped_skill_ids: []
     human:

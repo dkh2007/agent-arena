@@ -15,7 +15,9 @@ import org.json.JSONObject
  */
 data class FeynmanQuestion(val key: String, val text: String)
 
-data class FeynmanPattern(val label: String, val description: String)
+// plain 不是 description：description 是 judge 判定时读的清单（带 valid_count / fixture 这类词），
+// 页面上出现的那句是 plain。两个读者两种口径，字段名跟着词表走，避免下一次又把 judge 文本搬上来。
+data class FeynmanPattern(val label: String, val plain: String)
 
 data class FeynmanGap(
     val skillLabel: String,
@@ -83,7 +85,7 @@ fun parseFeynmanPrompt(text: String): FeynmanPrompt {
                 patterns = o.optJSONArray("patterns").mapObjects { p ->
                     FeynmanPattern(
                         label = p.optString("label"),
-                        description = p.optString("description"),
+                        plain = p.optString("plain"),
                     )
                 },
             )

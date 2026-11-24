@@ -25,7 +25,7 @@ from arena.feynman import (  # noqa: E402
     QUESTIONS,
     _fmt,
     build_prompt,
-    load_pattern_descriptions,
+    load_pattern_plains,
 )
 from arena.error_notes import FIELD_LABELS  # noqa: E402
 from arena.training import asks_of  # noqa: E402
@@ -82,13 +82,18 @@ def test_gap_labels_come_from_vocabulary(prompt):
 
 
 def test_pattern_explanations_are_verbatim_from_vocabulary(prompt):
-    descriptions = load_pattern_descriptions()
+    """「这个错法叫什么」逐字取自词表的 plain，不是 description。
+
+    description 是 judge 判定时读的清单（带 `valid_count`、`fixture` 这类内部词），
+    页面上用的是 plain。两者分开是刻意的：一个要精确到能判分，一个要人能读懂。
+    """
+    plains = load_pattern_plains()
     labels = load_pattern_labels()
     seen = 0
     for gap in prompt["gaps"]:
         for pattern in gap["patterns"]:
             assert pattern["label"] == labels[pattern["id"]]
-            assert pattern["description"] == descriptions[pattern["id"]]
+            assert pattern["plain"] == plains[pattern["id"]]
             seen += 1
     assert seen == 3
 
@@ -195,13 +200,52 @@ def test_mismatched_task_id_is_rejected(report):
     assert "对不上" in str(exc.value)
 
 
-def test_missing_pattern_description_is_an_error(report, task):
+def test_missing_pattern_plain_is_an_error(report, task):
     labels = load_pattern_labels()
-    descriptions = load_pattern_descriptions()
-    broken = dict(descriptions)
+    plains = load_pattern_plains()
+    broken = dict(plains)
     broken.pop("wrong_total_amount")
     with pytest.raises(FeynmanError):
-        build_prompt(report, task, pattern_labels=labels, pattern_descriptions=broken)
+        build_prompt(report, task, pattern_labels=labels, pattern_plains=broken)
+
+
+# 这几个词只要出现在页面上，学习者第一眼读到的就不是"你哪里错了"，而是内部代号。
+# 清单刻意短而硬：都是本仓真实用过的标识符，不写"看起来像技术的词"那种模糊判据。
+INTERNAL_IDENTIFIERS = (
+    "valid_count", "total_amount", "root_cause", "offending_line",
+    "report.json", "diagnosis.json", "test_inputs", "ask_policy",
+    "additional_properties", "final_status", "fixture", "offset",
+    "minimum", "maximum", "required", "crashed", "timeout",
+)
+
+
+def test_plain_has_no_internal_identifiers():
+    """给学习者看的那句话里不许出现字段名 / 文件名 / 枚举值。
+
+    这是「换成人话」这件事唯一的可机器判定的部分。没有它，"人话"就只是自己觉得像。
+    """
+    plains = load_pattern_plains()
+    offenders = {
+        pid: [w for w in INTERNAL_IDENTIFIERS if w in text]
+        for pid, text in plains.items()
+    }
+    offenders = {k: v for k, v in offenders.items() if v}
+    assert not offenders, f"这些 plain 里漏了内部词：{offenders}"
+
+
+def test_plain_is_not_just_the_judge_text():
+    """plain 与 description 必须是两句话。
+
+    description 是 judge 判定时读的清单，精确到能判分；把它原样搬到页面上，
+    学习者读到的就是"valid_count 与依据 fixture 剔除规则现算的条数不符"。
+    两条相同 ⇒ 这次拆分没有发生，只是换了个字段名。
+    """
+    from arena.error_notes import load_pattern_descriptions
+
+    descs = load_pattern_descriptions()
+    plains = load_pattern_plains()
+    same = [pid for pid, text in plains.items() if text == descs.get(pid, "").strip()]
+    assert not same, f"这些模式的 plain 与 description 一字不差：{same}"
 
 
 def test_unknown_skill_in_gap_is_an_error(report, task):
