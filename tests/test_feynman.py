@@ -27,6 +27,7 @@ from arena.feynman import (  # noqa: E402
     build_prompt,
     load_pattern_descriptions,
 )
+from arena.error_notes import FIELD_LABELS  # noqa: E402
 from arena.training import asks_of  # noqa: E402
 
 SAMPLE_REPORT = ROOT / "android" / "app" / "src" / "main" / "assets" / "sample-report.json"
@@ -108,7 +109,9 @@ def test_check_diffs_are_verbatim_from_report(prompt, report):
         expected_rows = raw.get(check["assertion_id"], [])
         assert len(check["diffs"]) == len(expected_rows)
         for got, want in zip(check["diffs"], expected_rows):
-            assert got["field"] == want["field"]
+            # 字段名在这一层就翻成中文（数字与写法不变）：词的唯一来源是
+            # error_notes.FIELD_LABELS，页面侧不再留映射表。
+            assert got["field"] == FIELD_LABELS.get(want["field"], want["field"])
             assert got["expected"] == str(want["expected"])
             assert got["actual"] == str(want["actual"])
 
@@ -135,7 +138,27 @@ def test_every_hint_has_content(prompt):
 
 
 def test_hint_keys_are_the_four_source_backed_ones(prompt):
-    assert [h["key"] for h in prompt["hints"]] == ["asks", "diffs", "patterns", "scene"]
+    """本样例报告只有三条来源：题目步骤、期望/实际、错法解释。
+
+    「当时现场」第四条依赖报告里的 `note`/`why`——按当前链路（执行器现算）重生成的
+    报告一个都不带，所以这里**不该**出现空壳。有 note 时它必须出现，见下一条。
+    """
+    assert [h["key"] for h in prompt["hints"]] == ["asks", "diffs", "patterns"]
+
+
+def test_scene_hint_appears_only_when_report_gives_note_or_why(report, task):
+    """「当时现场」是数据派生的：报告写了 note 才出现，没写就不许留空壳。"""
+    with_note = json.loads(json.dumps(report))
+    failed = next(a for a in with_note["assertions"] if a["state"] == "fail")
+    failed["note"] = "只统计了第一页 10 条，第二页从未成功拉取"
+    out = build_prompt(with_note, task)
+    scene = next(h for h in out["hints"] if h["key"] == "scene")
+    assert scene["lines"] == ["只统计了第一页 10 条，第二页从未成功拉取"]
+    blank = json.loads(json.dumps(report))
+    for assertion in blank["assertions"]:
+        assertion.pop("note", None)
+        (assertion.get("evidence") or {}).get("extra", {}).pop("why", None)
+    assert "scene" not in [h["key"] for h in build_prompt(blank, task)["hints"]]
 
 
 def test_pattern_hint_disappears_when_report_has_no_patterns(report, task):
@@ -210,7 +233,7 @@ def test_fmt_does_not_invent_precision(value, text):
 def test_diff_lines_keep_integer_as_integer(prompt):
     """反例守门：曾想统一 `%.2f`，那样「17 条」会变成「17.00 条」。"""
     rows = [row for check in prompt["checks"] for row in check["diffs"]]
-    assert {"field": "valid_count", "expected": "17", "actual": "9"} in rows
+    assert {"field": "有效条数", "expected": "17", "actual": "9"} in rows
     assert not any("17.00" in row["expected"] for row in rows)
 
 
@@ -231,16 +254,35 @@ def test_checklist_steps_are_verbatim_from_task(prompt, task):
 
 
 def test_checklist_missed_text_is_verbatim_from_report(prompt, report):
-    """「哪里说漏了」用报告里那句人话原文；报告没写就只留断言 id，不代写解释。"""
+    """「哪里说漏了」用报告里那句人话原文；报告没写就只留断言 id，不代写解释。
+
+    2026-11-24 起人话的主来源是 `pattern_notes`（按错误模式拼、带本次数字），
+    其次才是管线偶尔写下的 `note`。这条锁的是「逐字搬」，不是「搬哪一处」：
+    两种来源都必须原样出现，不许在这一层润色。
+    """
     misses = [item for item in prompt["checklist"] if item["kind"] == "missed"]
     by_key = {item["key"]: item for item in misses}
-    noted = [a for a in report["assertions"] if a.get("state") != "pass" and (a.get("note") or "").strip()]
-    bare = [a for a in report["assertions"] if a.get("state") != "pass" and not (a.get("note") or "").strip()]
-    assert noted, "这份样例报告至少要有一条带 note 的失败项，否则这条测试测不到东西"
-    for assertion in noted:
-        assert by_key[assertion["id"]]["text"] == assertion["note"].strip()
-    for assertion in bare:
-        assert by_key[assertion["id"]]["text"] == assertion["id"], "没有 note 时不许替它写一句解释"
+
+    def expected_text(assertion):
+        texts = [
+            str(n.get("text")).strip()
+            for n in (assertion.get("pattern_notes") or ())
+            if str(n.get("text") or "").strip()
+        ]
+        if texts:
+            return "；".join(texts)
+        note = assertion.get("note")
+        return note.strip() if isinstance(note, str) and note.strip() else assertion["id"]
+
+    explained = [
+        a for a in report["assertions"]
+        if a.get("state") != "pass" and expected_text(a) != a["id"]
+    ]
+    assert explained, "这份样例报告至少要有一条能说出人话的失败项，否则这条测试测不到东西"
+    for assertion in report["assertions"]:
+        if assertion.get("state") == "pass":
+            continue
+        assert by_key[assertion["id"]]["text"] == expected_text(assertion), assertion["id"]
 
 
 def test_checklist_missed_diffs_match_the_outer_checks(prompt):

@@ -16,6 +16,15 @@
 #   - detection_rule.when 记的是**母本 dbg-001 的判据形状**（给人读，说明这条规则长什么样）；
 #     真正执行的是各任务 YAML 里的 `error_pattern_detection.cases`（偏移、状态码、阈值随变体不同）。
 #     两者不一致时以任务 YAML 为准——那里是执行器的输入，这里是说明书。
+#   - human：给学习者看的人话模板（2026-11-24 新增），由 `src/arena/error_notes.py` 渲染。
+#     * 一条模式至少一条，最后一条必须无 `when`（兜底）；其余分支用 `when` 表达
+#       「证据长这样时换一句话」（如整份 JSON 解析失败 vs 只缺一个字段）。
+#     * `{占位符}` 只许引用本次断言 `evidence` 里真实存在的字段；填不满就抛错降级，
+#       **不许写默认值凑数**。证据里缺的结构化字段，正确做法是回执行器补（见
+#       `_check_call_params` 的 value/bound），不是在模板里编。
+#     * `hint` 是动作句（这类错下次怎么改），不带数据、不承诺结果；页面上显示为一行小字。
+#     * 句子面向学生，不出现断言 id、字段名、分类来源这类内部词——字段名经
+#       `error_notes.FIELD_LABELS` 翻中文，查不到就报错。
 
 patterns:
   # ---- R1 交付物存在性（交付纪律，不属于当前三技能）----
@@ -24,12 +33,18 @@ patterns:
     description: 任务要求写入 /workspace/report.json，但该文件不存在
     detection_rule: {assertion_id: R1_file_exists, when: {exists: false}}
     mapped_skill_ids: []
+    human:
+      - text: 评测时没有找到该交的那个文件——这次等于没交付。
+        hint: 任务要求的产物要写到指定路径，别只把内容打印在对话里。
 
   - pattern_id: empty_output_file
     label: 产出空文件
     description: 文件存在但内容为空，等价于未交付
     detection_rule: {assertion_id: R1_file_exists, when: {non_empty: false}}
     mapped_skill_ids: []
+    human:
+      - text: 文件交上去了，但里面是空的（{size} 字节），按没交处理。
+        hint: 先把内容拼完再落盘，别写到一半就返回。
 
   # ---- R2 结果正确性（多步执行完整性）----
   - pattern_id: wrong_valid_count
@@ -37,18 +52,30 @@ patterns:
     description: valid_count 与依据 fixture 剔除规则现算的条数不符（漏剔或多剔）；具体条数见各任务的 test_inputs.expected
     detection_rule: {assertion_id: R2_report_correct, when: {valid_count_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - text: 有效条数你填了 {actual}，按剔除规则应为 {expected}，相差 {delta} 条。
+        hint: 先定清「哪些算无效」，再逐页数，别边翻边估。
 
   - pattern_id: wrong_total_amount
     label: 总额算错
     description: total_amount 超出 0.01 容差；常见于把无效订单金额计入，或分页漏拉导致少算
     detection_rule: {assertion_id: R2_report_correct, when: {total_amount_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - text: 合计金额你填了 {actual}，正确是 {expected}，相差 {delta}。
+        hint: 汇总前确认每页都拉到了；金额只加有效行。
 
   - pattern_id: report_missing_field
     label: 报告缺字段
     description: report.json 未包含 valid_count 或 total_amount（或字段名拼错）
     detection_rule: {assertion_id: R2_report_correct, when: {missing_fields: [valid_count, total_amount]}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - when: {parse_error: true}
+        text: 交上去的内容不是合法 JSON（{parse_kind}），判分时一个字段都没读出来。
+        hint: 先让报告能被 JSON 解析器读出来，再谈数字对不对。
+      - text: 报告里缺「{fields}」，判分读不到就没法对上。
+        hint: 字段名要与任务要求一字不差，拼错等于没写。
 
   # ---- R2 定位结论正确性（第二套骨架 tpl-bug-locate；round-86 / B-05b）----
   # 与上面三条的关系：同样是"结论对不对"，但报告骨架比的是**汇总数字**，定位骨架比的是
@@ -59,37 +86,61 @@ patterns:
     description: diagnosis.json 的 root_cause 与日志最后一条 ERROR 对应的取值不一致（见各任务 scenario 的取值域）
     detection_rule: {assertion_id: R2_diagnosis_correct, when: {root_cause_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - text: 根因判成了「{actual}」，按任务给的取值规则应为「{expected}」。
+        hint: 把日志里最后一条报错读完再归类，别按异常类型的第一印象填。
 
   - pattern_id: wrong_offending_line
     label: 出错行定位错
     description: 行号与该函数体内符合定位规则的那一行不符；常见于定位到别的函数，或取错第一条匹配
     detection_rule: {assertion_id: R2_diagnosis_correct, when: {offending_line_mismatch: true}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - text: 出错行填了第 {actual} 行，按源码规则应为第 {expected} 行。
+        hint: 定位要落在报错的那个函数体内，取第一处符合模式的行。
 
   - pattern_id: diagnosis_missing_field
     label: 定位结论缺字段
     description: diagnosis.json 未包含 root_cause 或 offending_line（或字段名拼错）
     detection_rule: {assertion_id: R2_diagnosis_correct, when: {missing_fields: [root_cause, offending_line]}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - when: {parse_error: true}
+        text: 诊断结论不是合法 JSON（{parse_kind}），两项都读不到。
+        hint: 先把结论写成能被解析的 JSON 再提交。
+      - text: 诊断结论里缺「{fields}」，判分读不到这一项。
+        hint: 结论要两项都给：根因 + 行号。
 
   # ---- R3 失败重试（本任务的核心考点）----
   - pattern_id: no_retry
     label: 未重试
     description: 首次失败后没有再对**故障页**（同一 offset）发起调用，直接放弃或退回首页；判定不依赖具体页号
-    detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_equals: [0, 10]}}
+    detection_rule: {assertion_id: R3_retry_evidence, when: {fault_point_hit_once: true}}
     mapped_skill_ids: [failure_retry]
+    human:
+      - when: {calls: 0}
+        text: 整个过程一次工具调用都没发出去。
+        hint: 先把要做的事调起来，再谈做得对不对。
+      - text: 出问题的那一步没有再来一次——判据要求的 {total} 步只走成 {matched} 步。
+        hint: 失败的那一次要用同样的参数再发一次，别退回开头。
 
   - pattern_id: retry_wrong_params
     label: 重试参数错误
     description: 确实重试了，但游标退回首页（偏移序列在故障页之后又出现 0）；耗时增加且分页永不收敛
-    detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_equals: [0, 10, 0]}}
+    detection_rule: {assertion_id: R3_retry_evidence, when: {fault_then_moved_on: true}}
     mapped_skill_ids: [failure_retry]
+    human:
+      - text: 重试了，但没重试出问题的那一处——判据要求的 {total} 步只走成 {matched} 步。
+        hint: 重试要落在失败的那一页／那一次调用上，换位置重来等于没重试。
 
   - pattern_id: retry_exhausted
     label: 重试耗尽
     description: 同一故障页连续重试仍失败（最后一次仍是 error）；缺退避或重试上限设置不当
     detection_rule: {assertion_id: R3_retry_evidence, when: {offsets_starts_with: [0, 10, 10], last_status: error}}
     mapped_skill_ids: [failure_retry]
+    human:
+      - text: 同一处连试 {fault_hits} 次都失败，最后一次仍是错。
+        hint: 连续失败时加退避或换策略，别原地重发。
 
   # ---- R6 先澄清再行动（第三套骨架 tpl-ask-first）----
   # 这两条的分界线是**顺序**，不是"问没问"：问得晚与没问，给学习者的下一步动作不同
@@ -99,12 +150,18 @@ patterns:
     description: 关键口径只在人那里（ask_policy 能问到），trace 里一次都没问，直接按猜测执行
     detection_rule: {assertion_id: R6_ask_before_act, when: {call_count_of_first_step: 0}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - text: 一次都没向人确认口径就动手了——判据要求的 {total} 步只走成 {matched} 步。
+        hint: 口径只在人那里时，先问清楚再动手。
 
   - pattern_id: clarified_too_late
     label: 做错了才问
     description: 已经先按猜测拉取/写入过，之后才去问口径；问是问了，但确认没有发生在动手之前
     detection_rule: {assertion_id: R6_ask_before_act, when: {sequence_out_of_order: true}}
     mapped_skill_ids: [multi_step_planning]
+    human:
+      - text: 问是问了，但排在动手之后——判据要求的 {total} 步只走成 {matched} 步。
+        hint: 把确认放在第一次动手之前，哪怕只问一句。
 
   # ---- R4 工具参数校验 ----
   - pattern_id: param_out_of_schema
@@ -112,24 +169,39 @@ patterns:
     description: 调用中出现了 tools 未声明的参数名（additional_properties=false 时即违规）
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {extra_keys_against: tools}}
     mapped_skill_ids: [tool_param_validation]
+    human:
+      - text: 第 {call_index} 次调用 {tool} 时带了个工具没有的参数「{param}」（本次共 {count} 处参数问题）。
+        hint: 调用前对照工具声明，只传声明过的参数名。
 
   - pattern_id: param_missing_required
     label: 漏传必填参数
     description: required=true 的参数未出现在调用中
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {missing_required_against: tools}}
     mapped_skill_ids: [tool_param_validation]
+    human:
+      - text: 第 {call_index} 次调用 {tool} 时漏了必填参数「{param}」（本次共 {count} 处参数问题）。
+        hint: 必填参数一个都不能少，缺了这次调用就是白跑。
 
   - pattern_id: param_type_mismatch
     label: 参数类型错误
     description: 参数类型与声明不符（如 limit 传成字符串 "10"）
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {type_mismatch_against: tools}}
     mapped_skill_ids: [tool_param_validation]
+    human:
+      - text: 第 {call_index} 次调用 {tool} 的参数「{param}」类型不对：应为{expected_type}，给的是{actual_type}（本次共 {count} 处参数问题）。
+        hint: 数字就传数字，别传成字符串——多一对引号就是另一种类型。
 
   - pattern_id: param_out_of_range
     label: 参数越界
     description: 取值超出 minimum/maximum（如试探超过页大小上限的 limit，触发 invalid_limit）
     detection_rule: {assertion_id: R4_no_param_hallucination, when: {out_of_range_against: tools}}
     mapped_skill_ids: [tool_param_validation]
+    human:
+      - when: {bound_kind: minimum}
+        text: 第 {call_index} 次调用 {tool} 的参数「{param}」给了 {value}，低于下限 {bound}（本次共 {count} 处参数问题）。
+        hint: 先看工具声明的取值范围，别用试探的方式找边界。
+      - text: 第 {call_index} 次调用 {tool} 的参数「{param}」给了 {value}，超过上限 {bound}（本次共 {count} 处参数问题）。
+        hint: 先看工具声明的取值范围，别用试探的方式找边界。
 
   # ---- R5 退出状态（任务完成度，不属于当前三技能）----
   - pattern_id: task_crashed
@@ -137,9 +209,15 @@ patterns:
     description: final_status=crashed，Agent 未走完流程即异常终止
     detection_rule: {assertion_id: R5_clean_exit, when: {final_status: crashed}}
     mapped_skill_ids: []
+    human:
+      - text: 流程跑到一半崩了，没走到正常结束——这次不算完成。
+        hint: 先让流程能跑到正常结束，再谈结果对不对。
 
   - pattern_id: task_timeout
     label: 任务超时
     description: final_status=timeout，超出调用时限
     detection_rule: {assertion_id: R5_clean_exit, when: {final_status: timeout}}
     mapped_skill_ids: []
+    human:
+      - text: 跑到一半超时被掐断了，没走到正常结束。
+        hint: 查一下是不是有调用卡住了，或同样的动作重复了太多遍。

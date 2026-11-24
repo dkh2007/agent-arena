@@ -35,6 +35,8 @@ attribution_policy   四态 × {是否计入掌握度, 是否产出错误模式}
 report_attribution   整份开关（派生值）：本次报告能否计入掌握度 / 产出错误模式
 process_fact         流程事实：这道题要不要过程、这次交没交（round-70 / P2，中性记录）
 assertions[]         逐条断言：layer / weight / state / skill_id / error_patterns / evidence
+                     + title（中文标题）与 pattern_notes（每条错误模式一句人话，仅 fail 项，见 §4.2）
+display_labels       用到的 id 的中文名（skills / patterns / fields），页面只许读它，不许自带映射
 skill_gaps[]         技能缺口聚合（fail 且能归到技能的断言）
 unattributed_patterns[]  有错误模式但两条归因路都走不通的失败——不进 skill_gaps，但不许丢
 notes[]              可选。报告出现"未覆盖情况"时必须在这里说明，不许静默
@@ -230,6 +232,39 @@ v1 的分母是 6，语义是"缺数据也不缩小分母"，方向正确。但�
 ### 4.1 `evidence` 的约定
 
 schema 只校验"是对象且含 observed/expected"，语义要求写在 YAML 的 `error_pattern_detection.probe` 里。理由：同一种断言的证据形状会随任务演化，把它写死在 schema 里会让 schema 三个月后没法改。
+
+### 4.2 `title` 与 `pattern_notes`：给学生的两行字（2026-11-24 新增）
+
+```json
+{
+  "id": "R2_report_correct",
+  "title": "结论是否与判据一致",
+  "state": "fail",
+  "error_patterns": ["wrong_valid_count", "wrong_total_amount"],
+  "pattern_notes": [
+    {
+      "pattern_id": "wrong_valid_count",
+      "text": "有效条数你填了 9，按剔除规则应为 17，相差 8 条。",
+      "hint": "先定清「哪些算无效」，再逐页数，别边翻边估。"
+    }
+  ]
+}
+```
+
+- `title`：按断言 `type` 翻的中文名（`arena.error_notes.TYPE_LABELS`，5 种类型各一条）。
+  页面拿它当主标题。**原来是直接印 `R2_report_correct`**，学生读到的第一批字全是机器码。
+- `pattern_notes`：每条错误模式一句人话 + 一句动作。模板在
+  `docs/error-patterns-v0.yaml` 的 `human` 字段（19 条），**挂在模式上而不是题目上**——
+  挂题目会随题量线性增长（24 题写得完，40 题就要写 40 遍）。
+- `text` 里的每个数字必须来自本条 `evidence`（`diffs` / `violations` / `extra.matched_steps`
+  等），由 `arena/error_notes.py` 按槽填。**槽填不满就抛 `NoteError`**，报告层退回词表
+  `description` 并标 `degraded: true`——不静默丢、不现编。`tests/test_error_notes.py`
+  要求五份夹具零降级，出现降级即说明模板与执行器脱节。
+- 只有 `state=fail` 才有 `pattern_notes`；通过项不解释「错在哪」（它没错）。
+- 两个键都是**可选**的：旧报告没有它们，前端要能退回 `id` 与空数组。
+
+字段名的中文叫法走 `display_labels.fields`（`valid_count` → 有效条数），
+页面画差异行时查这张表，不再自带映射（2026-11-24 前 Android 的 `fieldLabel` 是第二处真相源）。
 
 ---
 

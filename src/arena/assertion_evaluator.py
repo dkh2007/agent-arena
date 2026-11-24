@@ -1288,16 +1288,25 @@ def _check_call_params(params: dict, tool: dict) -> list[dict]:
         # 2) type：类型不符就不再做 range（Python 3 里 str 与 int 比较会抛 TypeError）
         if not _param_type_ok(value, p["type"]):
             violations.append({"kind": "type_mismatch", "param": name,
-                               "detail": f"期望 {p['type']}，实得 {type(value).__name__}"})
+                               "detail": f"期望 {p['type']}，实得 {type(value).__name__}",
+                               # 2026-11-24：`detail` 是给工程师读的一句话，报告要拼人话
+                               # 就得把两端拆成字段（见 error_notes.py 的 TEMPLATE 纪律
+                               # 「只许拼证据里有的字段」）。加字段不改判定语义。
+                               "expected_type": p["type"],
+                               "actual_type": type(value).__name__})
             continue
         # 3) range：只对数值取值比较（string 参数没有 minimum/maximum 语义）
         if _finite_number(value):
             if "minimum" in p and value < p["minimum"]:
                 violations.append({"kind": "out_of_range", "param": name,
-                                   "detail": f"{value!r} < minimum {p['minimum']!r}"})
+                                   "detail": f"{value!r} < minimum {p['minimum']!r}",
+                                   "value": value, "bound": p["minimum"],
+                                   "bound_kind": "minimum"})
             if "maximum" in p and value > p["maximum"]:
                 violations.append({"kind": "out_of_range", "param": name,
-                                   "detail": f"{value!r} > maximum {p['maximum']!r}"})
+                                   "detail": f"{value!r} > maximum {p['maximum']!r}",
+                                   "value": value, "bound": p["maximum"],
+                                   "bound_kind": "maximum"})
     return violations
 
 

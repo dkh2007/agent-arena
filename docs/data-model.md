@@ -106,6 +106,7 @@
 | description | TEXT | 判定口径 |
 | detection_rule | JSON | 检测来源：原子断言 id / judge prompt id / trace 分析规则 id，三者其一 |
 | mapped_skill_ids | JSON（FK 数组） | **错误模式 → 技能缺口映射表（自研核心）**，一个模式可映射多个缺口 |
+| human（仅词表，不入库） | 数组 | 给学习者看的人话模板：`{when?, text, hint}`。槽只读本次 `evidence` 里的字段，填不满即抛错降级（`arena/error_notes.py`）。**只是教学文案，不参与判定，也不给 judge 模型看** |
 | created_at | DATETIME | |
 
 > **词表已落文件**：`docs/error-patterns-v0.yaml`（round-4 新增，14 个模式）。此前"label 全局唯一、先入词表"

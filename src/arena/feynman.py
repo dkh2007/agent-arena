@@ -43,6 +43,7 @@ from .diagnosis_report import (
     load_skill_labels,
     VOCAB_PATH,
 )
+from .error_notes import FIELD_LABELS
 
 
 class FeynmanError(ValueError):
@@ -91,7 +92,11 @@ def _fmt(value: Any) -> str:
 
 
 def _diff_lines(assertion: Mapping[str, Any]) -> list[dict[str, str]]:
-    """一条失败断言的「期望 vs 实际」。只取报告里已有的 diffs，不自己比较。"""
+    """一条失败断言的「期望 vs 实际」。只取报告里已有的 diffs，不自己比较。
+
+    字段名在这里就翻成中文（`valid_count` → 有效条数）：词的来源只有
+    `error_notes.FIELD_LABELS` 一处，页面侧（含 Android）不再自带映射表。
+    """
     evidence = assertion.get("evidence") or {}
     extra = evidence.get("extra") or {}
     rows: list[dict[str, str]] = []
@@ -99,9 +104,10 @@ def _diff_lines(assertion: Mapping[str, Any]) -> list[dict[str, str]]:
         if not isinstance(diff, Mapping):
             continue
         # 不再往每行里塞 assertion_id：外层 check 已经带着它，同一事实存两处必然漂移。
+        field = str(diff.get("field"))
         rows.append(
             {
-                "field": str(diff.get("field")),
+                "field": FIELD_LABELS.get(field, field),
                 "expected": _fmt(diff.get("expected")),
                 "actual": _fmt(diff.get("actual")),
             }
@@ -124,6 +130,22 @@ def _scene_lines(assertion: Mapping[str, Any]) -> list[str]:
     if isinstance(why, str) and why.strip():
         lines.append(why.strip())
     return lines
+
+
+def _human_note(assertion: Mapping[str, Any]) -> str:
+    """「这次没过」那句话：优先 `pattern_notes`（人话模板产出），退回 `note`。
+
+    两句都不带时返回空串，由调用方回退成断言 id——不在这里补一句解释。
+    """
+    texts = [
+        str(n.get("text")).strip()
+        for n in (assertion.get("pattern_notes") or ())
+        if isinstance(n, Mapping) and str(n.get("text") or "").strip()
+    ]
+    if texts:
+        return "；".join(texts)
+    note = assertion.get("note")
+    return note.strip() if isinstance(note, str) else ""
 
 
 def build_prompt(
@@ -189,21 +211,28 @@ def build_prompt(
     missed: list[dict[str, Any]] = []
     for assertion in failed:
         lines = _diff_lines(assertion)
+        # 标题取报告下发的中文名（`title`）；老报告没有这个键时才退回断言 id。
+        # 页面上的字一律是给人读的，`R2_report_correct` 只在没有中文名时出现。
+        title = str(assertion.get("title") or assertion.get("id"))
         checks.append(
             {
                 "assertion_id": assertion.get("id"),
+                "title": title,
                 "diffs": lines,
                 "scene": _scene_lines(assertion),
             }
         )
         # 清单条目：报告给了人话说明就用那句（逐字），没给就只留断言 id。
         # 不在这一层替失败项写解释——写了就等于页面自己下了结论。
-        note = assertion.get("note")
+        # 2026-11-24 起优先取 `pattern_notes`：那是按错误模式拼出来的、带本次数字的句子
+        # （报告页与这里读同一份），比管线偶尔才写的 `note` 稳得多——实测按当前链路重算的
+        # 报告一个 `note` 都不带，只认 `note` 会让这一栏退化成一行机器码。
+        note = _human_note(assertion)
         missed.append(
             {
                 "key": str(assertion.get("id")),
                 "kind": "missed",
-                "text": note.strip() if isinstance(note, str) and note.strip() else str(assertion.get("id")),
+                "text": note if note else str(assertion.get("id")),
                 "diffs": lines,
             }
         )
@@ -217,7 +246,7 @@ def build_prompt(
         )
 
     diff_rows = [
-        (check["assertion_id"], row) for check in checks for row in check["diffs"]
+        (check["title"], row) for check in checks for row in check["diffs"]
     ]
     if diff_rows:
         hints.append(
@@ -225,8 +254,8 @@ def build_prompt(
                 "key": "diffs",
                 "label": "把期望和实际念一遍",
                 "lines": [
-                    f"{assertion_id} · {row['field']}：期望 {row['expected']}，实际 {row['actual']}"
-                    for assertion_id, row in diff_rows
+                    f"{title} · {row['field']}：期望 {row['expected']}，实际 {row['actual']}"
+                    for title, row in diff_rows
                 ],
             }
         )

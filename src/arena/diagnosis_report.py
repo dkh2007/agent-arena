@@ -28,6 +28,11 @@ from typing import Any
 import jsonschema
 import yaml
 
+try:  # 作为包被 import
+    from . import error_notes
+except ImportError:  # 作为独立脚本运行（python src/arena/diagnosis_report.py）
+    import error_notes  # type: ignore[no-redef]
+
 STATES = ("pass", "fail", "blocked", "unscored")
 GATE, CREDIT = "gate", "credit"
 TRACE_TYPE_PREFIX = "trace_"
@@ -188,6 +193,7 @@ def _display_labels(
     pattern_ids: set[str],
     skill_labels: dict[str, str] | None = None,
     pattern_labels: dict[str, str] | None = None,
+    field_ids: set[str] | None = None,
 ) -> dict[str, dict[str, str]]:
     """把本报告实际用到的 id 翻成中文，随报告一起下发。
 
@@ -211,10 +217,21 @@ def _display_labels(
         raise ReportError(
             f"错误模式 {missing_patterns} 出现在断言里，但 {VOCAB_PATH.name} 里没有对应的 label"
         )
-    return {
+    out = {
         "skills": {k: skill_labels[k] for k in sorted(skill_ids)},
         "patterns": {k: pattern_labels[k] for k in sorted(pattern_ids)},
     }
+    # 报告字段名（valid_count / offending_line …）的中文叫法，同理下发：
+    # Android 侧原先自己带了一份 fieldLabel 映射表，与 error_notes.FIELD_LABELS
+    # 是第二处真相源。键集合 = 本份报告 diffs 里出现的字段（没出现的不下发）。
+    if field_ids:
+        unknown = sorted(set(field_ids) - set(error_notes.FIELD_LABELS))
+        if unknown:
+            raise ReportError(
+                f"字段 {unknown} 出现在差异里，但 error_notes.FIELD_LABELS 里没有中文叫法"
+            )
+        out["fields"] = {k: error_notes.FIELD_LABELS[k] for k in sorted(field_ids)}
+    return out
 
 
 def _clean_number(value: float) -> int | float:
@@ -792,6 +809,20 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
         for layer, spec in specs
     ]
 
+    # ── 人话：标题 + 失败项的错法解释（2026-11-24）────────────────────────
+    # 页面上原来把 `R2_report_correct` 当标题、把 `wrong_total_amount` 当标签，
+    # 学生读到的第一批字全是机器码。这里补两层：
+    #   title         按断言 type 翻成中文（"结论是否与判据一致"）
+    #   pattern_notes 按 pattern_id 从词表 human 模板拼一句带数字的人话
+    # 拼不出来（证据形状变了）的那条降级成词表 description 并标 degraded，
+    # 不静默消失、也不现编——`tests/test_error_notes.py` 要求 19 条零降级。
+    templates = error_notes.load_templates()
+    descriptions = error_notes.load_pattern_descriptions()
+    for a in assertions:
+        a["title"] = error_notes.TYPE_LABELS.get(a["type"], a["type"])
+        if a["state"] == "fail" and a["error_patterns"]:
+            a["pattern_notes"] = error_notes.notes_for(a, templates, descriptions)
+
     # ── 第一段：门禁 ──────────────────────────────────────────────────────
     gate_assertions = [a for a in assertions if a["layer"] == GATE]
     disqualifying = [a["id"] for a in gate_assertions if a["state"] == "fail"]
@@ -972,6 +1003,14 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
     report["display_labels"] = _display_labels(
         skill_ids=set(gaps) | {a["skill_id"] for a in assertions if a.get("skill_id")},
         pattern_ids={code for a in assertions for code in (a.get("error_patterns") or ())},
+        # 差异行里的字段名（valid_count → 有效条数）也一并下发：页面原先自带一份
+        # fieldLabel 映射表，与 error_notes.FIELD_LABELS 是第二处真相源。
+        field_ids={
+            d.get("field")
+            for a in assertions
+            for d in (((a.get("evidence") or {}).get("extra") or {}).get("diffs") or ())
+            if isinstance(d, dict) and d.get("field")
+        },
     )
     # B-04e：把「这份报告按哪版判据判的」压进报告本身。**无条件写**——只要走了
     # build_report()，就一定有一份 rubric 在起作用，没有"有时有指纹"的情形。
