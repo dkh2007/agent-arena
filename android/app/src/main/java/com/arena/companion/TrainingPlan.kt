@@ -21,6 +21,18 @@ data class TrainingNext(
     val asks: List<String>,
 )
 
+/**
+ * 「练完回来看哪一条」里的一条。
+ *
+ * `id` 只用于与报告对账，**不上屏**；屏上是 `title`（如「结论是否与判据一致」）。
+ * 2026-11-24 之前这一页直接印 `R2_report_correct`——报告页当天已经改掉同一处问题，
+ * 这一页是最后一处机器码。
+ */
+data class FocusAssertion(
+    val id: String,
+    val title: String,
+)
+
 data class TrainingPlan(
     val taskId: String?,
     val familyId: String?,
@@ -29,7 +41,7 @@ data class TrainingPlan(
     val status: String,          // has_next / top_of_family / no_family
     val next: TrainingNext?,
     val criterion: String,
-    val focusAssertions: List<String>,
+    val focusAssertions: List<FocusAssertion>,
 ) {
     val hasNext: Boolean get() = status == "has_next" && next != null
 }
@@ -41,7 +53,7 @@ fun loadTrainingPlan(ctx: Context): TrainingPlan? = try {
     null
 }
 
-fun parseTrainingPlan(text: String): TrainingPlan {
+fun parseTrainingPlan(text: String): TrainingPlan? {
     val root = JSONObject(text)
     val nextJson = root.optJSONObject("next")
     val asks = nextJson?.optJSONArray("asks").toStringList()
@@ -60,7 +72,17 @@ fun parseTrainingPlan(text: String): TrainingPlan {
             )
         },
         criterion = root.optString("criterion"),
-        focusAssertions = root.optJSONArray("focus_assertions").toStringList(),
+        focusAssertions = (0 until (root.optJSONArray("focus_assertions")?.length() ?: 0)).mapNotNull { i ->
+            val o = root.optJSONArray("focus_assertions")!!.optJSONObject(i) ?: return null
+            val id = o.optString("id")
+            val title = o.optString("title")
+            // 缺标题就**整份拒绝**（返回 null），不丢掉这一条了事：
+            // 丢掉会让页面显示「没有需要回看的目标」，而实际是数据缺口——那是句假话。
+            // 整份为 null 时页面说「没有训练单」，说的是实话。
+            // 这里刻意不留文字消息：它不是给学习者看的话，不该进用户可见文案总表。
+            if (id.isBlank() || title.isBlank()) return null
+            FocusAssertion(id, title)
+        },
     )
 }
 

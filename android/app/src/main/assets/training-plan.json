@@ -1,8 +1,14 @@
 {
   "task_id": "dbg-001-order-report",
   "focus_assertions": [
-    "R2_report_correct",
-    "R3_retry_evidence"
+    {
+      "id": "R2_report_correct",
+      "title": "结论是否与判据一致"
+    },
+    {
+      "id": "R3_retry_evidence",
+      "title": "关键步骤是否走到"
+    }
   ],
   "criterion": "在下一档任务上，门禁项全过且积分项全过（得分率 1.00、未判不合格）才算练会；只过一部分，回来看这份报告里没消掉的缺口。",
   "family_id": "order-report",

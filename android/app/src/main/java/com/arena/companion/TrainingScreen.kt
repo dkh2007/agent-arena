@@ -187,7 +187,7 @@ private fun CriterionCard(criterion: String) {
 }
 
 @Composable
-private fun FocusCard(assertions: List<String>) {
+private fun FocusCard(assertions: List<FocusAssertion>) {
     SurfaceCard {
         Text("练完回来看哪一条", style = TEyebrow)
         Spacer(Modifier.height(8.dp))
@@ -195,15 +195,17 @@ private fun FocusCard(assertions: List<String>) {
             Text("这份报告没有失败的断言，所以没有需要回看的目标。", style = TSmall)
             return@SurfaceCard
         }
-        assertions.forEach { id ->
+        assertions.forEach { a ->
             Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(6.dp).clip(PillShape).background(Fail))
                 Spacer(Modifier.width(8.dp))
-                Text(id, style = TSmall, color = Ink)
+                // 只上屏 title（「结论是否与判据一致」）；id 留在 JSON 里做对账。
+                // 2026-11-24 之前这里印的是 R2_report_correct。
+                Text(a.title, style = TSmall, color = Ink)
             }
         }
         Spacer(Modifier.height(2.dp))
-        Text("这些是当前报告里没通过的断言 id，重测后回来对照是否消掉。", style = TMicro)
+        Text("这些是当前报告里没通过的判据，重测后回来对照是否消掉。", style = TMicro)
     }
 }
 

@@ -34,6 +34,9 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
+from .diagnosis_report import load_task as load_merged_task
+from .error_notes import TYPE_LABELS
+
 DEFAULT_CATALOG = Path(__file__).resolve().parents[2] / "tasks"
 
 # 「练会」的判据。改这句等于改产品承诺，须同步 docs/android-ui-handoff.md 与计划书。
@@ -146,11 +149,47 @@ def asks_of(task: Mapping[str, Any], limit: int = 4) -> list[str]:
     return out
 
 
+class TrainingError(ValueError):
+    """训练单组装失败：不同来源的数据对不上，宁可不产出也不发一张错位的单子。"""
+
+
+def _focus_rows(
+    ids: Iterable[str], titles: Mapping[str, str] | None
+) -> list[dict[str, str]]:
+    """把断言 id 列表变成 `[{id, title}]`。
+
+    只带 id 的话，页面就只能印 `R2_report_correct`——学习者读到的第一批字是机器码
+    （报告页 2026-11-24 已经改过，这一页是同一条问题的最后一处）。
+    标题必须由调用方给出：本模块不知道断言的 type，也不该为了翻一个词去猜。
+
+    未知 id 直接抛错，不回退成 id——回退会让「少配了一个标题」表现成「页面显示英文」，
+    看起来像样式问题，实际是数据缺口。
+    """
+    rows: list[dict[str, str]] = []
+    labels = titles or {}
+    unknown: list[str] = []
+    for aid in ids:
+        if not isinstance(aid, str):
+            continue
+        title = labels.get(aid)
+        if not title:
+            unknown.append(aid)
+            continue
+        rows.append({"id": aid, "title": title})
+    if unknown:
+        raise TrainingError(
+            f"这些断言没有中文标题：{unknown}——调用方必须给出 assertion_titles，"
+            "不许在页面上回退成 id"
+        )
+    return rows
+
+
 def drill_brief(
     task: Mapping[str, Any],
     catalog: Iterable[Mapping[str, Any]],
     *,
     focus_assertions: Iterable[str] = (),
+    assertion_titles: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """组装一张训练单。返回的每个字段都能追到任务 YAML 或本模块的显式规则。"""
     catalog = list(catalog)
@@ -161,7 +200,9 @@ def drill_brief(
         # 与报告对账用：页面必须确认「训练单讲的任务」就是「报告判的任务」，
         # 两张数据来自不同文件，对不上时宁可报错也不显示一张错位的训练单。
         "task_id": task.get("task_id"),
-        "focus_assertions": [a for a in focus_assertions if isinstance(a, str)],
+        "focus_assertions": _focus_rows(
+            [a for a in focus_assertions if isinstance(a, str)], assertion_titles
+        ),
         "criterion": CRITERION,
     }
     if pos is None:
@@ -212,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
 
     task = yaml.safe_load(Path(args.task).read_text(encoding="utf-8"))
     focus = [x.strip() for x in args.focus.split(",") if x.strip()]
+    titles: dict[str, str] = {}
 
     if args.from_report:
         report = json.loads(Path(args.from_report).read_text(encoding="utf-8"))
@@ -221,12 +263,34 @@ def main(argv: list[str] | None = None) -> int:
                 f"报告判的是 {reported!r}，训练单却按 {task.get('task_id')!r} 生成：两份数据对不上，拒绝产出\n"
             )
             return 2
+        # 标题优先取报告里的：报告是判定时生成的，与屏幕上那份报告逐字一致；
+        # 从任务定义重新翻一遍有可能在改过 TYPE_LABELS 之后与报告不同。
+        for assertion in report.get("assertions") or ():
+            aid, title = assertion.get("id"), assertion.get("title")
+            if isinstance(aid, str) and isinstance(title, str) and title.strip():
+                titles[aid] = title.strip()
         for gap in report.get("skill_gaps") or ():
             for assertion_id in gap.get("failed_assertions") or ():
                 if assertion_id not in focus:
                     focus.append(assertion_id)
 
-    brief = drill_brief(task, load_catalog(args.catalog), focus_assertions=focus)
+    missing = [a for a in focus if a not in titles]
+    if missing:
+        # `--focus` 手写或用旧报告（没有 title 字段）时，从合并后的任务 rubric 补。
+        # 必须走 load_task：直接 yaml.safe_load 只看到变体的覆盖部分，会漏掉继承来的断言。
+        merged = load_merged_task(Path(args.task))
+        for spec in (merged.get("rubric_gate") or []) + (merged.get("rubric_credit") or []):
+            label = TYPE_LABELS.get(spec.get("type"))
+            if label:
+                titles.setdefault(spec["id"], label)
+
+    try:
+        brief = drill_brief(
+            task, load_catalog(args.catalog), focus_assertions=focus, assertion_titles=titles
+        )
+    except TrainingError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
     text = json.dumps(brief, ensure_ascii=False, indent=2) + "\n"
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")

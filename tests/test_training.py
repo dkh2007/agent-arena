@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from arena.training import (  # noqa: E402
     CRITERION,
+    TrainingError,
     asks_of,
     drill_brief,
     family_position,
@@ -156,16 +157,44 @@ def test_asks_respects_limit(by_id):
 
 
 def test_drill_brief_has_next_carries_task_and_criterion(by_id):
+    titles = {"R2_report_correct": "结论是否与判据一致", "R3_retry_evidence": "关键步骤是否走到"}
     brief = drill_brief(by_id["dbg-001-order-report"], list(by_id.values()),
-                        focus_assertions=["R2_report_correct", "R3_retry_evidence"])
+                        focus_assertions=["R2_report_correct", "R3_retry_evidence"],
+                        assertion_titles=titles)
     assert brief["status"] == "has_next"
     assert brief["family_id"] == "order-report"
     assert (brief["level"], brief["levels_total"]) == (1, 3)
     assert brief["next"]["task_id"] == "dbg-003-purchase-report"
     assert brief["next"]["asks"], "下一档的要求不许为空——空卡片比没有更糟"
     assert brief["criterion"] == CRITERION
-    assert brief["focus_assertions"] == ["R2_report_correct", "R3_retry_evidence"]
+    assert brief["focus_assertions"] == [
+        {"id": "R2_report_correct", "title": "结论是否与判据一致"},
+        {"id": "R3_retry_evidence", "title": "关键步骤是否走到"},
+    ]
     assert brief["task_id"] == "dbg-001-order-report", "训练单必须带 task_id，供页面与报告对账"
+
+
+def test_focus_assertion_without_title_is_loud(by_id):
+    """没有标题就必须抛错，不许回退成 id。
+
+    回退的后果不是红，是**页面上出现 `R2_report_correct`**：看起来像样式问题，
+    实际是数据缺口，而且会一直缺下去——没人会为「页面上多了个英文单词」提 bug。
+    """
+    with pytest.raises(TrainingError, match="中文标题"):
+        drill_brief(by_id["dbg-001-order-report"], list(by_id.values()),
+                    focus_assertions=["R2_report_correct"],
+                    assertion_titles={"R3_retry_evidence": "关键步骤是否走到"})
+
+
+def test_focus_assertion_rows_keep_input_order(by_id):
+    """顺序与输入一致：复习时要按报告里失败的先后回看，不是按字典序。"""
+    titles = {"R3_retry_evidence": "关键步骤是否走到", "R2_report_correct": "结论是否与判据一致"}
+    brief = drill_brief(by_id["dbg-001-order-report"], list(by_id.values()),
+                        focus_assertions=["R3_retry_evidence", "R2_report_correct"],
+                        assertion_titles=titles)
+    assert [row["id"] for row in brief["focus_assertions"]] == [
+        "R3_retry_evidence", "R2_report_correct",
+    ]
 
 
 def test_drill_brief_top_of_family_says_so(by_id):
