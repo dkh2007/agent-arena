@@ -17,10 +17,10 @@
     {
       "skill_id": "multi_step_planning",
       "skill": "多步任务分解",
-      "kind": "variant",
-      "kind_label": "同族换一道",
-      "task_id": "dbg-003-purchase-report",
-      "task_title": "采购单金额核对报告（调试向 · 变体）",
+      "kind": "replay",
+      "kind_label": "原题重做",
+      "task_id": "ask-001-report-handover",
+      "task_title": "订单汇总交接（信息不全，先确认再动手）",
       "due": "2026-11-24T18:36:00+08:00",
       "overdue_days": 0,
       "overdue_text": "今天到期"

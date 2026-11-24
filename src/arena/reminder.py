@@ -31,6 +31,10 @@ from . import scheduler as sch
 
 # 四种复习形态的中文说法。**不认识就报错，不糊一个默认值**——
 # 糊一个"复习"会让新加的形态在页面上长得跟旧的一样，没人会发现少了一类。
+#
+# 2026-11-24：自动调度目前只产 `replay` / `fault_injection`（见 `scheduler.AUTO_KINDS`）。
+# `variant` 这一条留着给 B-09——它要"挑题"能力才成立：标签说的是"同族换一道"，
+# 而调度现在的 `task_id` 永远是刚做过那道，两者并存就是页面上的假话。
 KIND_LABELS = {
     "variant": "同族换一道",
     "fault_injection": "重做上次出错的那一页",

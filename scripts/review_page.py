@@ -36,7 +36,19 @@ TZ = timezone(timedelta(hours=8))
 
 
 def _demo_items(at: datetime) -> list[dict]:
-    """三份到期项 + 一份未到期项：够看出"逾期 / 今天到期 / 排到明天 / 还没到"四种情况。"""
+    """三份到期项 + 一份未到期项：够看出"逾期 / 今天到期 / 排到明天 / 还没到"四种情况。
+
+    **`kind` 不是随便写的，它由题目自身的 `fault_injection` 决定**（与
+    `scheduler.schedule_submission(task_has_fault=...)` 同一条规则）：题带故障 ⇒
+    `fault_injection`（重做上次出错的那一页），不带 ⇒ `replay`（原题重做）。
+    当前题库 27 道里 24 道带故障、3 道不带（交接族），所以演示里必须有一条 `replay`
+    才能覆盖到那个分支——用 `ask-001` 这道不带故障的题。
+
+    2026-11-24 这里出过错：原来 r-2 写的是 `kind=variant` + `task_id=dbg-003`。
+    `variant` 的标签是"同族换一道"，而调度填的 `task_id` 永远是刚做过那道——
+    演示数据手工指到族内另一道题，正好把"标签与行为不符"这个 bug 遮住了。
+    守卫在 `tests/test_reminder_asset.py`：逐条比对 kind 与题目属性。
+    """
     def iso(delta_days: float) -> str:
         return (at + timedelta(days=delta_days)).isoformat(timespec="seconds")
 
@@ -45,13 +57,13 @@ def _demo_items(at: datetime) -> list[dict]:
          "kind": "fault_injection", "task_id": "dbg-001-order-report",
          "due": iso(-2.2), "status": "pending"},
         {"review_id": "r-2", "user_id": "demo", "skill_id": "multi_step_planning",
-         "kind": "variant", "task_id": "dbg-003-purchase-report",
+         "kind": "replay", "task_id": "ask-001-report-handover",
          "due": iso(-0.1), "status": "pending"},
         {"review_id": "r-3", "user_id": "demo", "skill_id": "failure_retry",
          "kind": "fault_injection", "task_id": "ret-002-second-page-fault",
          "due": iso(-0.02), "status": "pending"},
         {"review_id": "r-4", "user_id": "demo", "skill_id": "tool_param_validation",
-         "kind": "variant", "task_id": "prm-002-ceiling-5-long",
+         "kind": "fault_injection", "task_id": "prm-002-ceiling-5-long",
          "due": iso(3), "status": "pending"},
     ]
 

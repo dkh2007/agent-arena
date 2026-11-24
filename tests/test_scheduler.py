@@ -241,11 +241,40 @@ def test_no_evidence_skill_gets_no_item():
 
 
 def test_item_kind_follows_the_task_fault_flag():
-    """题本身带故障注入 ⇒ `fault_injection`，否则 `variant`。两种都由 `tasks` 表决定。"""
+    """题本身带故障注入 ⇒ `fault_injection`，否则 `replay`。
+
+    2026-11-24 更正：原来是 `variant`。`variant` 的词表标签是「同族换一道」，
+    而本模块给 `task_id` 填的是 `sub.task_id`——刚提交那道题。两者并存就是页面上
+    的假话（标着换一道、点进去还是刚才那道）。本模块不挑题，只能产"再做同一道"。
+    """
     report = _report("raw-fake-retry")
     assert {i.kind for i in sch.schedule_submission(report, user_id=USER, at=AT,
                                                     task_has_fault=True).items} == {"fault_injection"}
-    assert {i.kind for i in sch.schedule_submission(report, user_id=USER, at=AT).items} == {"variant"}
+    assert {i.kind for i in sch.schedule_submission(report, user_id=USER, at=AT).items} == {"replay"}
+
+
+def test_item_kind_never_contradicts_its_task_id():
+    """不变式：kind 与 task_id 必须自洽。
+
+    这是 2026-11-24 那个 bug 的回归。当时 `kind=variant`（同族换一道）+ `task_id=当前题`
+    同时出现，页面显示「同族换一道（订单数据核对报告）」，用户点进去发现还是同一道。
+    演示数据手工把 task_id 写成族内另一道题（`dbg-003`），把这个矛盾遮住了——假绿。
+    所以这里不查标签文案，直接查**两个字段之间的关系**：只要本模块不挑题，
+    就不许出现"换一道"的 kind。
+    """
+    report = _report("raw-fake-retry")
+    submitted = report["submission"]["task_id"]
+    for fault in (False, True):
+        result = sch.schedule_submission(report, user_id=USER, at=AT, task_has_fault=fault)
+        assert result.items, "夹具应当产出复习项，否则这条什么都没测到"
+        for item in result.items:
+            assert item.kind in sch.AUTO_KINDS, f"产出了不可自动决定的形态 {item.kind!r}"
+            assert item.kind != "variant", (
+                "不挑题却给了『同族换一道』——task_id 会指回刚做过的那道，页面在说假话"
+            )
+            assert item.task_id == submitted, (
+                f"复习项应对准刚提交的题 {submitted!r}，实际是 {item.task_id!r}"
+            )
 
 
 def test_review_id_depends_on_due_so_rerun_is_idempotent():

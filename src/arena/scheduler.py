@@ -45,13 +45,16 @@
 
 ## 不做什么（写清边界，避免下轮重猜）
 
-- **不挑题**。`task_id` 默认留空，由排程层（B-09）决定"用哪个变体复习"。理由：
-  挑题要按家族、难度、错误热度、截止时间四个因子权衡，而其中三个还没有数据。
+- **只填当前题，不挑题**。`task_id` 取 `sub.task_id`——刚提交的那道，所以复习形态只能是
+  "再做同一道"（`replay` / `fault_injection`）。真正的"同族换一道"（`variant`）要按家族、
+  难度、错误热度、截止时间四个因子权衡，而其中三个还没有数据，交给排程层（B-09）决定。
   现在硬塞一个"挑同族下一个变体"的规则，会被 B-09 整个推翻。
-- **不产出 `timed` / `replay` 两种 kind**。它们不是自动调度能决定的
-  （`timed` 要人设时限、`replay` 要人指定原题）。目前只产出 `variant`
-  与 `fault_injection`（后者由 `tasks.fault_injection` 列决定：题本身带故障注入，
-  复习它就等于重练"出错后怎么办"）。
+  2026-11-24 前这里写"`task_id` 默认留空"，与代码不符（代码一直填 `sub.task_id`），已更正。
+- **不产出 `variant` / `timed`**。`variant` 要挑题能力（同上），`timed` 要人设时限。
+  目前只产出 `replay`（原题重做）与 `fault_injection`（后者由 `tasks.fault_injection` 列决定：
+  题本身带故障注入，复习它就等于重练"出错后怎么办"）。
+  2026-11-24 前这里写"只产出 `variant` 与 `fault_injection`"——而 `variant` 的词表标签是
+  "同族换一道"，与实际的同一道题冲突，已更正。
 - **不衰减 P**。见 `mastery.py` 的说明：唯一时间轴是复习间隔，而"实际复习完成时刻"
   要等复习层真的开始跑才有数据。本模块只把间隔算出来、把 due 存下去。
 """
@@ -74,8 +77,15 @@ RATING_THRESHOLDS: tuple[tuple[float, int], ...] = ((0.9, 4), (0.7, 3), (0.4, 2)
 # 低于所有阈值时的评分（Again：下次 ASAP 再来一次）。
 RATING_FLOOR = 1
 
-# 现在能自动产出的两种复习形态。另外两种（timed / replay）要人工介入，见文件头"不做什么"。
-AUTO_KINDS = ("variant", "fault_injection")
+# 现在能自动产出的两种复习形态。`variant` / `timed` 要挑题能力（B-09 未做），见文件头"不做什么"。
+#
+# 2026-11-24 更正：这里原来是 ("variant", "fault_injection")，错在把 `variant` 当成了
+# "同族换一道"。实际上本模块给 `task_id` 填的是 `sub.task_id`——**刚提交的那道题**。
+# 于是页面上出现"同族换一道（订单数据核对报告）"却指回同一道题，用户点进去会发现
+# 还是刚才那道，判定系统坏了。演示数据当时手工把 task_id 写成族内另一道题（dbg-003），
+# 正好把这个矛盾遮住——假绿。改成 `replay`（词表里本来就有"原题重做"）后，
+# kind 与 task_id 自洽；`variant` 留待 B-09 真能挑题时再启用。
+AUTO_KINDS = ("replay", "fault_injection")
 
 REVIEW_STATUSES = ("pending", "done", "skipped")
 
@@ -314,7 +324,9 @@ def schedule_submission(
     instant = mastery.parse_instant(stamp)
 
     task = task_id if task_id is not None else sub.get("task_id")
-    kind = "fault_injection" if task_has_fault else "variant"
+    # `fault_injection`：重做上次出错的那一页（同一道题，坑还在）。
+    # `replay`：原题重做——因为 `task_id` 取的就是当前题，这是唯一自洽的说法。
+    kind = "fault_injection" if task_has_fault else "replay"
     if kind not in AUTO_KINDS:  # 防御：将来改 kind 分支时不要漏
         raise SchedulerError(f"未知的复习形态 {kind}，自动调度只产出 {AUTO_KINDS}")
 

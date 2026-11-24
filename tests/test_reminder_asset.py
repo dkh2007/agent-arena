@@ -204,6 +204,60 @@ def test_today_order_is_the_scheduler_order():
     assert data["generated_at"] == ASSET_AT
 
 
+def test_kind_agrees_with_the_task_fault_flag():
+    """`kind` 必须由题目自身的 `fault_injection` 决定，**不是手写字段**。
+
+    规则与 `scheduler.schedule_submission(task_has_fault=...)` 同源：
+    题带故障 ⇒ `fault_injection`（重做上次出错的那一页），不带 ⇒ `replay`（原题重做）。
+
+    2026-11-24 这里的演示数据写过 `kind=variant`（标签"同族换一道"）并把 `task_id`
+    指到族内另一道题，刚好把「标签说换一道、调度却指回原题」这个 bug 遮住——典型的
+    假绿。所以这条比对的是 **kind 与题目属性**，不是文案顺不顺眼。
+    """
+    import importlib.util
+
+    from arena import authoring
+    from arena.reminder import KIND_LABELS
+
+    data = _asset()
+    spec = importlib.util.spec_from_file_location("review_page_under_test", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    items = mod._demo_items(datetime.fromisoformat(ASSET_AT))
+
+    # 显式数条数：演示数据缩水到 1 条时，下面的循环会静默通过。
+    assert len(items) == 4, f"演示数据应有 4 条（3 到期 + 1 未到期），实际 {len(items)}"
+
+    kinds = set()
+    for item in items:
+        path = ROOT / "tasks" / f"{item['task_id']}.yaml"
+        assert path.exists(), f"演示数据指向了不存在的题：{item['task_id']!r}"
+        task = authoring.load_task(path)
+        has_fault = bool(task.get("fault_injection"))
+        expect = "fault_injection" if has_fault else "replay"
+        assert item["kind"] == expect, (
+            f"{item['task_id']} 的 kind={item['kind']!r}，"
+            f"但题目 fault_injection={has_fault} ⇒ 应为 {expect!r}。"
+            "kind 由题目属性决定，手写会漂"
+        )
+        assert item["kind"] in scheduler.AUTO_KINDS, (
+            f"演示数据用了 {item['kind']!r}，但自动调度只产 {scheduler.AUTO_KINDS}"
+            "——`variant` 要挑题能力（B-09），现在用了就是页面在说假话"
+        )
+        kinds.add(item["kind"])
+
+    assert kinds == {"fault_injection", "replay"}, (
+        f"演示数据没覆盖到两种形态（实际 {kinds}）：replay 这一支只出现在不带故障的题上，"
+        "漏掉它就等于没有演示过那个分支"
+    )
+
+    # 页面上的中文标签必须来自同一张表：两处各写一份会漂（"原题重做"写成"再做一遍"也没人拦）
+    for row in data["today"]:
+        assert row["kind_label"] == KIND_LABELS[row["kind"]], (
+            f"kind_label 与 kind 不同源：{row['kind']!r} → {row['kind_label']!r}"
+        )
+
+
 def test_empty_flag_matches_the_list():
     data = _asset()
     assert data["empty"] is (len(data["today"]) == 0)
