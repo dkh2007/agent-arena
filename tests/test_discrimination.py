@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 from pathlib import Path
@@ -109,6 +110,41 @@ def _drive(task: dict, flaw: str):
         th.join(timeout=5)
 
 
+def _wrong_value(value):
+    """把期望值改成一个**必然判错**的值。类型保持一致，否则测的就成了类型错而不是值错。"""
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value + 1
+    return "__wrong__"
+
+
+def _partial_forms(task: dict, artifacts: dict) -> dict[str, dict]:
+    """「部分正确」：答对一半——只改期望里的**一个**字段，其余保持满分。
+
+    这个形态 2026-11-24 之前一直没做（B-38 记的缺口），理由是 `wrong_filter` 整份算错，
+    没有"半对"形态。其实不需要改参考 Agent：R2 是 `json_field_equals`，
+    产物就是一份 JSON，改其中一个键即可，而且**纯计算、不起服务**。
+
+    为什么要它：区分度不只是"能不能判 0 分"，还要看**诊断粒度**。
+    学习者答对一个字段、错一个字段时，如果系统报"结论错"而不说错在哪个字段，
+    复习建议就会连带把已经会的那件事也推一遍。
+    """
+    spec = next(
+        c for c in task["rubric_credit"] if c.get("type") == "json_field_equals"
+    )
+    target = spec["target"]
+    expected = dict(spec["expected"])
+    out: dict[str, dict] = {}
+    for i, field in enumerate(expected):
+        data = json.loads(artifacts[target])
+        data[field] = _wrong_value(expected[field])
+        mutated = dict(artifacts)
+        mutated[target] = json.dumps(data, ensure_ascii=False)
+        out[f"partial_{i + 1}"] = mutated
+    return out
+
+
 def _signature(report: dict) -> tuple:
     bad = tuple(
         sorted((a["id"], a["state"]) for a in report["assertions"] if a["state"] != "pass")
@@ -144,14 +180,38 @@ def _forms_of(task: dict) -> dict[str, dict]:
     if single and single not in forms:
         run = _drive(task, single)
         forms[single] = _evaluate(task, run.trace, run.artifacts)
-    return forms
+
+    # 部分正确**不进 forms**：它验的是另一件事（见 `test_partial_answers_are_diagnosed_field_by_field`）。
+    # 定位族的 `wrong_line` 本身只错一个字段（行号），所以它的签名必然与「改行号」那个 partial 相同——
+    # 那是同一个缺陷的两种造法，不是区分度缺口。放进与骨架形态一起比，会要求它们必须不同，等于测错东西。
+    partials = {
+        name: _evaluate(task, trace, mutated)
+        for name, mutated in _partial_forms(task, artifacts).items()
+    }
+    return forms, partials
+
+
+_CACHE: dict[str, tuple[dict[str, dict], dict[str, dict]]] = {}
+
+
+def _data(stem: str) -> tuple[dict[str, dict], dict[str, dict]]:
+    """一道题的 (骨架形态, 部分正确形态)。两个 fixture 共用一次计算——每道题只跑一遍 Agent。"""
+    if stem not in _CACHE:
+        _CACHE[stem] = _forms_of(dr.load_task(ROOT / "tasks" / f"{stem}.yaml"))
+    return _CACHE[stem]
 
 
 @pytest.fixture(scope="module")
 def matrix() -> dict[str, dict[str, dict]]:
     """{题 stem: {形态: 报告}}。整个模块只算一遍——每次形态都要起服务跑 Agent，不便宜。"""
     assert TASK_FILES, "tasks/ 下没有任务，下面的用例会全部空过"
-    return {path.stem: _forms_of(dr.load_task(path)) for path in TASK_FILES}
+    return {path.stem: _data(path.stem)[0] for path in TASK_FILES}
+
+
+@pytest.fixture(scope="module")
+def partials() -> dict[str, dict[str, dict]]:
+    """{题 stem: {partial_N: 报告}}——只答对一半的形态。"""
+    return {path.stem: _data(path.stem)[1] for path in TASK_FILES}
 
 
 @pytest.mark.parametrize("path", TASK_FILES, ids=lambda p: p.stem)
@@ -260,3 +320,34 @@ def test_absent_output_and_empty_output_are_different_patterns(matrix):
         }
         assert no_art == {"no_output_file"}, f"{stem}: 无产物归因 {no_art}"
         assert empty == {"empty_output_file"}, f"{stem}: 空文件归因 {empty}"
+
+
+@pytest.mark.parametrize("path", TASK_FILES, ids=lambda p: p.stem)
+def test_partial_answers_are_diagnosed_field_by_field(path, partials):
+    """答对一半时，必须指到**具体哪个字段**错，而不是"结论错"一把抓。
+
+    R2 是 `json_field_equals`，期望里有两个字段。只改其中一个（另一个保持正确）时：
+    - 失败的断言只能有 R2 一条（流程没坏、参数没错）；
+    - 错误模式只能有**一个**，且不同字段错报出的模式必须不同。
+
+    为什么要单独验：复习层按错误模式推题。若两个字段错都报"结论错"，
+    学习者已经会的那一半也会被再推一遍；反过来，若报错字段报错了，
+    他会去补一件本来就没问题的事——比不推还糟。
+    """
+    forms = partials[path.stem]
+    assert len(forms) >= 2, f"{path.stem}: 期望里不到两个字段，部分正确无从验起：{list(forms)}"
+
+    task = dr.load_task(ROOT / "tasks" / f"{path.stem}.yaml")
+    r2_id = next(c["id"] for c in task["rubric_credit"] if c.get("type") == "json_field_equals")
+
+    blamed: dict[str, set[str]] = {}
+    for name, report in sorted(forms.items()):
+        failed = [a["id"] for a in report["assertions"] if a["state"] != "pass"]
+        assert failed == [r2_id], f"{path.stem}/{name}: 只改一个字段却打掉了 {failed}"
+        patterns = {p for a in report["assertions"] for p in (a.get("error_patterns") or ())}
+        assert len(patterns) == 1, f"{path.stem}/{name}: 只错一个字段却报 {sorted(patterns)}"
+        blamed[name] = patterns
+
+    assert len({frozenset(v) for v in blamed.values()}) == len(blamed), (
+        f"{path.stem}: 不同字段错报了同一个模式，等于没指到字段：{blamed}"
+    )

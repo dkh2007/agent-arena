@@ -127,6 +127,8 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
    **不要回到「每题手写 5 份 JSON」的老路**：`fixtures/raw-*.json` 手写会漂，
    `raw-empty` 的产物其实是空对象（它是「0 次调用的哨兵」），导致 `empty_output_file` 零覆盖。
    现在 trace 由 `reference_agent` 真跑、产物缺失由 `assemble_raw` 组装，与题内容无关，零成本。
+   另有一条「部分正确」判据（B-41）：只改 R2 期望里的一个字段，**模式必须指到那个字段**——
+   它验的是诊断粒度，不进形态矩阵（定位族的 `wrong_line` 本身就是只错一个字段）。
 4. 基础设施只做便宜修补，不加新抽象。判据改动后按 `docs/RUNBOOK.md` 跑批。
 
 ## 7. 已知坑（都真实踩过，重犯 = 退回）
