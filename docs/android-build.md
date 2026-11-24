@@ -6,7 +6,7 @@
 ## 0. 这套东西现在是什么状态
 
 - 交付形态（2026-11-20 定）：**Android 原生**，Kotlin + Jetpack Compose。
-- 现在已有**三页**：报告页、训练单页、费曼复述页（数据全部来自 `assets/` 下三个 JSON，离线可渲染）。
+- 现在已有**四页**：报告页、训练单页、费曼复述页、复习提醒页（数据全部来自 `assets/` 下四个 JSON，离线可渲染）。
   界面上不留任何调试入口——2026-11-20 曾有一张「探活后端」卡（点一下打印 `127.0.0.1:8080`），
   外部评审指出这会让评委翻到最后一屏时看到开发者信息，已删除，探活改到电脑侧用 `curl`。
 - 费曼复述页：**只有文字输入**，并且是「先交、锁住、再解锁对照」——提交前页面上只有题目本身，
@@ -14,7 +14,17 @@
   理由与恢复条件写在 `docs/android-ui-handoff.md` §4.6。
   截图见 `docs/images/feynman-recall.png`、`feynman-hint-locked.png`、`feynman-commit-dialog.png`、
   `feynman-unlocked.png`、`feynman-checklist.png`、`feynman-hint-open.png`。
-- 复习提醒页**还没写**——按"一小步一验证"往下加。
+- 复习提醒页（2026-11-24）：入口在报告页页尾「今日复习」卡，清单页只摆位置——不排序、不截断、
+  不改写文案，因为「今天给几项」由后端 `scheduler.take_daily()` 唯一决定。数据来自
+  `assets/reminder.json`，**必须用命令重生成，不许手改**：
+
+  ```bash
+  python scripts/review_page.py --at 2026-11-24T21:00:00+08:00 \
+      --out android/app/src/main/assets/reminder.json
+  ```
+
+  `tests/test_reminder_asset.py` 拿同一个 `at` 重算一遍逐字段比对，手改或过期都会红。
+  `--at` 写死是有意的：asset 是快照，页面顶部会显示这一时刻（跟报告页显示评测时间同一条纪律）。
 
 ## 1. 环境（本机实测，单位：真的有/真的没有）
 
@@ -199,10 +209,16 @@ adb shell "uiautomator dump /sdcard/u.xml" && adb shell "cat /sdcard/u.xml" > u.
 
 1. `./gradlew.bat assembleDebug` 输出 `BUILD SUCCESSFUL`，且 `app-debug.apk` 存在。
 2. **模拟器**上装得上、打得开，报告页渲染出真实字段（得分率 0.25、有效得分 1/权重合计 4、2 个技能缺口、5 条断言）。截图见 `docs/images/android-report-page.png`。
-3. 三页都能进：报告 →「下一步」两个按钮分别进训练单 / 费曼复述；费曼页能走完「提交前（对照锁着）→ 提交确认 → 提交后（清单解锁）」三步，提示弹层在提交前只有一条、提交后四条。存档见 `docs/images/feynman-*.png`。
+3. 四页都能进：报告 →「下一步」两个按钮分别进训练单 / 费曼复述，页尾「今日复习」卡进提醒页；费曼页能走完「提交前（对照锁着）→ 提交确认 → 提交后（清单解锁）」三步，提示弹层在提交前只有一条、提交后四条。存档见 `docs/images/feynman-*.png`。
 4. **真机**（荣耀 400 Pro）能装上、点开不崩 —— 这一步与第 3 条分开：界面正确性由模拟器证明，安装可行性由真机证明。
 5. 可选（**命令行为准**）：电脑侧 `adb reverse tcp:8080 tcp:8080` 后 `curl http://127.0.0.1:8080/healthz` 返回 200（离线演示不依赖它）。App 内不设探活按钮。
 
 状态（2026-11-21）：第 1、2、3 条已过（模拟器 arena35，实拍见 `docs/images/`）；
 第 4 条因荣耀 WinUSB 驱动问题暂无法用 adb 装，改用「直接传 APK 手动安装」验收；
 第 5 条待后端联调时验。语音与手写已删，不再有待验项。
+
+状态（2026-11-24，复习提醒页）：第 1 条已过（`assembleDebug` 成功，1m06s，APK 内 `assets/reminder.json`
+与源文件逐字节一致）；**第 2、3 条未过——本机当前没有连接任何设备**（`adb devices` 为空），
+所以提醒页还没有实拍。这一页的判据暂时由 `tests/test_reminder_asset.py` 12 条顶着：
+asset 与 `build_reminder()` 现算结果逐字段一致、字段类型与 Kotlin 读取方式匹配、顺序来自 `take_daily`。
+装上设备后按第 3 条补一次点击走查与截图。

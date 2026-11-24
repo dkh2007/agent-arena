@@ -22,17 +22,17 @@ import androidx.core.view.WindowCompat
 /**
  * 入口。
  *
- * 三页：诊断报告 → 训练单 → 费曼复述。子页一律返回报告页。
+ * 四页：诊断报告 → 训练单 / 费曼复述 / 今日复习。子页一律返回报告页。
  * 仍用状态机而不是导航组件：页面之间没有回退栈需求（不存在 A→B→C→B），
  * 引入 navigation-compose 会多一个依赖和一份路由表，收益为负。
  * 等出现「从提醒直接深链到某份报告」时再换。
  *
- * 页面只读 `assets/` 下三个 JSON，不发任何网络请求。
+ * 页面只读 `assets/` 下四个 JSON，不发任何网络请求。
  * 联调后端在电脑侧完成（端口转发 + `curl`），不在学习者界面里留调试入口——
  * 页面上出现本机回环地址，评委看到的就是「没做完」。
  */
 class MainActivity : ComponentActivity() {
-    private enum class Screen { Report, Training, Feynman }
+    private enum class Screen { Report, Training, Feynman, Reminder }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
                 val report = remember { loadSampleReport(ctx) }
                 val plan = remember { loadTrainingPlan(ctx) }
                 val feynman = remember { loadFeynmanPrompt(ctx) }
+                val reminder = remember { loadReminder(ctx) }
                 var screen by remember { mutableStateOf(Screen.Report) }
 
                 BackHandler(enabled = screen != Screen.Report) { screen = Screen.Report }
@@ -65,8 +66,10 @@ class MainActivity : ComponentActivity() {
                         Screen.Report -> ReportScreen(
                             modifier = Modifier.padding(inner),
                             plan = plan,
+                            reminder = reminder,
                             onOpenTraining = { screen = Screen.Training },
                             onOpenFeynman = { screen = Screen.Feynman },
+                            onOpenReminder = { screen = Screen.Reminder },
                         )
                         Screen.Training -> TrainingScreen(
                             modifier = Modifier.padding(inner),
@@ -78,6 +81,11 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(inner),
                             prompt = feynman,
                             reportTaskId = report?.taskId,
+                            onBack = { screen = Screen.Report },
+                        )
+                        Screen.Reminder -> ReminderScreen(
+                            modifier = Modifier.padding(inner),
+                            reminder = reminder,
                             onBack = { screen = Screen.Report },
                         )
                     }

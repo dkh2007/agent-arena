@@ -1,0 +1,33 @@
+{
+  "generated_at": "2026-11-24T21:00:00+08:00",
+  "cap": 2,
+  "due_total": 3,
+  "today": [
+    {
+      "skill_id": "tool_param_validation",
+      "skill": "工具参数校验",
+      "kind": "fault_injection",
+      "kind_label": "重做上次出错的那一页",
+      "task_id": "dbg-001-order-report",
+      "task_title": "订单数据核对报告（调试向）",
+      "due": "2026-11-22T16:12:00+08:00",
+      "overdue_days": 2,
+      "overdue_text": "逾期 2 天"
+    },
+    {
+      "skill_id": "multi_step_planning",
+      "skill": "多步任务分解",
+      "kind": "variant",
+      "kind_label": "同族换一道",
+      "task_id": "dbg-003-purchase-report",
+      "task_title": "采购单金额核对报告（调试向 · 变体）",
+      "due": "2026-11-24T18:36:00+08:00",
+      "overdue_days": 0,
+      "overdue_text": "今天到期"
+    }
+  ],
+  "deferred": 1,
+  "empty": false,
+  "headline": "今天 2 项要复习",
+  "notice": "另有 1 项排到明天——一天不塞太多，它们不会丢"
+}

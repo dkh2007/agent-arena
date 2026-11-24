@@ -44,18 +44,21 @@ import androidx.compose.ui.unit.sp
 /**
  * 诊断报告页（结构版）。
  *
- * 布局顺序固定：身份 → 总分 → 缺口 → 逐条断言 → 过程材料 → 判定说明 → 下一步 → 数据来源。
+ * 布局顺序固定：身份 → 总分 → 缺口 → 逐条断言 → 过程材料 → 判定说明 → 下一步 → 今日复习 → 数据来源。
  * 所有数值直接取自 Report 对象，页面不做任何计算或换算。
  *
- * 「下一步」卡是页尾唯一的行动号召：它读的是 training-plan.json（族 + 下一档），
+ * 「下一步」卡是页尾的行动号召：它读的是 training-plan.json（族 + 下一档），
  * 不是页面自己想的建议。没有训练单时整块不出现，不写"敬请期待"。
+ * 「今日复习」卡只显示后端算好的标题与条数，点进去看清单；没有提醒数据时整块不出现。
  */
 @Composable
 fun ReportScreen(
     modifier: Modifier = Modifier,
     plan: TrainingPlan? = null,
+    reminder: Reminder? = null,
     onOpenTraining: () -> Unit = {},
     onOpenFeynman: () -> Unit = {},
+    onOpenReminder: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val report = remember { loadSampleReport(ctx) }
@@ -97,6 +100,7 @@ fun ReportScreen(
         item { ProcessBanner(report.processMissing) }
         item { NotesCard(report.notes) }
         plan?.let { item { NextStepCard(it, onOpenTraining, onOpenFeynman) } }
+        reminder?.let { item { ReminderEntryCard(it, onOpenReminder) } }
         item { ProvenanceCard(report) }
     }
 }
@@ -525,6 +529,35 @@ private fun NextStepCard(p: TrainingPlan, onOpen: () -> Unit, onSpeak: () -> Uni
                 Spacer(Modifier.height(6.dp))
                 Text("排不出前后档，所以这里不给「练哪道」的建议。", style = TSmall)
             }
+        }
+    }
+}
+
+/**
+ * 今日复习入口。只搬后端算好的句子与条数——
+ * "今天 2 项要复习" / "今天你设成了不复习" / "今天没有要复习的" 是三种不同的话，
+ * 页面不在这里重新拼一句，也不按 0 条就自动改口。
+ */
+@Composable
+private fun ReminderEntryCard(r: Reminder, onOpen: () -> Unit) {
+    SurfaceCard {
+        Text("今日复习", style = TEyebrow)
+        Spacer(Modifier.height(8.dp))
+        Text(r.headline, style = TH2)
+        r.notice?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, style = TSmall)
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier
+                .clip(PillShape)
+                .border(1.dp, Line, PillShape)
+                .clickable(onClick = onOpen)
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("看清单 →", fontSize = 12.5.sp, color = Ink2, fontWeight = FontWeight.Medium)
         }
     }
 }

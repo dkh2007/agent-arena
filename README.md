@@ -89,6 +89,9 @@ python scripts/new_task.py --check ret-008-xxx         # 只查这一道，实�
 python scripts/review_page.py                                   # 内置演示数据（不联网、不留库）
 python scripts/review_page.py --db arena.db --user s1            # 读真实库
 python scripts/review_page.py --at 2026-11-22T21:00:00+08:00     # 把「现在」钉死，便于对照
+python scripts/review_page.py --json                             # 打成 JSON（页面接线用）
+python scripts/review_page.py --at 2026-11-24T21:00:00+08:00 \
+    --out android/app/src/main/assets/reminder.json              # 重生成 Android 页的数据
 ```
 
 输出是页面要显示的**数据**（`src/arena/reminder.py` 的 `build_reminder`），不是页面：
@@ -103,6 +106,9 @@ python scripts/review_page.py --at 2026-11-22T21:00:00+08:00     # 把「现在�
 三条口径写在代码里、也有测试盯着：每日上限来自用户设置（默认 2），看不完的项**不删**、
 但必须在页面上被点名；`cap=0` 说的是「今天你设成了不复习」，跟「今天没有要复习的」是两句话；
 逾期按整天算，今天到期就写「今天到期」。
+
+Android 提醒页（`ReminderScreen.kt`）只摆位置：顺序就是这份 JSON 的顺序，页面不重排、不截断、
+不改写标题。`tests/test_reminder_asset.py` 拿同一个 `at` 重算一遍逐字段对账，asset 过期或手改都会红。
 
 ## 开发流程
 

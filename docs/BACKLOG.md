@@ -1398,8 +1398,19 @@
     合成一句会把"你自己关掉了"读成"平台没给我"；
   - 逾期按**整天**算，今天到期写"今天到期"而不是"逾期 0.9 天"；
   - 文案不许出现 `review_id` / `pending` / `skill_id`（`_check_plain` 拦），技能名缺词表条目直接报错、不露英文 id。
-  **仍未做**：Compose 页面本身（摆在 Android 第五页，接线取后端 JSON）。届时应直接消费 `build_reminder()` 的返回结构，
-  不要把排序/上限逻辑抄进 Kotlin——那会变成第二真相源。
+  **2026-11-24 已补上页面侧**（`ReminderScreen.kt` / `ReminderModel.kt`，报告页页尾「今日复习」卡进页）：
+  - 数据由 `scripts/review_page.py --at … --out android/app/src/main/assets/reminder.json` 生成，
+    输出**就是** `build_reminder()` 的返回值，一个字段不加不减；Kotlin 只解析 `skill` / `kind_label` /
+    `task_title` / `overdue_text` 这些显示字段——`skill_id` / `kind` / `review_id` 不进模型，
+    「页面上不出现内部词」靠类型保证而不是靠人记得。
+  - 排序、上限、`cap=0` 说哪句话，全部在 Python 侧算完；页面不重排、不截断、不改写 `headline` / `notice`。
+  - `tests/test_reminder_asset.py` 12 条：asset 与现算结果逐字段一致（过期即红，并打印重生成命令）、
+    字节级一致（防 CRLF / 手改）、字段集合与**类型**（`optInt` 读到字符串会静默变 0）、顺序来自
+    `take_daily`、`due_total == 今日 + 推迟`、文案无内部词。
+  - **仍未做**：设备上的点击走查与截图。2026-11-24 `adb devices` 为空，APK 编过但没装置，
+    所以这一页目前只有「编译过 + 数据契约过」，没有实拍。
+  - **已知边界**：提醒项不可点击开始练习——App 里根本没有「做题」页（训练单页只描述下一档该做什么）。
+    点一项跳去练题要先有那一页，不是靠在这一页加个按钮就能闭环的；放回 B-10 的下一小步。
 - **做完判据**：四页能拉 B-02 的真实报告并渲染；断网有兜底。
 - **验证**：真机（或手机浏览器）跑一次完整闭环
 - **谁推**：人 + 我（M5）。

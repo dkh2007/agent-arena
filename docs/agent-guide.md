@@ -19,7 +19,7 @@
 
 编程训练器：学生领一道有 bug 的题，提交代码与执行轨迹，系统按预设 rubric 判分，产出可追溯的诊断报告，
 折成技能熟练度、推荐下一题，最后要求学生用自己的话复述（不判分）。
-形态：本地 Python 服务 + SQLite + Android 三页。**网络是分层的，不要说成"不联网"**：
+形态：本地 Python 服务 + SQLite + Android 四页。**网络是分层的，不要说成"不联网"**：
 Android 端不出网；判分侧只有 judge 双判开启时才调模型 API（`llm_client.py` 要
 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`，`README` 的环境步骤就是填 `.env`）；
 当前 13 个任务 0 条 llm 类断言、judge 默认关，所以默认路径纯确定性、不出网。
@@ -39,7 +39,7 @@ Android 端不出网；判分侧只有 judge 双判开启时才调模型 API（`
 ## 2. 分层与数据流
 
 ```
-L6 展示   Android 三页（报告/训练单/复述）
+L6 展示   Android 四页（报告/训练单/复述/提醒）
 L5 对外   submission_api · review_packet · test_evidence
 L4 推荐   training：同族逐档 + 四问提纲
 L3 状态   mastery（EMA，从提交记录重放）· scheduler（FSRS）· schedule_advisor
@@ -49,7 +49,7 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 ```
 
 一次提交：取任务定义（**必须合并 base_task**，见 §7）→ 逐项判（确定性断言 + 语义双判，分歧进仲裁）
-→ 先 gate 后 credit → 归因错误模式并绑技能 → 折熟练度、排复习 → 推荐下一题 → 渲染三页。
+→ 先 gate 后 credit → 归因错误模式并绑技能 → 折熟练度、排复习 → 推荐下一题 → 渲染四页。
 
 任务库结构（**数字是 2026-11-24 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
 27 题 = 3 个基座 + 24 个参数变体，五族 7/7/5/5/3（`order-report` / `retry-drill` / `param-surface` / `locate-drill` / `handover-drill`），
@@ -84,7 +84,7 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 | "L3 两套遗忘模型会打架" | 事实错误 | 全仓只有一条衰减曲线（借 FSRS 的 R(t,S)，不另造时间常数） |
 | "掌握度改成事件重放" | 早已如此 | `mastery.replay()` 就是从提交记录重放，快照只是缓存 |
 | "缺失项被算成正证据" | 前提不成立 | 缺失项权重 0，只累加覆盖项，从不相加 |
-| 砍复习排程层（"没消费者"） | 否决 | 排程建议读 1-P 与 1-R 作因子，消费者存在；缺的只是 Android 提醒页 |
+| 砍复习排程层（"没消费者"） | 否决 | 排程建议读 1-P 与 1-R 作因子，消费者存在；Android 提醒页 2026-11-24 已补上（数据侧 + Compose 页） |
 
 外评意见是**输入不是指令**：先核证（能跑就跑一次），再处置，留记录。上一轮外评有两条被事实驳回——
 核证这一步不能省。

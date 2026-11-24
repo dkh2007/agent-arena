@@ -5,11 +5,22 @@
 
 为什么默认跑演示：这条链路需要"到期的复习项"才看得见东西，而真实库里的到期项
 取决于谁在什么时候练过。演示数据固定三份，页面长什么样可以对着看、对着改。
+
+## `--json` / `--out`：给 Android 页供数（2026-11-24）
+
+    python scripts/review_page.py --at 2026-11-24T21:00:00+08:00 \\
+        --out android/app/src/main/assets/reminder.json
+
+输出的就是 `build_reminder()` 的返回值，**一个字段都不加、一个字段都不减**。
+页面的排序、上限、`cap=0` 时该说哪句话，全部在 Python 侧算完；Kotlin 只负责摆位置。
+把判断抄进 Kotlin 会变成第二真相源——两处各写一份"今天该给几项"，
+迟早有一处先改，然后页面上出现"昨天该看的今天还在"。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--at", help="把「现在」固定成某个时刻（ISO，带时区）")
     ap.add_argument("--cap", type=int, help="覆盖每日上限（默认读用户设置）")
     ap.add_argument("--tasks", default=str(ROOT / "tasks"), help="任务目录，用来显示题目名")
+    ap.add_argument("--json", action="store_true",
+                    help="把 build_reminder() 的返回值原样打成 JSON（Android 页供数用）")
+    ap.add_argument("--out", metavar="PATH",
+                    help="把 JSON 写进文件（隐含 --json），例如 assets/reminder.json")
     args = ap.parse_args(argv)
 
     at = args.at or datetime.now(TZ).isoformat(timespec="seconds")
@@ -85,6 +100,20 @@ def main(argv: list[str] | None = None) -> int:
     except (reminder.ReminderError, store.StoreError) as exc:
         print(str(exc), flush=True)
         return 2
+
+    if args.out:
+        path = Path(args.out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 换行固定成 \n：这份 JSON 要进版本库，CRLF 会让每次 diff 多出一堆假改动。
+        with path.open("w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        print(f"已写入 {path}（今日 {len(data['today'])} 项 / 排队 {data['due_total']} 项）", flush=True)
+        return 0
+
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2), flush=True)
+        return 0
 
     print(reminder.format_reminder(data))
     return 0
