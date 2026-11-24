@@ -116,11 +116,13 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
    description，标 `degraded`，测试要求零降级）；**拼不出人话的类别回执行器补结构化字段**
    （参数越界原先只有 `"20 > maximum 10"` 一句字符串，现已补 `value`/`bound`/`bound_kind`），
    不在模板里编。
-3. **其余 12 道题的区分度实验**：照 `dbg-001` 的五份夹具
-   （`raw-perfect` / `raw-empty` 空文件 / `raw-no-file` 无产物 / `raw-no-trace` 有答案无过程 / `raw-fake-retry` 假重试，
-   在 `fixtures/raw-*.json`），每道题验出分数差异。
-   dbg-001 的分数表由 `python -m arena.diagnosis_report --fixture all` 现场跑出、且已被评审包测试解析锁住；
-   其余 12 道**没有对应夹具**，这批实验要固化成测试，不留一次性脚本。
+3. ~~**各题的区分度实验**~~（2026-11-24 已落地）：`tests/test_discrimination.py` 让 27 道题各跑
+   5–6 种形态（满分 / 答错 / 参数瞎填 / 无产物 / 空文件 / 无过程；定位与交接族各多一条专属形态），
+   判据是**两两可分**——(分数, 失败断言, 错误模式) 三元组互不相同，只看分数不够
+   （`ask_late` 与 `extra_param` 同为 0.75，一个掉 R6 一个掉 R4）。
+   **不要回到「每题手写 5 份 JSON」的老路**：`fixtures/raw-*.json` 手写会漂，
+   `raw-empty` 的产物其实是空对象（它是「0 次调用的哨兵」），导致 `empty_output_file` 零覆盖。
+   现在 trace 由 `reference_agent` 真跑、产物缺失由 `assemble_raw` 组装，与题内容无关，零成本。
 4. 基础设施只做便宜修补，不加新抽象。判据改动后按 `docs/RUNBOOK.md` 跑批。
 
 ## 7. 已知坑（都真实踩过，重犯 = 退回）
