@@ -459,3 +459,71 @@ def test_reappraisal_chain_distinguishes_missing_from_never_reappraised(live):
     assert rec["revision"] == 1 and rec["reason"] == reason
     assert body["original_ratio"] == 1.0 and body["effective_ratio"] == 0.5
     dr.validate_report(rec["report"])
+
+
+# ── 5. 申诉端点（v7 / 2026-11-24）────────────────────────────────────────────
+# 「我认为判错了」是学习者唯一的主动入口。端点只落库 + 读回，不做重评——
+# 接受申诉后按什么标准重算，是人的判断（`reappraisal.reappraise(task=...)`）。
+
+def _submit_one(live, *, submission_id: str, user_id: str = "u-test") -> str:
+    status, posted = live.call("POST", "/submissions", _payload(
+        _fixture("raw-perfect"), submission_id=submission_id, user_id=user_id))
+    assert status == 201, posted
+    return posted["submission"]["submission_id"]
+
+
+def test_appeal_endpoint_lands_and_reads_back(live):
+    sid = _submit_one(live, submission_id="s-appeal")
+    status, row = live.call("POST", f"/submissions/{sid}/appeals", {
+        "user_id": "u-test",
+        "reason_text": "R3 判我没重试，但第二次请求我确实重发了",
+        "target_assertion": "R3_retry_evidence",
+    })
+    assert status == 201, row
+    assert row["status"] == "pending"
+    assert row["target_assertion"] == "R3_retry_evidence"
+    assert row["resolved_at"] is None and row["resolution_note"] is None
+
+    status, body = live.call("GET", f"/submissions/{sid}/appeals")
+    assert status == 200
+    assert [a["appeal_id"] for a in body["appeals"]] == [row["appeal_id"]]
+    assert body["submission_id"] == sid
+
+
+def test_appeals_on_an_unknown_submission_is_404_not_an_empty_list(live):
+    """空数组的语义是"交过、没申诉过"。混成一样，"id 拼错了"会显示成"没人有异议"。"""
+    assert live.call("GET", "/submissions/no-such-id/appeals")[0] == 404
+    assert live.call("POST", "/submissions/no-such-id/appeals",
+                     {"user_id": "u-test", "reason_text": "判错了"})[0] == 404
+
+
+def test_a_second_pending_appeal_is_409(live):
+    """等结果就好，别反复提——两个不同理由都算一条待办，裁决的人会以为有两件事。"""
+    sid = _submit_one(live, submission_id="s-appeal-twice")
+    body = {"user_id": "u-test", "reason_text": "判错了"}
+    assert live.call("POST", f"/submissions/{sid}/appeals", body)[0] == 201
+    status, err = live.call("POST", f"/submissions/{sid}/appeals",
+                            {**body, "reason_text": "再补一句"})
+    assert status == 409, err
+    assert err["error"]["code"] == "appeal_already_pending"
+
+
+def test_appeal_rejects_empty_reason_and_bogus_assertion(live):
+    sid = _submit_one(live, submission_id="s-appeal-bad")
+    assert live.call("POST", f"/submissions/{sid}/appeals",
+                     {"user_id": "u-test", "reason_text": "   "})[0] == 400
+    status, err = live.call("POST", f"/submissions/{sid}/appeals", {
+        "user_id": "u-test", "reason_text": "判错了", "target_assertion": "R9_made_up",
+    })
+    assert status == 400, err
+    assert err["error"]["code"] == "invalid_appeal"
+    # 不存在的断言被拒之后，不许留半条记录
+    assert live.call("GET", f"/submissions/{sid}/appeals")[1]["appeals"] == []
+
+
+def test_appeal_cannot_be_filed_on_behalf_of_someone_else(live):
+    sid = _submit_one(live, submission_id="s-appeal-other")
+    status, err = live.call("POST", f"/submissions/{sid}/appeals",
+                            {"user_id": "someone-else", "reason_text": "判错了"})
+    assert status == 400, err
+    assert "只能对自己的判分提申诉" in err["error"]["message"]

@@ -585,12 +585,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         def run() -> None:
-            if self.path.split("?", 1)[0] != "/submissions":
-                raise SubmissionError("not_found", f"没有这个路径：{self.path}", status=404)
-            payload = self._read_json()
-            report = submit(payload, registry=self.ctx["registry"],
-                            conn_factory=self.ctx["conn_factory"])
-            self._send(201, report)
+            path = self.path.split("?", 1)[0]
+            if path == "/submissions":
+                payload = self._read_json()
+                report = submit(payload, registry=self.ctx["registry"],
+                                conn_factory=self.ctx["conn_factory"])
+                self._send(201, report)
+                return
+            # `/submissions/{id}/appeals`：学习者对某一份判分提出异议。
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 3 and parts[0] == "submissions" and parts[2] == "appeals":
+                self._send(201, self._create_appeal(parts[1], self._read_json()))
+                return
+            raise SubmissionError("not_found", f"没有这个路径：{self.path}", status=404)
 
         self._guard(run)
 
@@ -614,6 +621,9 @@ class _Handler(BaseHTTPRequestHandler):
                 # "x/reappraisals" 的单份提交，然后 404 得像是"这份不存在"。
                 if rest.endswith("/reappraisals"):
                     self._send_reappraisals(rest[: -len("/reappraisals")].strip("/"))
+                    return
+                if rest.endswith("/appeals"):
+                    self._send_appeals(rest[: -len("/appeals")].strip("/"))
                     return
 
                 self._send_report(rest, _parse_view(parts.query))
@@ -656,6 +666,58 @@ class _Handler(BaseHTTPRequestHandler):
             raise SubmissionError("not_found", str(exc), status=404) from exc
         finally:
             conn.close()
+
+
+    def _create_appeal(self, submission_id: str, payload: dict) -> dict:
+        """提一条申诉。返回落库后的行（`status` 恒为 `pending`）。
+
+        **只落库，不重评**：接受申诉是人的判断，新判据要人给（`reappraise(task=...)`）。
+        这里若"顺手重算一遍"，等于替裁决人决定了标准。
+
+        错误码分三类，因为修法完全不同：
+        - 404：这份提交不存在（拼错 id / 还没交）
+        - 409：你已经有一条待处理申诉（等结果，别再提）
+        - 400：请求本身有问题（理由空 / 断言 id 不存在 / 替别人申诉）
+        """
+        if not submission_id:
+            raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        user_id = _str_field(payload, "user_id", max_len=100)
+        reason = _str_field(payload, "reason_text", max_len=2000)
+        target = _str_field(payload, "target_assertion", required=False, max_len=100)
+        conn = self.ctx["conn_factory"]()
+        try:
+            return store.create_appeal(conn, submission_id, user_id=user_id or "",
+                                       reason_text=reason or "", target_assertion=target)
+        except store.StoreError as exc:
+            # 用消息分流而不是给 StoreError 派生子类：这三句话是给人看的、也稳定，
+            # 而为三个错误码各造一个异常类，只会让 store 层多背一层协议知识。
+            message = str(exc)
+            if "还没落库" in message:
+                raise SubmissionError("not_found", message, status=404) from exc
+            if "已经在队列里" in message:
+                raise SubmissionError("appeal_already_pending", message, status=409) from exc
+            raise SubmissionError("invalid_appeal", message, status=400) from exc
+        finally:
+            conn.close()
+
+    def _send_appeals(self, submission_id: str) -> None:
+        """一份提交的申诉链（含历史，按提交先后）。
+
+        **提交不存在时 404，不返回空数组**——与 `_send_reappraisals` 同一条理由：
+        空数组的语义是"交过、没申诉过"；混成一样，"id 拼错了"会显示成"没人有异议"。
+        """
+        if not submission_id:
+            raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        conn = self.ctx["conn_factory"]()
+        try:
+            store.load_report(conn, submission_id)          # 兼做存在性检查
+            self._send(200, {"submission_id": submission_id,
+                             "appeals": store.load_appeals(conn, submission_id)})
+        except store.StoreError as exc:
+            raise SubmissionError("not_found", str(exc), status=404) from exc
+        finally:
+            conn.close()
+
 
 
 def bootstrap(db_path: str | Path, registry: TaskRegistry) -> None:

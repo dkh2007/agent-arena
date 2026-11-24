@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import itertools
 import json
 import sqlite3
@@ -62,7 +63,7 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # 把标记做成"从名单里消失"是这一层唯一危险的误读——那会变成静默忘掉一个人。
 # 标记带撤销字段（`revoked_at` / `revoked_reason`）而不是靠删行：
 # 将来若产物被补回来，要能说清"谁在什么时候说过它补不回来"。
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
 # 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
@@ -258,7 +259,52 @@ CREATE TABLE IF NOT EXISTS unrecoverable_marks (
 );
 """
 
-SCHEMA_SQL = SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3 + SCHEMA_SQL_V5 + SCHEMA_SQL_V6
+SCHEMA_SQL_V7 = """
+-- v7 / 学习者申诉（2026-11-24）。
+--
+-- **为什么不复用 `arbitration_queue`**（我先试过，不行）：
+--   ① 那张表的 `submission_id` 是主键——一份提交只能挂一条争议；而学习者申诉
+--      完全可能与「judge 双评不一致」并存，两条都得留；
+--   ② `judge_agreement` / `threshold` 是 NOT NULL——学习者申诉没有这两个值。
+--      为了塞进那张表而编一个 0.5，等于往证据里掺假。
+-- 两张表通向同一个出口（人工裁决 → `reappraisal.reappraise()`），但入口与字段不同，
+-- 合表只会让两边都别扭。
+--
+-- **`accepted` 只表示"承认判错了"，不自动重评**。新判据是人的判断（`reappraise()`
+-- 的 `task` 参数由人给），本表不替人做这个决定。接受后进"待重评清单"，谁重评、按什么
+-- 判据重评，都留痕在 `reappraisals` 里。
+CREATE TABLE IF NOT EXISTS appeals (
+    appeal_id        TEXT PRIMARY KEY,
+    submission_id    TEXT NOT NULL REFERENCES submissions(submission_id),
+    user_id          TEXT NOT NULL REFERENCES users(user_id),
+    -- 指向哪一条：NULL = 整份报告；否则是断言 id（R2 / R4 …）。前端从报告里取，不许自造。
+    target_assertion TEXT,
+    reason_text      TEXT NOT NULL CHECK (length(trim(reason_text)) > 0),
+    status           TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending', 'accepted', 'rejected', 'withdrawn')),
+    created_at       TEXT NOT NULL,
+    resolved_at      TEXT,
+    resolution_note  TEXT,
+    -- 与 arbitration_queue 同款：pending 不许带裁决痕迹，非 pending 必须同时有时间和理由。
+    -- 这条 CHECK 把"裁决要写理由"变成机械约束，而不是靠代码自觉。
+    CHECK (
+        (status = 'pending'  AND resolved_at IS NULL     AND resolution_note IS NULL)
+     OR (status <> 'pending' AND resolved_at IS NOT NULL AND resolution_note IS NOT NULL)
+    )
+);
+
+-- 同一份提交、同一个人，**同时只能有一条待处理申诉**：
+-- 否则点两下就产生两条，裁决的人会以为有两件事，`reappraise()` 也跟着跑两遍。
+-- 用 partial index 而不是把 status 放进主键：已处理的历史申诉可以有多条（那是留痕）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_appeals_one_pending
+    ON appeals(submission_id, user_id) WHERE status = 'pending';
+
+-- 待办按"最早开的先看"排，与仲裁队列同一个约定。
+CREATE INDEX IF NOT EXISTS idx_appeals_pending ON appeals(status, created_at);
+"""
+
+SCHEMA_SQL = (SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3 + SCHEMA_SQL_V5
+              + SCHEMA_SQL_V6 + SCHEMA_SQL_V7)
 
 
 def _ensure_artifacts_column(conn: sqlite3.Connection) -> None:
@@ -289,6 +335,7 @@ MIGRATION_STEPS: dict[int, tuple[Any, tuple[str, ...]]] = {
     4: (_ensure_artifacts_column, ("submissions.artifacts",)),
     5: (SCHEMA_SQL_V5, ("reappraisals",)),
     6: (SCHEMA_SQL_V6, ("unrecoverable_marks",)),
+    7: (SCHEMA_SQL_V7, ("appeals",)),
 }
 
 
@@ -1186,6 +1233,10 @@ def blocked_submissions(conn: sqlite3.Connection) -> list[dict]:
 
 ARBITRATION_STATUSES = ("pending", "resolved", "dismissed")
 
+# 申诉的四种状态。`accepted` 与 `rejected` 的区别是**判分要不要重算**，
+# `withdrawn` 是学习者自己撤的（既不承认也不否认判分，只是不追究了）。
+APPEAL_STATUSES = ("pending", "accepted", "rejected", "withdrawn")
+
 
 def save_arbitration_entry(
     conn: sqlite3.Connection,
@@ -1296,7 +1347,175 @@ def resolve_arbitration(conn: sqlite3.Connection, submission_id: str, *,
     return load_arbitration(conn, submission_id)  # type: ignore[return-value]
 
 
-# ── 重评记录的落库（v5 / B-04d 接线）─────────────────────────────────────────
+# ── 学习者申诉（v7 / 2026-11-24）─────────────────────────────────────────────
+# 「判错了」是学习者主动发起的入口，与 `arbitration_queue`（系统发现双评不一致）
+# 是两张表、两个入口、同一个出口（人工裁决 → `reappraisal.reappraise()`）。
+# 不合表的技术理由写在 `SCHEMA_SQL_V7` 的注释里。
+
+def _appeal_id(conn: sqlite3.Connection, submission_id: str, user_id: str) -> str:
+    """由 (提交, 人, 该提交已有几条申诉) 派生 id，不取随机数、也不含时刻。
+
+    **为什么不把 `created_at` 掺进来**（第一版就是这么写的，撞了）：`_now()` 只到秒，
+    同一秒内提两条（用户连点、测试循环）会派生同一个 id，撞主键报出来的话是
+    "这条申诉已经在队列里了"——而实际情况可能是两条不同理由。用序号就没有这个问题：
+    它是该提交下的第几条，确定、单调、与时间轴无关，重放也好对账。
+    """
+    n = conn.execute(
+        "SELECT COUNT(*) FROM appeals WHERE submission_id = ?", (submission_id,)
+    ).fetchone()[0]
+    digest = hashlib.sha1(f"{submission_id}|{user_id}|{n}".encode("utf-8")).hexdigest()
+    return f"ap-{digest[:12]}"
+
+
+def create_appeal(
+    conn: sqlite3.Connection,
+    submission_id: str,
+    *,
+    user_id: str,
+    reason_text: str,
+    target_assertion: str | None = None,
+    created_at: str | None = None,
+) -> dict:
+    """提一条申诉。返回落库后的行。
+
+    **`user_id` 必须与提交的 `user_id` 一致**——不是安全问题（本地单机没有鉴权），
+    是数据完整性问题：允许 A 替 B 申诉，会让"这个人对判分的信任程度"变成无法解释的数。
+    """
+    if not isinstance(submission_id, str) or not submission_id.strip():
+        raise StoreError("申诉缺 submission_id")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise StoreError("申诉缺 user_id")
+    if not isinstance(reason_text, str) or not reason_text.strip():
+        raise StoreError("申诉必须写理由——没有理由的申诉等于要求无条件重判")
+    if len(reason_text) > 2000:
+        raise StoreError(f"申诉理由过长（{len(reason_text)} 字 > 2000）")
+
+    row = conn.execute(
+        "SELECT user_id, diagnosis FROM submissions WHERE submission_id = ?",
+        (submission_id.strip(),),
+    ).fetchone()
+    if row is None:
+        raise StoreError(f"提交 {submission_id} 还没落库——申诉必须先有被判的那份报告")
+    if row["user_id"] != user_id.strip():
+        raise StoreError(
+            f"提交 {submission_id} 属于 {row['user_id']}，不是 {user_id}——"
+            "只能对自己的判分提申诉"
+        )
+
+    target = None if target_assertion is None else str(target_assertion).strip()
+    if target == "":
+        target = None
+    if target is not None:
+        # 给了断言 id 就得真的存在：申诉一条不存在的断言，裁决的人会去找一条假证据。
+        diagnosis = _load(row["diagnosis"]) if row["diagnosis"] else None
+        if not isinstance(diagnosis, dict):
+            raise StoreError(
+                f"提交 {submission_id} 没有诊断报告，无法指向断言 {target!r}"
+                "——整份报告级的申诉请留空 target_assertion"
+            )
+        known = {item.get("id") for item in (diagnosis.get("assertions") or [])}
+        if target not in known:
+            raise StoreError(
+                f"断言 {target!r} 不在这份报告里（有 {sorted(k for k in known if k)}）"
+                "——前端应从报告的 `assertions[].id` 里取，不许自造"
+            )
+
+    stamp = created_at or _now()
+    with atomic(conn):
+        appeal_id = _appeal_id(conn, submission_id.strip(), user_id.strip())
+        try:
+            conn.execute(
+                "INSERT INTO appeals (appeal_id, submission_id, user_id, target_assertion, "
+                "reason_text, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                (appeal_id, submission_id.strip(), user_id.strip(), target,
+                 reason_text.strip(), stamp),
+            )
+        except sqlite3.IntegrityError as exc:
+            # 两种可能：id 重复（同一秒同内容），或"已有待处理申诉"（partial unique index）。
+            # 后者更常见，也更有用——告诉人"你已经提过一条了，先等结果"。
+            raise StoreError(
+                f"这条申诉已经在队列里了（{exc}）——同一份提交同时只能有一条待处理申诉；"
+                "要补充理由请等上一条裁决完再提"
+            ) from exc
+    return load_appeal(conn, appeal_id)  # type: ignore[return-value]
+
+
+def load_appeal(conn: sqlite3.Connection, appeal_id: str) -> dict | None:
+    row = conn.execute("SELECT * FROM appeals WHERE appeal_id = ?", (appeal_id,)).fetchone()
+    return None if row is None else _row_to_dict(row, "appeals")
+
+
+def load_appeals(conn: sqlite3.Connection, submission_id: str) -> list[dict]:
+    """一份提交的全部申诉（含历史），按提交先后。空列表 = 从没申诉过，不是错误。"""
+    rows = conn.execute(
+        "SELECT * FROM appeals WHERE submission_id = ? ORDER BY created_at ASC, appeal_id ASC",
+        (submission_id,),
+    )
+    return [_row_to_dict(r, "appeals") for r in rows]
+
+
+def list_appeals(conn: sqlite3.Connection, *, status: str | None = "pending",
+                 limit: int = 50) -> list[dict]:
+    """列申诉。默认只列 `pending`——`status=None` 才是全量，避免顺手把历史都拉出来。"""
+    if status is not None and status not in APPEAL_STATUSES:
+        raise StoreError(f"未知的申诉状态 {status!r}，合法值 {APPEAL_STATUSES}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise StoreError(f"limit 必须是正整数（收到 {limit!r}）")
+    sql = "SELECT * FROM appeals"
+    params: tuple = ()
+    if status is not None:
+        sql += " WHERE status = ?"
+        params = (status,)
+    sql += " ORDER BY created_at ASC, appeal_id ASC LIMIT ?"
+    return [_row_to_dict(r, "appeals") for r in conn.execute(sql, (*params, limit))]
+
+
+def resolve_appeal(conn: sqlite3.Connection, appeal_id: str, *,
+                   status: str, note: str, at: str | None = None) -> dict:
+    """裁决一条申诉。**必须写理由**，且**不许改判已裁决的**。
+
+    `withdrawn` 是学习者撤回：仍要写 note（表上的 CHECK 要求），调用方传"用户撤回"即可。
+    """
+    if status not in ("accepted", "rejected", "withdrawn"):
+        raise StoreError(
+            f"裁决状态只能是 'accepted' / 'rejected' / 'withdrawn'（收到 {status!r}）；"
+            "'pending' 不是裁决结果"
+        )
+    if not isinstance(note, str) or not note.strip():
+        raise StoreError("裁决必须写 note：没有理由的收尾等于把申诉悄悄删掉")
+    current = load_appeal(conn, appeal_id)
+    if current is None:
+        raise StoreError(f"没有这条申诉 {appeal_id}")
+    if current["status"] != "pending":
+        raise StoreError(
+            f"{appeal_id} 已经裁决过（{current['status']}）——不覆盖；"
+            "要改结论请另存一条说明，或让学习者重新提"
+        )
+    with atomic(conn):
+        conn.execute(
+            "UPDATE appeals SET status = ?, resolved_at = ?, resolution_note = ? "
+            "WHERE appeal_id = ? AND status = 'pending'",
+            (status, at or _now(), note.strip(), appeal_id),
+        )
+    return load_appeal(conn, appeal_id)  # type: ignore[return-value]
+
+
+def list_accepted_appeals(conn: sqlite3.Connection, *, limit: int = 50) -> list[dict]:
+    """"该重评的清单"：已接受但还没跑过重评的申诉。
+
+    判据是 `reappraisals` 里没有对应记录——**不看申诉自己的时间戳**：
+    重评可能晚于裁决好几天，用时间比会漏掉"先接受、后批量重算"的那批。
+    """
+    sql = (
+        "SELECT a.* FROM appeals a "
+        "WHERE a.status = 'accepted' "
+        "  AND NOT EXISTS (SELECT 1 FROM reappraisals r WHERE r.submission_id = a.submission_id) "
+        "ORDER BY a.resolved_at ASC, a.appeal_id ASC LIMIT ?"
+    )
+    return [_row_to_dict(r, "appeals") for r in conn.execute(sql, (limit,))]
+
+
+
 # 「裁决 → 重评 → 落差异」的最后一步。判定与执行在 `reappraisal.py`，这里只存取。
 #
 # 三条设计决定：
