@@ -190,11 +190,27 @@ def build_prompt(
     if missing:
         raise FeynmanError(f"错误模式 {missing} 出现在报告里，但 {VOCAB_PATH.name} 里查不到")
 
+    # 断言 id → 报告下发的中文标题。页面上的「没过哪几条」要给人读的字，
+    # 但 `failed_assertions` 里只有 id；这里一次翻好，页面不再有机会印 `R3_retry_evidence`。
+    titles = {
+        str(a.get("id")): str(a.get("title") or "")
+        for a in report.get("assertions") or ()
+        if a.get("id") is not None
+    }
+
     gaps: list[dict[str, Any]] = []
     for gap in report.get("skill_gaps") or ():
         skill_id = gap.get("skill_id")
         if skill_id not in skill_labels:
             raise ReportError(f"缺口里的技能 {skill_id!r} 在技能词表里没有 name")
+        failed_ids = [str(i) for i in (gap.get("failed_assertions") or ())]
+        missing_titles = [i for i in failed_ids if not titles.get(i)]
+        if missing_titles:
+            # 不退回 id：页面上出现 `R2_report_correct` 会让「报告结构破损」
+            # 看起来像「样式问题」，没人会为它提 bug。
+            raise ReportError(
+                f"缺口里的断言 {missing_titles} 在报告的 assertions 里没有中文标题"
+            )
         patterns = [
             {
                 "id": pid,
@@ -206,7 +222,8 @@ def build_prompt(
         gaps.append(
             {
                 "skill_label": skill_labels[skill_id],
-                "failed_assertions": list(gap.get("failed_assertions") or ()),
+                "failed_assertions": failed_ids,
+                "failed_titles": [titles[i] for i in failed_ids],
                 "weight_lost": gap.get("weight_lost"),
                 "patterns": patterns,
             }

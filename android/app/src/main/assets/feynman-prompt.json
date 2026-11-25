@@ -28,6 +28,9 @@
       "failed_assertions": [
         "R2_report_correct"
       ],
+      "failed_titles": [
+        "结论是否与判据一致"
+      ],
       "weight_lost": 2,
       "patterns": [
         {
@@ -46,6 +49,9 @@
       "skill_label": "失败重试策略",
       "failed_assertions": [
         "R3_retry_evidence"
+      ],
+      "failed_titles": [
+        "关键步骤是否走到"
       ],
       "weight_lost": 1,
       "patterns": [

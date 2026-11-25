@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from arena.diagnosis_report import load_pattern_labels, load_skill_labels  # noqa: E402
+from arena.diagnosis_report import ReportError, load_pattern_labels, load_skill_labels  # noqa: E402
 from arena.feynman import (  # noqa: E402
     FeynmanError,
     QUESTIONS,
@@ -295,6 +296,38 @@ def test_checklist_steps_are_verbatim_from_task(prompt, task):
     steps = [item for item in prompt["checklist"] if item["kind"] == "step"]
     assert [item["text"] for item in steps] == asks_of(task)
     assert steps, "没有步骤就不该有清单主干——空清单等于页面假装自查过了"
+
+
+def test_gap_failed_titles_are_chinese_and_not_ids(prompt, report):
+    """「这次没过的」右上角那行必须是中文标题，不能是 `R3_retry_evidence`。
+
+    2026-11-25 在模拟器上实测到：报告页与训练单页都改完了，这一页还印着断言 id，
+    而计划书当时已经对外写着「三页都不再出现断言 id」。这条测试就是补上那个洞。
+    """
+    titles = {a["id"]: a["title"] for a in report["assertions"]}
+    seen = 0
+    for gap in prompt["gaps"]:
+        assert gap["failed_titles"] == [titles[i] for i in gap["failed_assertions"]], (
+            "failed_titles 必须逐项等于报告里的 title，且顺序与 failed_assertions 一致"
+        )
+        for title in gap["failed_titles"]:
+            assert not re.match(r"^R\d+_", title), f"页面上出现了断言 id：{title}"
+            assert title.strip(), "空标题比 id 更糟——看起来像样式没写好"
+        seen += 1
+    assert seen == 2, "这份样例报告该有两个技能缺口，数不对说明测试没验到东西"
+
+
+def test_gap_assertion_without_title_raises(report, task):
+    """缺中文标题就抛错，不退回 id。
+
+    回退会让「报告结构破损」在页面上表现成「显示了一串英文」，
+    那是样式问题，没人会提 bug。
+    """
+    broken = json.loads(json.dumps(report))
+    for assertion in broken["assertions"]:
+        assertion.pop("title", None)
+    with pytest.raises(ReportError, match="中文标题"):
+        build_prompt(broken, task)
 
 
 def test_checklist_missed_text_is_verbatim_from_report(prompt, report):

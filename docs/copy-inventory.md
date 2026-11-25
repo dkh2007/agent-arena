@@ -3,8 +3,8 @@
 > **本文件由 `scripts/copy_inventory.py` 生成，不许手改。** 手改会让表和代码不一致，
 > 而表一旦和代码不一致，它就是错的第二真相源。校验：`python scripts/copy_inventory.py --check`。
 
-共 **194** 条：Android 页面 156 条（编译进 APK）、数据层 38 条（生成进 `assets/*.json`）。
-其中固定文案 149 条、含运行时占位符 40 条、命令行说明 5 条。
+共 **195** 条：Android 页面 156 条（编译进 APK）、数据层 39 条（生成进 `assets/*.json`）。
+其中固定文案 149 条、含运行时占位符 41 条、命令行说明 5 条。
 
 ## 两个问题，别混
 
@@ -217,7 +217,7 @@ python -m arena.feynman --from-report android/app/src/main/assets/sample-report.
 | 218 | 固定 | 本页由 tasks/ 下的任务定义推出：族与档位来自 variant_meta，要求清单来自 scenario。 |
 | 219 | 固定 | 没有一条建议是手写的；改任务定义后重新生成 training-plan.json 即可。 |
 
-### `feynman.py`（22 条 · 数据层）
+### `feynman.py`（23 条 · 数据层）
 
 | 行 | 类别 | 文案 |
 |---:|---|---|
@@ -231,18 +231,19 @@ python -m arena.feynman --from-report android/app/src/main/assets/sample-report.
 | 95 | 固定 | （空） |
 | 177 | 模板 | f"报告判的是 {reported!r}，任务定义却是 {declared!r}：对不上，拒绝产出复述材料" |
 | 191 | 模板 | f"错误模式 {missing} 出现在报告里，但 {VOCAB_PATH.name} 里查不到" |
-| 197 | 模板 | f"缺口里的技能 {skill_id!r} 在技能词表里没有 name" |
-| 250 | 固定 | 题目到底要几步 |
-| 260 | 固定 | 把期望和实际念一遍 |
-| 262 | 模板 | f"{title} · {row['field']}：期望 {row['expected']}，实际 {row['actual']}" |
-| 272 | 固定 | 这个错法叫什么 |
-| 281 | 固定 | 当时现场是什么样 |
-| 309 | 模板 | f"{folder} 下找不到 task_id={task_id!r} 的任务定义" |
-| 313 | 命令行 | 生成费曼复述页的数据包 |
-| 314 | 命令行 | 诊断报告 JSON |
-| 315 | 命令行 | 任务 YAML（不填则按报告里的 task_id 在 --catalog 下找） |
-| 316 | 命令行 | 任务目录 |
-| 317 | 命令行 | 写入文件（不填则打印到 stdout） |
+| 205 | 模板 | f"缺口里的技能 {skill_id!r} 在技能词表里没有 name" |
+| 212 | 模板 | f"缺口里的断言 {missing_titles} 在报告的 assertions 里没有中文标题" |
+| 267 | 固定 | 题目到底要几步 |
+| 277 | 固定 | 把期望和实际念一遍 |
+| 279 | 模板 | f"{title} · {row['field']}：期望 {row['expected']}，实际 {row['actual']}" |
+| 289 | 固定 | 这个错法叫什么 |
+| 298 | 固定 | 当时现场是什么样 |
+| 326 | 模板 | f"{folder} 下找不到 task_id={task_id!r} 的任务定义" |
+| 330 | 命令行 | 生成费曼复述页的数据包 |
+| 331 | 命令行 | 诊断报告 JSON |
+| 332 | 命令行 | 任务 YAML（不填则按报告里的 task_id 在 --catalog 下找） |
+| 333 | 命令行 | 任务目录 |
+| 334 | 命令行 | 写入文件（不填则打印到 stdout） |
 
 ### `reminder.py`（16 条 · 数据层）
 

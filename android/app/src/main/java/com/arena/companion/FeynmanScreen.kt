@@ -353,7 +353,7 @@ private fun GapCard(prompt: FeynmanPrompt) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(gap.skillLabel, style = TH2)
                 Spacer(Modifier.weight(1f))
-                Text(gap.failedAssertions.joinToString("、"), style = TMicro)
+                Text(gap.failedTitles.joinToString("、"), style = TMicro)
             }
             if (gap.patterns.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))

@@ -13,8 +13,10 @@
   提交后才出现期望值、错法解释与自查清单。语音与手写两版做过又删了（2026-11-21），
   理由与恢复条件写在 `docs/android-ui-handoff.md` §4.6。
   截图见 `docs/images/feynman-recall.png`、`feynman-hint-locked.png`、`feynman-commit-dialog.png`、
-  `feynman-unlocked.png`、`feynman-checklist.png`、`feynman-hint-open.png`。
-- 复习提醒页（2026-11-24）：入口在报告页页尾「今日复习」卡，清单页只摆位置——不排序、不截断、
+  `feynman-unlocked.png`、`feynman-checklist.png`、`feynman-hint-open.png`
+  （其中 `feynman-recall.png`、`feynman-checklist.png` 是 2026-11-25 重拍的，其余五张仍是 11-21 的）。
+- 复习提醒页（2026-11-24 实现 / 2026-11-25 走查）：入口在报告页页尾「今日复习」卡，实拍见
+  `docs/images/reminder-today.png`。，清单页只摆位置——不排序、不截断、
   不改写文案，因为「今天给几项」由后端 `scheduler.take_daily()` 唯一决定。数据来自
   `assets/reminder.json`，**必须用命令重生成，不许手改**：
 

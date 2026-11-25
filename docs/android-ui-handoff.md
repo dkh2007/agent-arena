@@ -1,6 +1,6 @@
 # Android 前端交接说明
 
-> 状态：2026-11-24，四页齐（诊断报告 / 训练单 / 费曼复述 / 复习提醒）；提醒页已上设备待补实拍。
+> 状态：2026-11-25，四页齐并已逐页走查实拍（诊断报告 / 训练单 / 费曼复述 / 复习提醒）。
 > 目的：后续由他人接手前端时，能在不动判据逻辑的前提下改界面。
 > 判据：读完本文 + 看 `Theme.kt`，能独立加一页且不破坏任何已有数值。
 
@@ -89,7 +89,7 @@ Compose BOM `2024.09.00`，AGP 8.7.3。**没有任何第三方 UI 库和网络�
 | 族与档位 | 任务 YAML 的 `variant_meta.family_id` / `variant_meta.difficulty` |
 | 「练什么」的文字 | 下一档任务的 `title` + `scenario` 里的编号条目（逐字，不改写） |
 | 「怎么算练会」 | 固定规则：下一档上门禁全过、积分全过（得分率 1.00、未判不合格）。**是规则不是阈值** |
-| 「回来看哪条」 | 当前报告 `skill_gaps[].failed_assertions` 的并集 |
+| 「回来看哪条」 | 当前报告 `skill_gaps[].failed_assertions` 的并集，显示的是 `training-plan.json` 里 `focus_assertions[].title`（中文），不是 id |
 | 生成命令 | `python -m arena.training --task tasks/<任务>.yaml --from-report android/app/src/main/assets/sample-report.json --out android/app/src/main/assets/training-plan.json` |
 
 三条不许自作主张的地方：① 只走一档，不跳档、不做「薄弱点加权」（没有数据定权重）；
@@ -108,7 +108,7 @@ Compose BOM `2024.09.00`，AGP 8.7.3。**没有任何第三方 UI 库和网络�
 | 项 | 值 / 来源 |
 |---|---|
 | 三个复述问题 | `feynman.py` 的 `QUESTIONS` 常量（固定文案，属产品口径，不是数据推断） |
-| 「这次没过的」 | 报告 `skill_gaps`：中文技能名取词表 `name`，错法标签取词表 `label` |
+| 「这次没过的」 | 报告 `skill_gaps`：中文技能名取词表 `name`，错法标签取词表 `label`，右侧那行是 `failed_titles`（报告 `assertions[].title` 的中文标题，如「关键步骤是否走到」）。**不许印 `R3_retry_evidence`**——2026-11-25 在模拟器上就印着它，而计划书当时已对外写着「三页都不再出现断言 id」，属同一条红线 |
 | 「对照清单 · 这题该说到这几步」 | 任务 `scenario` 里已编号的要求（`training.asks_of`），逐字 |
 | 「对照清单 · 这次没说对的」 | 每条失败断言的 `note` 原文；报告没给 `note` 时只显示断言 id，**不代写解释** |
 | 「期望 / 实际」 | 每条失败断言的 `evidence.extra.diffs`，逐字 |
@@ -283,8 +283,10 @@ adb -s 127.0.0.1:5555 exec-out screencap -p > ../docs/images/shot.png
 
 ## 9. 已知未完成 / 已知坑
 
-- **复习提醒页未在设备上走过**（2026-11-24：代码与数据契约已完成、APK 编过，但本机没有连接设备，
-  所以没有点击走查与截图）。数据侧由 `tests/test_reminder_asset.py` 12 条锁住。
+- ~~复习提醒页未在设备上走过~~：2026-11-25 已在模拟器（`arena35`，无窗口 headless + `adb`）上
+  逐项走查并截图（`docs/images/reminder-today.png`）。走查看到的三件事都与数据侧一致：
+  今天 2 项、另有 1 项顺延到明天、上限原句「每天最多 2 项」来自配置而非页面。数据侧仍由
+  `tests/test_reminder_asset.py` 12 条锁住。
 - **键盘避让未真机验证**：本机模拟器上 ime inset 恒为 0，页面不缩小（见 §4.7），
   现在靠「关键操作放输入框上方」绕开。换真机后要重新看一遍。
 - **自评结果没有校准依据**：勾选只存本机、不进掌握度。新手自评的准确性没有验证过，

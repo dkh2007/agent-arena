@@ -21,6 +21,9 @@ data class FeynmanPattern(val label: String, val plain: String)
 
 data class FeynmanGap(
     val skillLabel: String,
+    // failedTitles 才是屏幕上的字（如「结论是否与判据一致」）。
+    // failedAssertions 留着只给对账/测试用——页面上印 `R2_report_correct` 是 bug。
+    val failedTitles: List<String>,
     val failedAssertions: List<String>,
     val patterns: List<FeynmanPattern>,
 )
@@ -81,6 +84,7 @@ fun parseFeynmanPrompt(text: String): FeynmanPrompt {
         gaps = root.optJSONArray("gaps").mapObjects { o ->
             FeynmanGap(
                 skillLabel = o.optString("skill_label"),
+                failedTitles = o.optJSONArray("failed_titles").toStringList(),
                 failedAssertions = o.optJSONArray("failed_assertions").toStringList(),
                 patterns = o.optJSONArray("patterns").mapObjects { p ->
                     FeynmanPattern(
