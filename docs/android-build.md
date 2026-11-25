@@ -15,6 +15,8 @@
   截图见 `docs/images/feynman-recall.png`、`feynman-hint-locked.png`、`feynman-commit-dialog.png`、
   `feynman-unlocked.png`、`feynman-checklist.png`、`feynman-hint-open.png`
   （其中 `feynman-recall.png`、`feynman-checklist.png` 是 2026-11-25 重拍的，其余五张仍是 11-21 的）。
+  **语音输入 2026-11-25 在荣耀 400 Pro 真机验过**：长按空格键（键面印麦克风）说话即转文字，
+  见 `docs/images/feynman-voice-realkey.png`、`feynman-voice-result.png`。
 - 复习提醒页（2026-11-24 实现 / 2026-11-25 走查）：入口在报告页页尾「今日复习」卡，实拍见
   `docs/images/reminder-today.png`。，清单页只摆位置——不排序、不截断、
   不改写文案，因为「今天给几项」由后端 `scheduler.take_daily()` 唯一决定。数据来自
