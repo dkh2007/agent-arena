@@ -2263,36 +2263,50 @@
 - **判据**：`pytest tests/test_discrimination.py`（111 条 / 90 秒，27 题各多 2 条）。
 
 
-### [ ] B-42 「缺席即通过」+「门禁失败照记」= 0 分提交把熟练度记成满分（2026-11-24 发现，待人拍板）
+### [x] B-42 0 分但技能证据满：不是 bug，是方案 Y 的后果；缺的是报告页一句说明（2026-11-25 结案）
 
-- **现象**（五道题全部复现）：一份"什么都没交"的提交，`score.ratio=0.00`、`disqualified=true`，
-  断言状态是 `R1_file_exists: fail` / `R2: blocked` / `R5_clean_exit: pass` /
-  `R3_retry_evidence: pass` / `R4_no_param_hallucination: pass`。
-  `skill_evidence()` 因此给出 **failure_retry c=1.0、tool_param_validation c=1.0**
-  （交接族 `ask-001` 还额外给 `multi_step_planning` c=1.0，因为 `R6_ask_before_act` 也是 pass）。
-- **根因是两层叠加**：
-  ① `mastery.py` 按 B-07b 的 A 口径，`disqualified` **照记**，只有 `voided` 与
-  `process_fact.missing` 整份排除；
-  ② `R3` / `R4` / `R6` 属"缺席即通过"：没调用工具就没瞎填参数、没失败就没漏重试、
-  没动手就算"没有不先问就动手"。它们判的是**没有反例**，不是**做对了**。
-- **为什么到现在才发现**：区分度矩阵只看 `(分数, 失败断言, 错误模式)` 三元组，不看熟练度证据。
-  分数 0 是正确答案，所以 2145 条测试没有一条会红。
-- **三条修法与代价**（已写进 `外部确认清单-20261124.md` Q3 作为本轮外发问题之一）：
-  a 判分层整份排除（代价：真做了事的那部分观测一起丢）；
-  b 断言层空 trace 判 `blocked`（代价：改判分口径，27 题矩阵与历史报告要重算）；
-  c 保留观测但按证据强度降权。
-  **未动手**：它动的是判分口径与状态层，属于要人拍的格子。
-- **复现**（五道题都可重复）：
+- **现象（真实）**：`no_artifact` / `empty_artifact` 形态——**有 4 次真实调用，只是没交产物**——
+  分数 0、`disqualified=true`，但 `R3` / `R4` 仍 `pass`，于是 `failure_retry` 与
+  `tool_param_validation` 各得 c=1.0（交接族还多 `multi_step_planning` 1.0）。
+  全库 27 题 × 2 个形态，54 个都如此。
+- **我第一版把根因写错了**：原文写「R3/R4/R6 属缺席即通过」。实测不成立——
+  这批形态的 trace 里有真实调用，那些 `pass` 是**真做对了**（重试步骤走对、参数没填错），
+  不是空集平凡为真。四种形态分开跑，方向完全不同：
+
+  | 形态 | trace | 断言 | 熟练度证据 |
+  |---|---|---|---|
+  | `correct` | 4 次调用 | 全 pass | 三技能 1.0 |
+  | `no_artifact`（做了没交） | 4 次调用 | R1 fail / R3、R4 pass | failure=1.0、tool=1.0 |
+  | `no_trace`（没交过程） | 空 | 全 unscored | 三技能**全 skip**（`process_fact.missing=true`，已被 B-04i 整份排除） |
+  | 手写夹具 `raw-empty` | 0 次调用，却声称交了过程 | R3 **fail** | failure=**0.0**（反向：把技能打低） |
+
+- **所以「0 分把技能记满」是方案 Y 的有意后果**：门禁只管分数，不管观测。
+  他确实做对了重试与参数，只是没交付。这条不改。
+- **三个候选修法都不选**：
+  `a₂`（门禁失败整份不计熟练度）会丢掉真观测，且让「老是不交产物」在技能轴与复习轴都失声；
+  `b`（空 trace 判 blocked）在本库**没有作用对象**——空 trace 已被 `process_missing` 排除，
+  而它想救的那个案例有 trace，b 根本不触发（外部评估给的决定性实测：b 对复现案例零影响）；
+  `c`（按证据强度打折）会在二元计分里造出 0.5 这种分数轴没有对应物的数。
+- **真正的缺陷是报告只解释了分数轴**：学生看到「分数 0 / 某项技能满」，一句解释都没有。
+  已修：`disqualified` 的 note 追加「门禁只影响分数，不影响观测：上面通过的计分项仍会作为
+  技能证据计入掌握度」。
+- **留给内测的两个问法**（外部 AI 给不了，只有真人能答）：
+  ① 「你看到这次 0 分、但系统说某项技能是满的，怎么理解？」
+  ② 「少交一样东西分数就是 0，你会不会故意不交？」
+- **将来真要改口径时别另造清单**：`baseline.py` 的 `tier_split()` **T3 档**定义就是
+  「ratio == 0 且某技能 passed_weight > 0」，正是这一批；先跑 `scripts/tier_probe.py` 捞历史。
+- **复现四种形态**：
   ```
   PYTHONPATH="src;tests" python -c "
   from arena import diagnosis_report as dr, mastery as m
   import test_discrimination as td
   t=dr.load_task('tasks/dbg-001-order-report.yaml'); f,_=td._forms_of(t)
-  print(f['no_artifact']['score']['disqualified'],
-        m.skill_evidence(f['no_artifact'],'failure_retry').c)"
+  for k in ('no_artifact','no_trace'):
+      r=f[k]; print(k, r['score']['disqualified'], r['score']['ratio'])
+      for s in ('failure_retry','tool_param_validation'):
+          try: print('   ', s, m.skill_evidence(r,s).c)
+          except Exception: print('   ', s, '无证据')"
   ```
-- **可选的临时护栏**（未实施）：报告页对 `disqualified` 的技能证据加一句"仅供参考，未计入熟练度"，
-  免得读的人把 c=1.0 看成"做对了"。
 
 
 ---

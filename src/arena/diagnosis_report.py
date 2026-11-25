@@ -869,7 +869,8 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
         notes.append(
             "门禁未通过（" + ", ".join(disqualifying) + "）：本次提交无资格评分，ratio 记 0。"
             f"credit 层断言仍照常判定（反事实得分 {counterfactual_credit}/{credit_total}："
-            "这是「若过门禁本可得」的权重和，不是本次分数，不得当作分数汇总）"
+            "这是「若过门禁本可得」的权重和，不是本次分数，不得当作分数汇总）。"
+            "门禁只影响分数，不影响观测：上面通过的计分项仍会作为技能证据计入掌握度"
         )
     if voided:
         expected_ver = task.get("task_version")
