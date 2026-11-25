@@ -281,6 +281,20 @@ def test_gate_failure_keeps_credit_observations():
     assert any("无资格评分" in n for n in report["notes"])
 
 
+def test_gate_failure_explains_both_axes():
+    """门禁失败的报告必须同时解释分数轴与熟练度轴。
+
+    2026-11-25（B-42 结案）：学生看到「这次 0 分 / 某项技能满」时无从理解，
+    因为报告原来说完「无资格评分」就结束了。补的那句必须一直被锁住——
+    它同时是「为什么照记过程证据」的唯一说明，删掉不会红任何其他测试。
+    """
+    report = _build("raw-no-file")
+    text = "".join(report.get("notes") or ())
+    assert "无资格评分" in text, "分数轴的解释不许丢"
+    assert "门禁只影响分数，不影响观测" in text, "熟练度轴的解释不许丢"
+    assert "计入掌握度" in text
+
+
 def test_score_orders_by_process_gate_then_accuracy():
     """分数判据（round-70 修订）：先过过程与门禁两道门槛，再按正确性排序。
 

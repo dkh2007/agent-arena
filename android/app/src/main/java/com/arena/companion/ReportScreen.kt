@@ -86,6 +86,9 @@ fun ReportScreen(
     ) {
         item { PageHead(report) }
         item { ScorePanel(report) }
+        // 放在分数下面，不放断言明细之后：门禁失败时最有用的就是「为什么 0 分」，
+        // 排到五条断言后面等于让学生滑到底才看见（2026-11-25 挪上来）。
+        item { NotesCard(report.notes) }
 
         item { SectionHead("技能缺口", "按权重损失排序") }
         if (report.gaps.isEmpty()) {
@@ -98,7 +101,6 @@ fun ReportScreen(
         item { AssertionListCard(report.assertions) }
 
         item { ProcessBanner(report.processMissing) }
-        item { NotesCard(report.notes) }
         plan?.let { item { NextStepCard(it, onOpenTraining, onOpenFeynman) } }
         reminder?.let { item { ReminderEntryCard(it, onOpenReminder) } }
         item { ProvenanceCard(report) }
