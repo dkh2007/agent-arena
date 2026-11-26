@@ -150,6 +150,8 @@ def _files() -> list[tuple[str, bytes]]:
         if not src.is_file():
             raise PackError(f"缺启动脚本：pack/trial/{name}")
         add(name, src.read_bytes())
+    # 手边没有 Agent 的同学靠它跑出提交（README 里写了两种模式）
+    add("try.py", (ROOT / "pack" / "trial" / "try.py").read_bytes())
     add("scripts/lab.py", (ROOT / "scripts" / "lab.py").read_bytes())
     add("requirements.txt", _requirements().encode("utf-8"))
 

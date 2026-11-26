@@ -2407,7 +2407,7 @@
 - **要解决的问题**：`git clone` 对非技术同学不是一个动作，是三个（装 git、选目录、cd 对）。
   试用本来就是一推就走的场景，任何一步都能把它变成"算了"。
 - **产出**：`python scripts/make_trial_pack.py --verify` →
-  `dist/arena-trial-v1.zip`（42 个文件 / 308 KB / sha256 `e44fc79ed57a8eec`）。解压后双击
+  `dist/arena-trial-v1.zip`（43 个文件 / 311 KB / sha256 `f67673a49ac91f4f`）。解压后双击
   `start.bat`（Windows）或 `sh start.sh`（macOS/Linux），第一次自动装 `pyyaml` + `jsonschema`。
 - **裁掉了什么（这条必须有，否则等于把答案一起发出去）**：任务 YAML 里的
   `rubric_gate` / `rubric_credit` / `scoring` / `derivation` / `trace_requirements` 与
@@ -2418,6 +2418,12 @@
   密钥扫描只拦"像钥匙的"（`sk-` 会误命中 `task-`，这条踩过）。
 - **最硬的那条**：`test_pack_runs_after_unzip` —— 真解压、真起服务、真调 3 次（含一次 400）、
   真 `--from-log`、真 `submit()` 出报告。只看文件清单齐不齐不算数。
+- **同日追加（人一句「他们有 Agent 吗」逼出来的）**：内测同学没有 Claude Code / Cursor，
+  而原包假设「他们有 Agent 去调工具」。补 `try.py`：不需要任何 Agent，两个模式各跑一遍——
+  `naive`（只拉一半、500 不重试）与 `--mode ok`（重试 + 剔无效行）。实测这两次在真任务上判出
+  **0.25（R2+R3 fail）** 与 **1.00**，说明报告里既有东西可读、改对了又会变绿。
+  判据：`tests/test_trial_pack.py::test_try_script_stands_in_for_an_agent`（两头都要对，
+  只验"脚本跑通了"不算）。
 - **没做**：包内不含题目切换（只放 `dbg-001` 一道）；不含报告导出（同 B-46 的待办）。
 
 

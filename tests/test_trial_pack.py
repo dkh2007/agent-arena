@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -24,6 +25,8 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import make_trial_pack as pack  # noqa: E402
+from arena import lab  # noqa: E402
+from arena import lab  # noqa: E402
 import yaml  # noqa: E402
 
 
@@ -102,3 +105,62 @@ def test_pack_runs_after_unzip(built):
     """
     message = pack.verify(built)
     assert message.startswith("OK"), message
+
+
+def _run_try(root: Path, base: str, mode: str | None, work: Path) -> None:
+    args = [sys.executable, str(root / "try.py"), base]
+    if mode:
+        args += ["--mode", mode]
+    done = subprocess.run(args, capture_output=True, text=True, timeout=120, cwd=str(work))
+    assert done.returncode == 0, f"try.py 退出 {done.returncode}：{done.stderr[-400:]}"
+
+
+def test_try_script_stands_in_for_an_agent(built, tmp_path):
+    """没有 Agent 的人也要能拿到一份**有内容的**报告。
+
+    判据不是「脚本跑通了」，是两头都对：故意写错的那次必须被判出来（且不只一条），
+    改对之后必须满分。少了任何一头，这个脚本就只是装饰。
+    """
+    import threading
+
+    from arena import lab, store, submission_api as api
+
+    with zipfile.ZipFile(built) as zf:
+        zf.extractall(tmp_path)
+    root = tmp_path / pack.PACK_DIR
+    task = yaml.safe_load((ROOT / "tasks" / f"{pack.TRIAL_TASK}.yaml").read_text(encoding="utf-8"))
+    registry = api.TaskRegistry(ROOT / "tasks")
+
+    def one_round(mode: str | None) -> dict:
+        work = tmp_path / f"round-{mode or 'naive'}"
+        work.mkdir()
+        log_path = work / "calls.jsonl"
+        call_log = lab.CallLog(log_path)
+        server, _ = lab.serve(task, port=0, on_call=call_log)
+        base = "http://%s:%d" % server.server_address[:2]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            _run_try(root, base, mode, work)
+        finally:
+            server.shutdown()
+            server.server_close()
+            call_log.close()
+        calls, artifacts = lab.read_call_log(log_path)
+        payload = lab.build_submission(calls, artifacts, task, user_id="u-try")
+        db = work / "try.db"
+
+        def conn_factory():
+            return store.connect(db)
+
+        api.bootstrap(db, registry)
+        return api.submit(payload, registry=registry, conn_factory=conn_factory)
+
+    naive = one_round(None)
+    goods = one_round("ok")
+
+    assert naive["score"]["ratio"] < 1.0, "故意写错的脚本竟然满分——那报告里就没东西可看了"
+    failed = [a["id"] for a in naive["assertions"] if a["state"] == "fail"]
+    assert len(failed) >= 2, f"只判出一条问题（{failed}），演示效果太弱"
+    assert goods["score"]["ratio"] == 1.0, [
+        (a["id"], a["state"]) for a in goods["assertions"]
+    ]
