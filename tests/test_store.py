@@ -52,7 +52,8 @@ def test_init_db_is_idempotent_and_creates_twelve_tables(tmp_path):
     **现状锁，改一次反转一次**：round-88（B-07c）7 → 8 张，round-90（B-04b）→ 9 张，
     round-91（B-04d）只加列不加表（v4），round-92 加 `reappraisals` → 10 张（v5），
     round-101（B-04h ②）加 `unrecoverable_marks` → 11 张（v6），
-    2026-11-24 加 `appeals` → 12 张（v7）。
+    2026-11-24 加 `appeals` → 12 张（v7），2026-11-26 加 `sessions` / `session_calls`
+    → 14 张（v8，托管会话：过程记录存服务端）。
     锁的**不是数字本身**，而是「`init_db()` 会顺带把版本抬到 `SCHEMA_VERSION`」——
     表建了而版本没抬，才是真故障（半迁移）。
     """
@@ -63,9 +64,9 @@ def test_init_db_is_idempotent_and_creates_twelve_tables(tmp_path):
     assert {"users", "skills", "tasks", "error_patterns", "submissions",
             "user_skill_states", "review_items", "mastery_snapshots",
             "arbitration_queue", "reappraisals", "unrecoverable_marks",
-            "appeals"} <= names
-    assert len({n for n in names if not n.startswith("sqlite_")}) == 12
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 7
+            "appeals", "sessions", "session_calls"} <= names
+    assert len({n for n in names if not n.startswith("sqlite_")}) == 14
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 8
     cols = {r[1] for r in conn.execute("PRAGMA table_info(submissions)")}
     assert "artifacts" in cols
     conn.close()
@@ -282,4 +283,82 @@ def test_replaying_the_v4_step_on_a_half_built_database_does_not_crash(tmp_path)
     assert store.schema_version(conn) == store.SCHEMA_VERSION
     cols = [r[1] for r in conn.execute("PRAGMA table_info(submissions)")]
     assert cols.count("artifacts") == 1       # 没被加成两列
+    conn.close()
+
+
+def test_connect_sets_a_busy_timeout_and_wal(tmp_path):
+    """托管模式下这两条不是优化，是"并发能不能用"的前提。
+
+    - `busy_timeout` 是**每连接**设置，SQLite 默认 0 → 第二个写者立刻 `database is locked`。
+    - `journal_mode=WAL` 是**库级持久**设置，读不再等写。
+    本地单人跑时两条都看不出差别，所以以前没写也没出事——正因为如此才要锁住，
+    免得以后被当成"没用的 PRAGMA"删掉。
+    """
+    conn = store.connect(tmp_path / "w.db")
+    store.init_db(conn)
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == store.BUSY_TIMEOUT_MS
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+    # 换一个连接仍然是 WAL（库级持久），但 busy_timeout 要重新设（连接级）
+    second = store.connect(tmp_path / "w.db")
+    assert second.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert second.execute("PRAGMA busy_timeout").fetchone()[0] == store.BUSY_TIMEOUT_MS
+    conn.close()
+    second.close()
+
+
+def test_v7_database_upgrades_to_v8_and_keeps_old_rows(tmp_path):
+    """老库升级只加表，不动旧数据——v8 加的是会话表，与历史提交无关。"""
+    path = tmp_path / "old.db"
+    conn = store.connect(path)
+    conn.executescript(store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2 + store.SCHEMA_SQL_V3
+                       + store.SCHEMA_SQL_V5 + store.SCHEMA_SQL_V6 + store.SCHEMA_SQL_V7)
+    conn.execute("INSERT INTO users (user_id, display_name, created_at) "
+                 "VALUES ('u-old', '老用户', '2026-01-01T00:00:00+00:00')")
+    conn.execute("PRAGMA user_version = 7")
+    conn.commit()
+
+    action = store.migrate(conn)
+    assert action["from"] == 7 and action["to"] == 8
+    assert set(action["added_tables"]) == {"sessions", "session_calls"}
+    assert conn.execute("SELECT display_name FROM users WHERE user_id='u-old'").fetchone()[0] == "老用户"
+    conn.close()
+
+
+def test_connect_sets_a_busy_timeout_and_wal(tmp_path):
+    """托管模式下这两条不是优化，是"并发能不能用"的前提。
+
+    - `busy_timeout` 是**每连接**设置，SQLite 默认 0 → 第二个写者立刻 `database is locked`。
+    - `journal_mode=WAL` 是**库级持久**设置，读不再等写。
+    本地单人跑时两条都看不出差别，所以以前没写也没出事——正因为如此才要锁住，
+    免得以后被当成"没用的 PRAGMA"删掉。
+    """
+    conn = store.connect(tmp_path / "w.db")
+    store.init_db(conn)
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == store.BUSY_TIMEOUT_MS
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+    # 换一个连接仍然是 WAL（库级持久），但 busy_timeout 要重新设（连接级）
+    second = store.connect(tmp_path / "w.db")
+    assert second.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert second.execute("PRAGMA busy_timeout").fetchone()[0] == store.BUSY_TIMEOUT_MS
+    conn.close()
+    second.close()
+
+
+def test_v7_database_upgrades_to_v8_and_keeps_old_rows(tmp_path):
+    """老库升级只加表，不动旧数据——v8 加的是会话表，与历史提交无关。"""
+    path = tmp_path / "old.db"
+    conn = store.connect(path)
+    conn.executescript(store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2 + store.SCHEMA_SQL_V3
+                       + store.SCHEMA_SQL_V5 + store.SCHEMA_SQL_V6 + store.SCHEMA_SQL_V7)
+    conn.execute("INSERT INTO users (user_id, display_name, created_at) "
+                 "VALUES ('u-old', '老用户', '2026-01-01T00:00:00+00:00')")
+    conn.execute("PRAGMA user_version = 7")
+    conn.commit()
+
+    action = store.migrate(conn)
+    assert action["from"] == 7 and action["to"] == 8
+    assert set(action["added_tables"]) == {"sessions", "session_calls"}
+    assert conn.execute("SELECT display_name FROM users WHERE user_id='u-old'").fetchone()[0] == "老用户"
     conn.close()

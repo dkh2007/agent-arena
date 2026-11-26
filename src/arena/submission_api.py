@@ -112,6 +112,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import socket
 import subprocess
 import sys
@@ -127,6 +128,7 @@ try:  # 作为包被 import
     from . import assertion_evaluator as ae
     from . import diagnosis_report as dr
     from . import judge_pipeline as jp
+    from . import hosting
     from . import llm_judge as lj
     from . import report_html
     from . import store
@@ -135,6 +137,7 @@ except ImportError:  # 作为独立脚本运行
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import assertion_evaluator as ae  # type: ignore[no-redef]
     import diagnosis_report as dr  # type: ignore[no-redef]
+    import hosting  # type: ignore[no-redef]
     import report_html  # type: ignore[no-redef]
     import judge_pipeline as jp  # type: ignore[no-redef]
     import llm_judge as lj  # type: ignore[no-redef]
@@ -258,6 +261,29 @@ class TaskRegistry:
 
 
 # ── 对外可发的任务形状（白名单，不是黑名单） ─────────────────────────────────
+
+def _empty_session_page(token: str, message: str) -> str:
+    """空会话点"交卷"时给一页人话，而不是一坨 JSON。
+
+    这一步是浏览器里点的，返回 JSON 等于让人对着 `{"error": ...}` 猜。
+    """
+    import html as _html
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>还没有记录</title>
+<style>body{{margin:0;padding:24px;font:16px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+color:#1f2937;background:#f8fafc;}}main{{max-width:560px;margin:0 auto;}}
+.card{{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;}}
+a{{color:#1d4ed8;}}</style></head>
+<body><main><div class="card">
+<h2 style="margin-top:0">这个链接还没有任何调用记录</h2>
+<p>{_html.escape(message)}</p>
+<p><a href="/s/{_html.escape(token)}">回到做题那一页</a></p>
+</div></main></body></html>
+"""
+
 
 def public_task(task: dict, catalog: list[tuple[str, dict]] | None = None) -> dict:
     """把任务裁成"学习者该看见的那部分"。
@@ -610,13 +636,22 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- 响应工具 --
 
-    def _send(self, status: int, body: dict) -> None:
+    def _send(self, status: int, body: dict, headers: dict | None = None) -> None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _redirect(self, location: str, status: int = 303) -> None:
+        """303：交完卷用 GET 去取报告页，浏览器地址栏停在报告上，刷新不会重复交卷。"""
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send_html(self, status: int, page: str) -> None:
         data = page.encode("utf-8")
@@ -652,15 +687,153 @@ class _Handler(BaseHTTPRequestHandler):
             fn()
         except SubmissionError as exc:
             self._send(exc.status, exc.as_body())
+        except hosting.HostError as exc:
+            # 托管层的错自带状态码（404 未知会话 / 429 超预算 / 409 空会话）。
+            # 放到这里统一转，省得每个入口各写一遍——漏一处就是 500，而 500 会让人
+            # 以为"服务挂了"，实际只是他手里的链接不完整。
+            self._send(exc.status, exc.as_body())
         except Exception as exc:  # noqa: BLE001 - 兜底，绝不让连接空响应挂死
             self._send(500, {"error": {"code": "internal_error",
                                        "message": f"{type(exc).__name__}: {exc}"}})
+
+    # -- 托管会话（B-51）：学生只拿一条链接，过程留在服务端 --
+
+    def _sessions(self) -> hosting.SessionRegistry:
+        sessions = self.ctx.get("sessions")
+        if sessions is None:
+            raise SubmissionError(
+                "session_hosting_disabled",
+                "这台服务没开托管会话：启动时加 --admin-token 才会开", status=403,
+            )
+        return sessions
+
+    def _admin_ok(self) -> bool:
+        """开新会话要口令。`compare_digest` 而不是 `==`：口令比较不该泄露时序。"""
+        expected = str(self.ctx.get("admin_token") or "")
+        given = str(self.headers.get("X-Admin-Token") or "")
+        return bool(expected) and secrets.compare_digest(expected, given)
+
+    def _base_url(self) -> str:
+        """给页面拼绝对地址。用 `Host` 头——它由请求方给，但只影响他自己看到的链接，
+        不会改变服务行为；反过来写死 `127.0.0.1` 则会让托管后的页面把地址写错。"""
+        host = self.headers.get("Host")
+        if not host:
+            h, port = self.server.server_address[:2]
+            host = f"{h}:{port}"
+        return f"http://{host}"
+
+    def _submit_fn(self):
+        """判分入口只在这里组装：`hosting` 不 import 本模块（会成环）。"""
+        registry = self.ctx["registry"]
+        conn_factory = self.ctx["conn_factory"]
+        return lambda payload: submit(payload, registry=registry, conn_factory=conn_factory)
+
+    def _open_session(self) -> None:
+        sessions = self._sessions()
+        if not self._admin_ok():
+            raise SubmissionError(
+                "forbidden", "开新会话需要管理口令（请求头 X-Admin-Token）", status=403,
+            )
+        payload = self._read_json()
+        task_id = payload.get("task_id") if isinstance(payload, dict) else None
+        if not isinstance(task_id, str) or not task_id:
+            raise SubmissionError("bad_request", "缺 task_id", status=400)
+        session = sessions.create(task_id)
+        self._send(201, {
+            "session": session,
+            "url": f"{self._base_url()}/s/{session['token']}",
+            "tools_url": f"{self._base_url()}/s/{session['token']}/tools/",
+        })
+
+    def _session_post(self, path: str) -> bool:
+        """`/s/<token>/tools/<name>` 与 `/s/<token>/submit`。命中返回 True。"""
+        parts = [p for p in path.split("/") if p]
+        if len(parts) < 2 or parts[0] != "s":
+            return False
+        sessions = self._sessions()
+        token = parts[1]
+        if len(parts) == 4 and parts[2] == "tools":
+            self._session_tool(sessions, token, parts[3])
+            return True
+        if len(parts) == 3 and parts[2] == "submit":
+            report, created = self._grade_session(sessions, token)
+            sid = report["submission"]["submission_id"]
+            self._send(201 if created else 200, {
+                "submission_id": sid,
+                "reused": not created,
+                "report_url": f"/submissions/{sid}/report.html",
+                "report": report,
+            })
+            return True
+        return False
+
+    def _session_tool(self, sessions, token: str, name: str) -> None:
+        """代调一次工具，**状态码原样回放**。
+
+        回放 500 不是"服务出错"，是这道题的考点：学习者要看到失败、决定要不要重试。
+        这里若把 500 吞成 200，整道题就白出了。
+        """
+        payload = self._read_json()
+        try:
+            _index, status, body = sessions.call(token, name, payload)
+        except hosting.HostError as exc:
+            raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
+        self._send(status, body if isinstance(body, dict) else {"body": body})
+
+    def _grade_session(self, sessions, token: str):
+        try:
+            return sessions.grade(token, self._submit_fn())
+        except hosting.HostError as exc:
+            raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
+
+    def _session_get(self, path: str) -> None:
+        """`/s/<token>` 是做题那一页；`/s/<token>/submit` 是交卷并跳到报告。
+
+        交卷用 GET 是刻意的：这一页不许有脚本（与报告页同一条约束），
+        没有脚本就没法用按钮发 POST。重复点由 `sessions.grade` 的"钉住 submission_id"兜住。
+        """
+        sessions = self._sessions()
+        parts = [p for p in path.split("/") if p]
+        if len(parts) < 2:
+            raise SubmissionError("not_found", "缺会话编号", status=404)
+        token = parts[1]
+        try:
+            session = sessions.get(token)
+        except hosting.HostError as exc:
+            raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
+
+        if len(parts) == 2:
+            task = sessions.task(session["task_id"])
+            page = hosting.render_landing(
+                session, public_task(task, self.ctx["registry"].items()), self._base_url(),
+            )
+            self._send_html(200, page)
+            return
+
+        if len(parts) == 3 and parts[2] == "submit":
+            try:
+                report, _created = sessions.grade(token, self._submit_fn())
+            except hosting.HostError as exc:
+                if exc.code != "nothing_to_grade":
+                    raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
+                self._send_html(409, _empty_session_page(token, exc.message))
+                return
+            sid = report["submission"]["submission_id"]
+            self._redirect(f"/submissions/{sid}/report.html")
+            return
+
+        raise SubmissionError("not_found", f"没有这个路径：{path}", status=404)
 
     # -- 路由 --
 
     def do_POST(self) -> None:  # noqa: N802
         def run() -> None:
             path = self.path.split("?", 1)[0]
+            if path == "/sessions":
+                self._open_session()
+                return
+            if self._session_post(path):
+                return
             if path == "/submissions":
                 payload = self._read_json()
                 report = submit(payload, registry=self.ctx["registry"],
@@ -700,6 +873,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, public_task(
                     self.ctx["registry"].get(task_id), self.ctx["registry"].items()
                 ))
+                return
+            if path.startswith("/s/"):
+                self._session_get(path)
                 return
             if path.startswith("/submissions/"):
                 rest = path[len("/submissions/"):].strip("/")
@@ -857,8 +1033,15 @@ def bootstrap(db_path: str | Path, registry: TaskRegistry) -> None:
 
 def make_server(db_path: str | Path, *, host: str = "127.0.0.1", port: int = 0,
                 tasks_dir: str | Path = TASKS_DIR, quiet: bool = False,
-                bootstrap_db: bool = True) -> ThreadingHTTPServer:
-    """构造（但不启动）服务。`port=0` 由系统分配——测试据此拿真实端口，不猜。"""
+                bootstrap_db: bool = True,
+                admin_token: str | None = None,
+                max_calls: int = hosting.DEFAULT_MAX_CALLS) -> ThreadingHTTPServer:
+    """构造（但不启动）服务。`port=0` 由系统分配——测试据此拿真实端口，不猜。
+
+    `admin_token` 决定**托管会话是否启用**：不给就没有 `/sessions` 这条路由（403），
+    而不是给一个默认口令。默认关闭是刻意的——这条路由能开新会话，等于能消耗服务器资源，
+    上线时忘了配口令比忘配数据库危险得多。
+    """
     registry = TaskRegistry(tasks_dir)
     if bootstrap_db:
         bootstrap(db_path, registry)
@@ -868,21 +1051,36 @@ def make_server(db_path: str | Path, *, host: str = "127.0.0.1", port: int = 0,
 
     server = ThreadingHTTPServer((host, port), _Handler)
     server.daemon_threads = True
+    sessions = None
+    if admin_token:
+        sessions = hosting.SessionRegistry(tasks_dir, conn_factory=conn_factory,
+                                           max_calls=max_calls)
     server.ctx = {  # type: ignore[attr-defined]
         "registry": registry,
         "conn_factory": conn_factory,
         "db_path": str(db_path),
         "quiet": quiet,
+        "sessions": sessions,
+        "admin_token": admin_token,
     }
     return server
 
 
 def serve(db_path: str, *, host: str = "127.0.0.1", port: int = 8080,
-          quiet: bool = False) -> int:
-    server = make_server(db_path, host=host, port=port, quiet=quiet)
+          quiet: bool = False, admin_token: str | None = None,
+          max_calls: int = hosting.DEFAULT_MAX_CALLS) -> int:
+    server = make_server(db_path, host=host, port=port, quiet=quiet,
+                         admin_token=admin_token, max_calls=max_calls)
     real_host, real_port = server.server_address[:2]
     print(f"listening on http://{real_host}:{real_port}  (db={db_path})")
     print(f"tasks: {server.ctx['registry'].ids()}")  # type: ignore[attr-defined]
+    if admin_token:
+        print(f"托管会话已开：每个会话最多 {max_calls} 次调用")
+        print(f"  开一个：curl -X POST -H 'X-Admin-Token: <口令>' "
+              f"-d '{{\"task_id\": \"dbg-001-order-report\"}}' "
+              f"http://{real_host}:{real_port}/sessions")
+    else:
+        print("托管会话未开（加 --admin-token 才开）")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -899,8 +1097,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="绑定地址；默认只绑本机——当前没有鉴权，不要绑 0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--quiet", action="store_true", help="不打印每条请求日志")
+    ap.add_argument("--admin-token", default=None,
+                    help="开了它才启用托管会话（/sessions）。不给=不开，不是给默认口令")
+    ap.add_argument("--max-calls", type=int, default=hosting.DEFAULT_MAX_CALLS,
+                    help="每个会话最多允许多少次工具调用")
     args = ap.parse_args(argv)
-    return serve(args.db, host=args.host, port=args.port, quiet=args.quiet)
+    return serve(args.db, host=args.host, port=args.port, quiet=args.quiet,
+                 admin_token=args.admin_token, max_calls=args.max_calls)
 
 
 if __name__ == "__main__":

@@ -604,3 +604,175 @@ def test_report_html_endpoint_renders_the_page_for_a_browser(live):
 def test_report_html_for_an_unknown_submission_is_404(live):
     status, _content_type, _page = _get_html(live, "/submissions/sub-nope/report.html")
     assert status == 404
+
+
+# ── 7. 托管会话：学生只拿一条链接（B-51） ───────────────────────────────────
+
+ADMIN = "k-trial"
+
+
+def _hosted_server(tmp_path, *, max_calls: int, name: str):
+    db = tmp_path / f"{name}.db"
+    srv = api.make_server(db, port=0, quiet=True, admin_token=ADMIN, max_calls=max_calls)
+    host, port = srv.server_address[:2]
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+
+    def call(method: str, path: str, body=None, headers: dict | None = None):
+        conn = http.client.HTTPConnection(host, port, timeout=20)
+        data = json.dumps(body).encode() if body is not None else None
+        hdrs = {"Content-Type": "application/json"}
+        hdrs.update(headers or {})
+        conn.request(method, path, body=data, headers=hdrs)
+        resp = conn.getresponse()
+        payload = resp.read().decode("utf-8")
+        location = resp.getheader("Location")
+        ctype = resp.getheader("Content-Type") or ""
+        conn.close()
+        return resp.status, payload, location, ctype
+
+    def json_call(method: str, path: str, body=None, headers: dict | None = None):
+        status, payload, _loc, _ct = call(method, path, body, headers)
+        return status, (json.loads(payload) if payload else None)
+
+    try:
+        yield SimpleNamespace(host=host, port=port, db=db, call=call,
+                             json_call=json_call, admin={"X-Admin-Token": ADMIN})
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        th.join(timeout=5)
+
+
+@pytest.fixture()
+def hosted(tmp_path):
+    """预算只有 2 次：让"超预算"能在三次调用内测到。"""
+    yield from _hosted_server(tmp_path, max_calls=2, name="hosted")
+
+
+@pytest.fixture()
+def roomy(tmp_path):
+    """预算宽松：测正常做题时要能连打三五次（含一次故意失败）。"""
+    yield from _hosted_server(tmp_path, max_calls=10, name="roomy")
+
+
+def _open(hosted, task_id: str = "dbg-001-order-report") -> dict:
+    status, body = hosted.json_call("POST", "/sessions", {"task_id": task_id}, hosted.admin)
+    assert status == 201, body
+    return body
+
+
+def test_opening_a_session_needs_the_admin_token(hosted):
+    """没有口令就不该能开会话——这条路由能消耗服务器资源，默认必须是关的。"""
+    status, body = hosted.json_call("POST", "/sessions", {"task_id": "dbg-001-order-report"})
+    assert status == 403 and body["error"]["code"] == "forbidden"
+
+    status, body = hosted.json_call("POST", "/sessions", {"task_id": "dbg-001-order-report"},
+                                    {"X-Admin-Token": "wrong"})
+    assert status == 403
+
+
+def test_hosting_is_off_unless_the_server_was_started_with_a_token(live):
+    """没加 `--admin-token` 的服务上，这条路由存在但拒绝——不是"给个默认口令"。"""
+    conn = http.client.HTTPConnection(live.host, live.port, timeout=15)
+    conn.request("POST", "/sessions", body=json.dumps({"task_id": "dbg-001-order-report"}),
+                 headers={"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    payload = json.loads(resp.read().decode("utf-8"))
+    conn.close()
+    assert resp.status == 403
+    assert payload["error"]["code"] == "session_hosting_disabled"
+
+
+def test_unknown_task_is_refused_before_a_session_exists(hosted):
+    status, body = hosted.json_call("POST", "/sessions", {"task_id": "no-such-task"}, hosted.admin)
+    assert status == 404 and body["error"]["code"] == "unknown_task"
+
+
+def test_the_landing_page_holds_the_address_and_no_answers(hosted):
+    """学生打开链接看到的那一页：地址、工具、次数。答案字段一个都不能有。"""
+    session = _open(hosted)
+    status, page, _loc, ctype = hosted.call("GET", f"/s/{session['session']['token']}")
+    assert status == 200 and ctype.startswith("text/html")
+    token = session["session"]["token"]
+    assert f"/s/{token}/tools/" in page
+    assert "fetch_orders" in page and "write_report" in page
+    for leaked in ("rubric", "expected", "fault_injection", "1837.99"):
+        assert leaked not in page, f"页面上出现了 {leaked}"
+    assert "<script" not in page.lower()
+
+
+def test_tool_calls_pass_the_real_status_through(roomy):
+    """故意失败那次必须**原样回 500**。吞成 200，这道题就没有"会不会重试"可考了。"""
+    session = _open(roomy)
+    token = session["session"]["token"]
+    status, body = roomy.json_call(
+        "POST", f"/s/{token}/tools/fetch_orders", {"offset": 0, "limit": 10})
+    assert status == 200 and body["orders"], "第一页应该拿到数据"
+    status, _body = roomy.json_call(
+        "POST", f"/s/{token}/tools/fetch_orders", {"offset": 10, "limit": 10})
+    assert status == 500, "第一次翻到第 2 页要失败，这是题面写明的考点"
+    status, body = roomy.json_call(
+        "POST", f"/s/{token}/tools/fetch_orders", {"offset": 10, "limit": 10})
+    assert status == 200 and body["orders"]
+
+
+def test_budget_is_enforced_per_session_over_http(hosted):
+    """上限 2 次：第三次 429，且说明该怎么办——不是让脚本对着 500 乱撞。"""
+    session = _open(hosted)
+    token = session["session"]["token"]
+    hosted.json_call("POST", f"/s/{token}/tools/fetch_orders", {"offset": 0, "limit": 10})
+    hosted.json_call("POST", f"/s/{token}/tools/fetch_orders", {"offset": 10, "limit": 10})
+    status, body = hosted.json_call(
+        "POST", f"/s/{token}/tools/fetch_orders", {"offset": 10, "limit": 10})
+    assert status == 429 and body["error"]["code"] == "session_exhausted"
+    assert "重试" in body["error"]["message"]
+
+
+def test_submitting_from_the_browser_redirects_to_the_report(roomy):
+    """整条链在浏览器里走完：做题 → 点交卷 → 303 → 报告页（含训练单与复述框）。"""
+    session = _open(roomy)
+    token = session["session"]["token"]
+    roomy.json_call("POST", f"/s/{token}/tools/fetch_orders", {"offset": 0, "limit": 10})
+    roomy.json_call("POST", f"/s/{token}/tools/write_report",
+                    {"path": "/workspace/report.json", "content": '{"valid_count": 9}'})
+
+    status, _payload, location, _ctype = roomy.call("GET", f"/s/{token}/submit")
+    assert status == 303 and location.startswith("/submissions/")
+    assert location.endswith("/report.html")
+
+    status, page, _loc, ctype = roomy.call("GET", location)
+    assert status == 200 and ctype.startswith("text/html")
+    assert "订单数据核对报告" in page
+    assert not re.search(r"\bR\d+_[a-z_]+\b", page)
+    assert "<textarea" in page, "复述框没渲染，说明报告页没拿到 task"
+
+
+def test_submitting_twice_lands_on_the_same_report(roomy):
+    """刷新或重复点交卷，不能判出两份分数。"""
+    session = _open(roomy)
+    token = session["session"]["token"]
+    roomy.json_call("POST", f"/s/{token}/tools/fetch_orders", {"offset": 0, "limit": 10})
+
+    _, _, first, _ = roomy.call("GET", f"/s/{token}/submit")
+    status, payload = roomy.json_call("POST", f"/s/{token}/submit")
+    assert status == 200 and payload["reused"] is True
+    assert f"/submissions/{payload['submission_id']}/report.html" == first
+
+
+def test_submitting_an_empty_session_says_so_in_html(hosted):
+    """还没做题就点交卷：给一页人话 + 回得去的链接，不是一串 JSON。"""
+    session = _open(hosted)
+    status, page, _loc, ctype = hosted.call("GET", f"/s/{session['session']['token']}/submit")
+    assert status == 409 and ctype.startswith("text/html")
+    assert "还没有任何调用记录" in page
+    assert "回到做题那一页" in page
+
+
+def test_a_bad_token_is_404_on_every_session_path(roomy):
+    """扫路径的请求一律 404，连"这个链接存在但你没权限"都不透露。"""
+    for path in ("/s/" + "a" * 43, "/s/" + "a" * 43 + "/submit",
+                 "/s/" + "a" * 43 + "/tools/fetch_orders"):
+        status, page, _loc, _ctype = roomy.call("GET" if "tools" not in path else "POST",
+                                                 path, {} if "tools" in path else None)
+        assert status == 404, (path, status, page[:80])

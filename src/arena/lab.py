@@ -252,6 +252,23 @@ def _log_path(path: str | Path) -> Path:
     return p
 
 
+def artifact_record(name: str, status: int, params: dict) -> tuple[str, str] | None:
+    """从一次调用里取产物：`write_report` 的正文在**入参**里，返回体只有路径和字节数。
+
+    放进这里是因为它被两处用到：`CallLog` 写 JSONL（B-46）、`hosting` 写库（B-51）。
+    两处各写一份的话，改工具名时必然只改一处——那会导致"本地跑有产物、托管跑没有"，
+    而症状是报告里"结论"一致但"产物"缺失，最难对。
+
+    返回 `(路径, 正文)`；这条调用不算产物就返回 `None`（不抛异常：产物缺失由判分说话）。
+    """
+    if name != "write_report" or not (200 <= status < 300):
+        return None
+    path = params.get("path")
+    if not path:
+        return None
+    return str(path), str(params.get("content") or "")
+
+
 class CallLog:
     """服务端逐次记录工具调用，追加写 JSONL。**先落盘、再返回**（同 `platform_capture`）。
 
@@ -291,9 +308,9 @@ class CallLog:
             self._write({"call_index": self._seq, "name": name, "params": params,
                          "http_status": status, "body": body})
             # write_report 的响应体里只有 path/bytes，正文在入参里；不记就等于把产物丢了
-            if name == "write_report" and 200 <= status < 300:
-                self._write({"artifact_path": str(params.get("path")),
-                             "content": params.get("content")})
+            record = artifact_record(name, status, params)
+            if record is not None:
+                self._write({"artifact_path": record[0], "content": record[1]})
 
     def _write(self, record: dict) -> None:
         self._handle.write(json.dumps(record, ensure_ascii=False) + "\n")

@@ -63,7 +63,7 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # 把标记做成"从名单里消失"是这一层唯一危险的误读——那会变成静默忘掉一个人。
 # 标记带撤销字段（`revoked_at` / `revoked_reason`）而不是靠删行：
 # 将来若产物被补回来，要能说清"谁在什么时候说过它补不回来"。
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
 # 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
@@ -303,8 +303,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_appeals_one_pending
 CREATE INDEX IF NOT EXISTS idx_appeals_pending ON appeals(status, created_at);
 """
 
+SCHEMA_SQL_V8 = """
+-- 托管会话（B-51）。**过程记录存在服务端**：学习者手上没有文件，因此摘不出"删掉那次乱加参数的调用"。
+--
+-- `token` 是唯一凭证：够长、随机、不可枚举。它在库里是明文——这是刻意的，
+-- 会话只活一次活动，值得为"能人工核对一条报告属于谁"付出这点代价。
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    task_id    TEXT NOT NULL REFERENCES tasks(task_id),
+    user_id    TEXT NOT NULL,
+    max_calls  INTEGER NOT NULL DEFAULT 120,
+    created_at TEXT NOT NULL,
+    -- 交过卷就钉住 submission_id：重复点提交返回同一份报告，不会判出两份分数
+    submission_id TEXT
+);
+
+-- 每次工具调用一行，`call_index` 由服务端自己数（1 起、连续）。
+-- 学习者看到的是返回体，看不到这张表——"编号连续"这条判据从此不可伪造。
+CREATE TABLE IF NOT EXISTS session_calls (
+    token       TEXT NOT NULL REFERENCES sessions(token),
+    call_index  INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    params      TEXT NOT NULL,
+    http_status INTEGER NOT NULL,
+    body        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (token, call_index)
+);
+"""
+
 SCHEMA_SQL = (SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3 + SCHEMA_SQL_V5
-              + SCHEMA_SQL_V6 + SCHEMA_SQL_V7)
+              + SCHEMA_SQL_V6 + SCHEMA_SQL_V7 + SCHEMA_SQL_V8)
 
 
 def _ensure_artifacts_column(conn: sqlite3.Connection) -> None:
@@ -336,6 +365,7 @@ MIGRATION_STEPS: dict[int, tuple[Any, tuple[str, ...]]] = {
     5: (SCHEMA_SQL_V5, ("reappraisals",)),
     6: (SCHEMA_SQL_V6, ("unrecoverable_marks",)),
     7: (SCHEMA_SQL_V7, ("appeals",)),
+    8: (SCHEMA_SQL_V8, ("sessions", "session_calls")),
 }
 
 
@@ -362,11 +392,23 @@ class StoreError(ValueError):
     """落库前置条件不成立——必须停下来补数据，不许写半条记录。"""
 
 
+# 等锁的上限。**写显式是为了可查，不是为了改行为**：Python 的 `sqlite3.connect`
+# 默认 `timeout=5.0`，本来就把忙等设成 5 秒（SQLite C 接口的默认才是 0）。
+# 以前没人写过这个数，容易被误读成"没设=不等锁"；现在它有名字、有测试锁着。
+BUSY_TIMEOUT_MS = 5000
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
-    """打开连接。**每个连接都要显式开外键**——SQLite 默认关闭，忘了就等于没有约束。"""
-    conn = sqlite3.connect(str(db_path))
+    """打开连接。**每个连接都要显式开外键**——SQLite 默认关闭，忘了就等于没有约束。
+
+    `busy_timeout` 同理是**每连接**设置（库级不记这个）：写并发时它会等锁，
+    而不是立刻抛 `database is locked`。这条只在托管模式（一个进程多个学习者）下有区别，
+    本地单人跑时永远拿得到锁，所以以前没写也没出事。
+    """
+    conn = sqlite3.connect(str(db_path), timeout=BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     return conn
 
 
@@ -422,6 +464,21 @@ def init_db(conn: sqlite3.Connection) -> None:
     with conn:
         conn.executescript(SCHEMA_SQL)
     migrate(conn)
+    enable_wal(conn)
+
+
+def enable_wal(conn: sqlite3.Connection) -> str:
+    """切到 WAL，返回实际生效的模式。
+
+    **WAL 是库级、持久化设置**（写进文件头），所以只需在建库/打开时设一次，
+    不像 `busy_timeout` 那样每连接都要设。它解决的是"读的人在等写的人"：
+    托管时几十个人同时交卷与查报告，回滚日志模式下读会阻塞写。
+
+    不在事务里设——`journal_mode` 不能在有未提交事务时改，SQLite 会返回原模式而不报错，
+    所以这里先确认没有活动事务，再比对返回值。返回 `'wal'` 才算数。
+    """
+    mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+    return str(mode).lower()
 
 
 def schema_version(conn: sqlite3.Connection) -> int:
