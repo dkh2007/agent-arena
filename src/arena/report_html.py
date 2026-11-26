@@ -1,0 +1,254 @@
+"""把诊断报告导成一个自包含的 HTML 页（B-48）。
+
+## 它替代的是什么
+
+到现在为止，报告只有两种形态：一份 JSON（人读不了）、一个安卓页面（要装 APK、
+数据还是打包死的）。试用要给同学"看完能说话"的东西，而他们手上只有浏览器。
+
+所以这里只做一件事：**报告 JSON → 一个 .html，双击就能看，不联网、没有外链**。
+
+## 一条硬规则：不出现机器码
+
+页面里不许出现断言 id（`R2_report_correct`）、字段名（`valid_count`）、
+`expected` / `observed` 这类词。这些在 `docs/android-ui-handoff.md` §4.6 已经定过：
+学习者看到的应该是「结论是否与判据一致」「有效条数你填了 9，按剔除规则应为 17」，
+而不是"哪条断言挂了"。`tests/test_report_html.py` 把这条锁死。
+
+工具名（`fetch_orders`）与参数名（`offset` / `limit`）**照原样显示**——题面里就是这些词，
+翻译反而对不上。这与"不出现断言 id"不矛盾：前者是学习者要调的东西，后者是内部判分标识。
+
+## 为什么不用模板引擎
+
+一页、五个区块、没有循环嵌套的样式切换。引 Jinja 等于为一个文件加一条依赖，
+而这套东西的部署前提是"标准库就能跑"（外部回件 Q6 的结论）。
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+from pathlib import Path
+
+STATE_LABEL = {
+    "pass": "通过",
+    "fail": "没过",
+    "blocked": "没法判定",
+    "unscored": "没算分",
+}
+STATE_CLASS = {
+    "pass": "ok",
+    "fail": "bad",
+    "blocked": "warn",
+    "unscored": "warn",
+}
+
+_CSS = """
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 18px 16px 40px;
+  font: 16px/1.65 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #1c1f23; background: #f6f7f9;
+  -webkit-text-size-adjust: 100%;
+}
+main { max-width: 720px; margin: 0 auto; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 28px 0 10px; color: #3a4048; }
+.sub { color: #6b7280; font-size: 13px; margin: 0 0 18px; }
+.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px;
+        padding: 14px 16px; margin: 10px 0; }
+.score { display: flex; align-items: baseline; gap: 10px; }
+.score b { font-size: 34px; line-height: 1; }
+.score span { color: #6b7280; font-size: 13px; }
+.chips { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 999px;
+        background: #f1f2f4; color: #4b5563; }
+.tag { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px;
+       margin-bottom: 6px; }
+.tag.ok { background: #e8f5ec; color: #1f7a3d; }
+.tag.bad { background: #fdeaea; color: #b3261e; }
+.tag.warn { background: #fdf3e2; color: #8a5a00; }
+.ttl { font-weight: 600; margin: 2px 0 6px; }
+.fact { margin: 4px 0; }
+.hint { color: #4b5563; font-size: 14px; }
+ul { margin: 6px 0; padding-left: 20px; }
+li { margin: 3px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #eef0f2; }
+th { color: #6b7280; font-weight: 500; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+       background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
+.foot { color: #6b7280; font-size: 12px; margin-top: 26px; }
+"""
+
+
+def _esc(value: object) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _label(mapping: dict, key: str) -> str:
+    """有中文就用中文，没有就退回原文——但绝不退回断言 id（调用方保证不把 id 传进来）。"""
+    return str(mapping.get(key) or key)
+
+
+def _score_block(report: dict) -> str:
+    score = report.get("score") or {}
+    ratio = float(score.get("ratio") or 0.0)
+    by_state = score.get("by_state") or {}
+    pieces = [
+        f'<div class="score"><b>{ratio * 100:.0f}%</b>'
+        f'<span>这道题这次拿到的分</span></div>'
+    ]
+    chips = []
+    for state in ("pass", "fail", "blocked", "unscored"):
+        count = int(by_state.get(state) or 0)
+        if count:
+            chips.append(f'<span class="chip">{_esc(STATE_LABEL[state])} {count} 项</span>')
+    if score.get("voided"):
+        chips.append('<span class="chip">本次不算数（按旧版本交的，需重交）</span>')
+    if score.get("disqualified"):
+        chips.append('<span class="chip">有一项硬性要求没过</span>')
+    if chips:
+        pieces.append('<div class="chips">' + "".join(chips) + "</div>")
+    return '<div class="card">' + "".join(pieces) + "</div>"
+
+
+def _assertion_card(assertion: dict) -> str:
+    state = str(assertion.get("state") or "unscored")
+    tag = STATE_CLASS.get(state, "warn")
+    # 标题缺失时不能拿 id 顶——那正是要藏起来的东西
+    title = assertion.get("title") or "这项检查"
+    out = [f'<div class="card"><span class="tag {tag}">{_esc(STATE_LABEL.get(state, state))}</span>',
+           f'<div class="ttl">{_esc(title)}</div>']
+
+    notes = assertion.get("pattern_notes") or []
+    facts = [n for n in notes if (n or {}).get("text")]
+    if facts:
+        for note in facts:
+            out.append(f'<div class="fact">{_esc(note["text"])}</div>')
+            if note.get("hint"):
+                out.append(f'<div class="hint">下一步：{_esc(note["hint"])}</div>')
+    elif state != "pass":
+        out.append('<div class="hint">这一项没有更细的说明——把过程发回给我，我来补。</div>')
+    out.append("</div>")
+    return "".join(out)
+
+
+def _skill_block(report: dict) -> str:
+    gaps = report.get("skill_gaps") or []
+    if not gaps:
+        return ""
+    skills = (report.get("display_labels") or {}).get("skills") or {}
+    rows = []
+    for gap in gaps:
+        skill = _label(skills, str(gap.get("skill_id") or ""))
+        lost = gap.get("weight_lost")
+        lost_text = f"，掉了 {lost} 分" if isinstance(lost, (int, float)) else ""
+        rows.append(f"<li>{_esc(skill)}{_esc(lost_text)}</li>")
+    return '<h2>这次暴露的薄弱点</h2><div class="card"><ul>' + "".join(rows) + "</ul></div>"
+
+
+def _short(value: object, limit: int = 48) -> str:
+    """参数值太长就截断——`write_report` 的 content 是整份产物，塞进表格会把页面撑坏。"""
+    text = "" if value is None else str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…（共 {len(text)} 字）"
+
+
+def _trace_block(report: dict) -> str:
+    view = report.get("trace_view") or []
+    if not view:
+        return ""
+    rows = []
+    for item in view:
+        index = item.get("call_index")
+        name = item.get("name")
+        params = item.get("params") or {}
+        status = item.get("status")
+        detail = ", ".join(
+            f"{k}=内容（{len(str(v))} 字）" if k == "content" else f"{k}={_short(v)}"
+            for k, v in params.items()
+        )
+        if status == "error":
+            result = f"失败（{item.get('http_status') or '连接不上'}）"
+        elif status == "timeout":
+            result = "超时"
+        else:
+            result = "成功"
+        rows.append(
+            f"<tr><td>{_esc(index)}</td><td><code>{_esc(name)}</code></td>"
+            f"<td>{_esc(detail)}</td><td>{_esc(result)}</td></tr>"
+        )
+    return ('<h2>你实际发出去的过程</h2><div class="card"><table>'
+            "<tr><th>第几次</th><th>工具</th><th>参数</th><th>结果</th></tr>"
+            + "".join(rows) + "</table></div>")
+
+
+def render_html(report: dict, *, task_title: str = "", task_id: str = "") -> str:
+    """报告 dict → 完整 HTML 字符串。**不读磁盘、不联网**，纯函数好测。"""
+    submission = report.get("submission") or {}
+    tid = task_id or str(submission.get("task_id") or "")
+    title = task_title or "这次提交的诊断报告"
+
+    parts = [
+        "<!DOCTYPE html>",
+        '<html lang="zh-CN"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{_esc(title)}</title>",
+        f"<style>{_CSS}</style>",
+        "</head><body><main>",
+        f"<h1>{_esc(title)}</h1>",
+        f'<p class="sub">题目 <code>{_esc(tid)}</code> 的诊断结果 · 这份文件可以离线打开</p>',
+        _score_block(report),
+        "<h2>逐项看</h2>",
+    ]
+    for assertion in report.get("assertions") or []:
+        parts.append(_assertion_card(assertion))
+    parts.append(_skill_block(report))
+    parts.append(_trace_block(report))
+    parts.append(
+        '<p class="foot">这不是成绩单：它只说明这一次提交里哪些要求没满足、下一步可以先改什么。'
+        "页面不联网，也不会上传任何东西。</p>"
+    )
+    parts.append("</main></body></html>")
+    return "\n".join(parts)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="诊断报告 → 自包含 HTML（B-48）")
+    parser.add_argument("--report", required=True, help="报告 JSON 路径")
+    parser.add_argument("--out", required=True, help="输出的 .html 路径")
+    parser.add_argument("--task", help="任务 YAML 或 task_id；给了就用它的中文标题")
+    args = parser.parse_args(argv)
+
+    path = Path(args.report)
+    if not path.is_file():
+        print(f"找不到报告：{path}", flush=True)
+        return 2
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"{path} 不是合法 JSON（{exc}）", flush=True)
+        return 2
+    if not isinstance(report, dict):
+        print(f"{path} 顶层应是对象，实际 {type(report).__name__}", flush=True)
+        return 2
+
+    task_title = ""
+    if args.task:
+        from .diagnosis_report import load_task
+        from .lab import DEFAULT_CATALOG, resolve_task_file
+
+        task = load_task(resolve_task_file(args.task, DEFAULT_CATALOG))
+        task_title = str(task.get("title") or "")
+
+    out = Path(args.out)
+    out.write_text(render_html(report, task_title=task_title), encoding="utf-8")
+    print(f"已写出 {out}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
