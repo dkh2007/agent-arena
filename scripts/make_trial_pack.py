@@ -95,14 +95,17 @@ def _readme() -> str:
 用你自己的 Agent（Claude Code / Cursor / 自己写的脚本）对着那个地址做题；
 做完回到窗口按 `Ctrl+C`，把生成的 `calls.jsonl` 发回给我。
 
+手上没有 Agent 也能试：`题目.md` 里那段可以直接贴给豆包 / DeepSeek 让它写脚本；
+`try.py` 更省事，跑两条命令就能看到报告长什么样（详见文件里「没有 Agent 也能试」）。
+
 > 下面这几条命令是同一件事的手动版——双击没跑起来时照这个排查。
 
 """
     return header + body + "\n"
 
 
-def sanitize_task(source: Path) -> str:
-    """把任务 YAML 裁成"能跑但推不出答案"的版本。只删 `DROP_*` 里列的字段。"""
+def _sanitized_dict(source: Path) -> dict:
+    """读原任务、裁字段、返回 dict。裁剪规则只写在这一处。"""
     import yaml
 
     task = yaml.safe_load(source.read_text(encoding="utf-8"))
@@ -118,7 +121,32 @@ def sanitize_task(source: Path) -> str:
     for required in ("tools", "test_inputs", "fault_injection"):
         if required not in task:
             raise PackError(f"{source.name} 裁完缺了 {required}——mock 服务就没依据了")
-    return yaml.safe_dump(task, allow_unicode=True, sort_keys=False)
+    return task
+
+
+def sanitize_task(source: Path) -> str:
+    """把任务 YAML 裁成"能跑但推不出答案"的版本。只删 `DROP_*` 里列的字段。"""
+    import yaml
+
+    return yaml.safe_dump(_sanitized_dict(source), allow_unicode=True, sort_keys=False)
+
+
+def task_brief(task: dict) -> str:
+    """题面单独抽成一页，好让人整段贴给聊天 AI。
+
+    内容是 `lab.describe()` 的输出——和同学起服务后屏幕上看到的**同一段字**，
+    不另写一份（两份题面必然漂移）。`describe` 本身受「不泄露判分信息」的测试约束。
+    """
+    from arena import lab
+
+    body = lab.describe(task, "http://127.0.0.1:8765")
+    return (
+        "# 题目：把下面整段贴给你的聊天 AI（豆包 / DeepSeek 都行）\n\n"
+        "> 先说清：你屏幕上打印的地址可能不是 `8765`，以**屏幕上那个**为准；\n"
+        "> 把这段里的端口一起改掉，再让它写代码。\n\n"
+        "```text\n" + body + "\n```\n\n"
+        "让它写完之后，你运行那段代码就能得到 `calls.jsonl`——把这个文件发回来即可。\n"
+    )
 
 
 def _requirements() -> str:
@@ -139,6 +167,8 @@ def _requirements() -> str:
 
 def _files() -> list[tuple[str, bytes]]:
     """包内文件清单（相对路径 → 字节）。任何源文件缺失都直接报错，不静默少一个。"""
+    import yaml
+
     entries: list[tuple[str, bytes]] = []
 
     def add(rel: str, data: bytes) -> None:
@@ -158,7 +188,10 @@ def _files() -> list[tuple[str, bytes]]:
     task_src = ROOT / "tasks" / f"{TRIAL_TASK}.yaml"
     if not task_src.is_file():
         raise PackError(f"找不到任务文件：tasks/{TRIAL_TASK}.yaml")
-    add(f"tasks/{TRIAL_TASK}.yaml", sanitize_task(task_src).encode("utf-8"))
+    task = _sanitized_dict(task_src)
+    add(f"tasks/{TRIAL_TASK}.yaml",
+        yaml.safe_dump(task, allow_unicode=True, sort_keys=False).encode("utf-8"))
+    add("题目.md", task_brief(task).encode("utf-8"))
 
     arena = ROOT / "src" / "arena"
     modules = sorted(p for p in arena.glob("*.py"))

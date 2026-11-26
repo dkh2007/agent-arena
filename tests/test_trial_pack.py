@@ -68,14 +68,19 @@ def test_pack_readme_stops_before_the_maintainer_part(built):
     assert "curl -X POST" not in readme, "维护者命令不该出现在同学那一页"
 
 
-def test_pack_has_no_caches_or_tests(built):
+def test_pack_ships_content_but_no_caches_or_answers(built):
     with zipfile.ZipFile(built) as zf:
         names = zf.namelist()
+        brief = zf.read(f"{pack.PACK_DIR}/题目.md").decode("utf-8")
     assert not [n for n in names if "__pycache__" in n or n.endswith(".pyc")]
     assert not [n for n in names if "/tests/" in n]
     assert f"{pack.PACK_DIR}/scripts/lab.py" in names
     assert f"{pack.PACK_DIR}/start.bat" in names
     assert f"{pack.PACK_DIR}/start.sh" in names
+
+    # 题面那一页是给人整段贴给聊天 AI 的：要有题面，不能夹带期望值
+    assert "fetch_orders" in brief and "write_report" in brief
+    assert "1837.99" not in brief, "题面页夹带了期望的总金额——那是答案"
 
 
 def test_pack_is_reproducible(built, tmp_path):
