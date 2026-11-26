@@ -218,6 +218,16 @@ def _all_pass_block(report: dict) -> str:
             "讲得清才算真会。</div></div>")
 
 
+def _missing_block(title: str, reason: str) -> str:
+    """某块没生成出来时说一句，而不是整块消失。
+
+    静默消失最坏：用户以为"这产品本来就没有训练单"，而我这边看不到任何信号。
+    """
+    short = reason if len(reason) <= 90 else reason[:90] + "…"
+    return (f'<h2>{_esc(title)}</h2><div class="card"><div class="note">'
+            f"这块这次没生成出来（{_esc(short)}）。把报告连同这一行一起发回给我。</div></div>")
+
+
 def _training_block(report: dict, task: dict, catalog_path: str | None) -> str:
     """训练单：下一步做哪道题、什么算练会、练完回来看哪几条。
 
@@ -235,8 +245,8 @@ def _training_block(report: dict, task: dict, catalog_path: str | None) -> str:
             task, training.load_catalog(catalog_path or training.DEFAULT_CATALOG),
             focus_assertions=failed, assertion_titles=titles,
         )
-    except Exception:  # 训练单是附加信息，算不出来不能连累整页
-        return ""
+    except Exception as exc:  # 训练单是附加信息：不能连累整页，但也不能装作没问题
+        return _missing_block("接下来练什么", f"{type(exc).__name__}: {exc}")
 
     if brief.get("status") == "no_family":
         return ""
@@ -278,8 +288,8 @@ def _recall_block(report: dict, task: dict) -> str:
 
     try:
         prompt = feynman.build_prompt(report, task)
-    except Exception:
-        return ""
+    except Exception as exc:
+        return _missing_block("讲一遍（复述）", f"{type(exc).__name__}: {exc}")
     questions = [q for q in (prompt.get("questions") or []) if isinstance(q, dict) and q.get("text")]
     if not questions:
         return ""

@@ -277,3 +277,33 @@ def test_recall_box_is_a_real_textarea_without_scripts():
                                    task=_task()).split("</style>", 1)[-1]
     assert "<textarea" in body
     assert "<script" not in body.lower(), "自包含页里加脚本，等于把可审计性卖掉了"
+
+
+def test_a_broken_training_sheet_says_so_instead_of_vanishing(monkeypatch):
+    """整块静默消失最坏：用户以为产品本来就没有训练单，我这边也收不到信号。"""
+    from arena import training
+    from arena.trace_pipeline import run_fixture
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("catalog 读不动")
+
+    monkeypatch.setattr(training, "drill_brief", boom)
+    body = report_html.render_html(run_fixture("raw-perfect"),
+                                   task=_task()).split("</style>", 1)[-1]
+    assert "没生成出来" in body
+    assert "catalog 读不动" in body, "要说清是什么坏了，别只说'出错了'"
+    assert "100%" in body, "一块坏了不能连分数都不显示"
+
+
+def test_a_broken_recall_block_also_says_so(monkeypatch):
+    from arena import feynman
+    from arena.trace_pipeline import run_fixture
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("词表缺一行")
+
+    monkeypatch.setattr(feynman, "build_prompt", boom)
+    body = report_html.render_html(run_fixture("raw-perfect"),
+                                   task=_task()).split("</style>", 1)[-1]
+    assert "没生成出来" in body and "词表缺一行" in body
+    assert "接下来练什么" in body, "另一块不受影响"

@@ -4,6 +4,16 @@ cd "$(dirname "$0")" || exit 1
 PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
 
+if ! $PY --version >/dev/null 2>&1; then
+  echo "[失败] 这台电脑上没找到 Python 3。装个 3.10 或更新的版本再来。"
+  exit 1
+fi
+
+if ! $PY -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)" >/dev/null 2>&1; then
+  echo "[失败] Python 太旧（$($PY --version 2>&1)）。需要 3.10 或更新。"
+  exit 1
+fi
+
 if ! $PY -c "import yaml, jsonschema" >/dev/null 2>&1; then
   echo "第一次运行，先装两个依赖（要联网，几十秒）..."
   if ! $PY -m pip install --quiet pyyaml jsonschema; then

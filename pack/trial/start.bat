@@ -4,6 +4,26 @@ cd /d "%~dp0"
 set "PY=python"
 where py >nul 2>nul && set "PY=py -3"
 
+%PY% --version >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo [失败] 这台电脑上没找到 Python。
+  echo   去 python.org 下 3.10 或更新的版本，装的时候**勾上** "Add python.exe to PATH"，
+  echo   装完关掉这个窗口，重新双击 start.bat。
+  pause
+  exit /b 1
+)
+
+%PY% -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)" >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo [失败] 这台电脑的 Python 太旧（需要 3.10 或更新）。
+  echo   先跑 "%PY% --version" 看一眼版本；太旧就去 python.org 装个新的。
+  echo   不换版本也能跑，但会报一堆看不懂的语法错——所以这里直接停。
+  pause
+  exit /b 1
+)
+
 %PY% -c "import yaml, jsonschema" >nul 2>nul
 if errorlevel 1 (
   echo 第一次运行，先装两个依赖（要联网，几十秒）...

@@ -169,3 +169,17 @@ def test_try_script_stands_in_for_an_agent(built, tmp_path):
     assert goods["score"]["ratio"] == 1.0, [
         (a["id"], a["state"]) for a in goods["assertions"]
     ]
+
+
+def test_start_scripts_check_python_before_doing_anything(built):
+    """版本太旧时 Python 给的是 `SyntaxError: invalid syntax`，非技术同学只会看到一屏红字。
+
+    所以两个启动脚本都必须先判断"有没有 Python"和"够不够新"，再谈装依赖。
+    """
+    with zipfile.ZipFile(built) as zf:
+        bat = zf.read(f"{pack.PACK_DIR}/start.bat").decode("utf-8")
+        sh = zf.read(f"{pack.PACK_DIR}/start.sh").decode("utf-8")
+    for script, name in ((bat, "start.bat"), (sh, "start.sh")):
+        assert "version_info" in script, f"{name} 没检查版本"
+        assert "(3, 10)" in script, f"{name} 的门槛不是 3.10"
+        assert "没找到 Python" in script, f"{name} 没说清「根本没装」这种情况"
