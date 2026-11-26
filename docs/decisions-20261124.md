@@ -58,7 +58,7 @@
 
 | 项 | 实测值 |
 |---|---|
-| 设备 | 荣耀 400 Pro，`DNP-AN00`，Android 16，1264×2736 @560dpi |
+| 设备 | 荣耀 400 Pro，`DNP-AN00`，Android 16（**设备读数，待复核**：出厂 MagicOS 9.0 / Android 15，故只能是已 OTA；仓库未留该命令输出，复核用 `adb shell getprop ro.build.version.release`），1264×2736 @560dpi |
 | 当前输入法 | `com.baidu.input_hihonor`（百度输入法荣耀版） |
 | 语音入口在哪 | **就是空格键**——空格键上印着麦克风图标，长按即说话。工具栏那一排没有独立麦克风按钮 |
 | 说的话 | 「这题要交一份报告，订单要分页拉，每页最多十条」 |
