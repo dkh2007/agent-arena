@@ -186,6 +186,34 @@ def _trace_block(report: dict) -> str:
             + "".join(rows) + "</table></div>")
 
 
+def _all_pass_block(report: dict) -> str:
+    """全过的时候说点具体的话。
+
+    第一份真实提交就是满分（学弟让 AI 写的脚本），页面当时只有五张"通过"卡片——
+    等于什么都没告诉他。这里把**通过的技能名**列出来，再给一句下一步。
+    技能名来自 `display_labels.skills`，不是写死在页面里的。
+    """
+    assertions = report.get("assertions") or []
+    if not assertions or any(a.get("state") != "pass" for a in assertions):
+        return ""
+    if report.get("skill_gaps"):
+        return ""
+    skills = (report.get("display_labels") or {}).get("skills") or {}
+    names: list[str] = []
+    for assertion in assertions:
+        skill_id = assertion.get("skill_id")
+        if not skill_id:
+            continue
+        label = _label(skills, str(skill_id))
+        if label not in names:
+            names.append(label)
+    detail = f"这次没扣分的是：{'、'.join(names)}。" if names else "这一题的检查全过了。"
+    return ('<div class="card"><span class="tag ok">全过了</span>'
+            f'<div class="ttl">{_esc(detail)}</div>'
+            '<div class="hint">下一步：换一道同族更难的，或者把这次的做法用自己的话写三行——'
+            "讲得清才算真会。</div></div>")
+
+
 def render_html(report: dict, *, task_title: str = "", task_id: str = "") -> str:
     """报告 dict → 完整 HTML 字符串。**不读磁盘、不联网**，纯函数好测。"""
     submission = report.get("submission") or {}
@@ -202,6 +230,7 @@ def render_html(report: dict, *, task_title: str = "", task_id: str = "") -> str
         f"<h1>{_esc(title)}</h1>",
         f'<p class="sub">题目 <code>{_esc(tid)}</code> 的诊断结果 · 这份文件可以离线打开</p>',
         _score_block(report),
+        _all_pass_block(report),
         "<h2>逐项看</h2>",
     ]
     for assertion in report.get("assertions") or []:

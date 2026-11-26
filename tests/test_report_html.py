@@ -143,3 +143,29 @@ def test_cli_writes_the_file_and_refuses_bad_input(tmp_path, real_report, capsys
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert report_html.main(["--report", str(bad), "--out", str(out)]) == 2
+
+
+def test_all_pass_page_says_what_went_right():
+    """全绿也要有内容。
+
+    第一份真实提交就是满分（学弟让 AI 写的脚本），当时页面只有五张"通过"卡片，
+    等于什么都没说。这里要求它把**通过的技能**点出来，并给一句下一步。
+    """
+    from arena.trace_pipeline import run_fixture
+
+    report = run_fixture("raw-perfect")
+    page = report_html.render_html(report, task_title="订单数据核对报告")
+    body = page.split("</style>", 1)[-1]
+    assert "全过了" in body
+    for label in ("多步任务分解", "失败重试策略", "工具参数校验"):
+        assert label in body, f"没点出通过的技能：{label}"
+    assert "下一步" in body
+    assert not re.search(r"\bR\d+_[a-z_]+", body)
+
+
+def test_failed_report_does_not_claim_everything_passed():
+    """只要有一条没过，"全过了"就不能出现——这句话比分数更容易被当真。"""
+    from arena.trace_pipeline import run_fixture
+
+    page = report_html.render_html(run_fixture("raw-fake-retry"))
+    assert "全过了" not in page.split("</style>", 1)[-1]
