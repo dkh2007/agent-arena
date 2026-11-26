@@ -2407,7 +2407,8 @@
 - **要解决的问题**：`git clone` 对非技术同学不是一个动作，是三个（装 git、选目录、cd 对）。
   试用本来就是一推就走的场景，任何一步都能把它变成"算了"。
 - **产出**：`python scripts/make_trial_pack.py --verify` →
-  `dist/arena-trial-v1.zip`（43 个文件 / 311 KB / sha256 `f67673a49ac91f4f`）。解压后双击
+  `dist/arena-trial-v1.zip`（43 个文件 / 311 KB；sha256 由打包命令当场输出，内容一改就变，
+  不在此固定）。解压后双击
   `start.bat`（Windows）或 `sh start.sh`（macOS/Linux），第一次自动装 `pyyaml` + `jsonschema`。
 - **裁掉了什么（这条必须有，否则等于把答案一起发出去）**：任务 YAML 里的
   `rubric_gate` / `rubric_credit` / `scoring` / `derivation` / `trace_requirements` 与
@@ -2424,6 +2425,12 @@
   **0.25（R2+R3 fail）** 与 **1.00**，说明报告里既有东西可读、改对了又会变绿。
   判据：`tests/test_trial_pack.py::test_try_script_stands_in_for_an_agent`（两头都要对，
   只验"脚本跑通了"不算）。
+- **边界（人问「既然你在拿脚本做题，给他们的意义是什么」后补写）**：`try.py` 是**说明书**不是练习——
+  它产出的报告指出的是脚本的错，不是学习者的错。所以它只支持两类用途：
+  ① **内容/文档同事**理解了产品（他们要写说明、拍视频，必须知道报告长什么样）；
+  ② 验**链路能不能被外人走通**（装依赖、起服务、生成日志、发回）。
+  **不能**用它支撑「学习效果」或「真人犯了什么错」的任何结论。想替代这条，路是让学习者把题面贴给
+  豆包/DeepSeek 让它写脚本——那份提交里的错才是他真会踩的坑（README 已写这条路）。
 - **没做**：包内不含题目切换（只放 `dbg-001` 一道）；不含报告导出（同 B-46 的待办）。
 
 
