@@ -91,6 +91,17 @@ HTTP 端点**不跑 judge**：它花钱、依赖网络，而且模型不可用�
   `endpoint_capture_not_implemented`，而不是假装评了一遍。
 - **无排队 / 限流 / 重试**：单机演示用。平台重试会污染 R3（重试是学习者的被测能力）。
 
+## 只读端点（B-50）
+
+| 路径 | 给谁 | 说明 |
+|---|---|---|
+| `GET /tasks` | 前端选题页 | **白名单**：只有题面/工具签名/难度，`rubric_*`、`expected`、`fault_injection`、`tools[].mock` 一律不发 |
+| `GET /tasks/{id}` | 做题的人 | 同上，单道；未知 id → 404 `unknown_task` |
+| `GET /submissions/{id}/report.html` | 学习者本人 | 直接返回可读的 HTML（复用 `report_html`），浏览器打开即可，不用先存文件 |
+
+这三条都是纯读：不落库、不改任何判定。`/tasks` 用**白名单**而不是黑名单——
+任务 YAML 里有答案，黑名单漏一个字段就是一次泄露。
+
 用法：
     python src/arena/submission_api.py --db demo.db --port 8080
     curl -X POST http://127.0.0.1:8080/submissions -H "Content-Type: application/json" \\
@@ -117,12 +128,14 @@ try:  # 作为包被 import
     from . import diagnosis_report as dr
     from . import judge_pipeline as jp
     from . import llm_judge as lj
+    from . import report_html
     from . import store
     from . import trace_pipeline as tp
 except ImportError:  # 作为独立脚本运行
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import assertion_evaluator as ae  # type: ignore[no-redef]
     import diagnosis_report as dr  # type: ignore[no-redef]
+    import report_html  # type: ignore[no-redef]
     import judge_pipeline as jp  # type: ignore[no-redef]
     import llm_judge as lj  # type: ignore[no-redef]
     import store  # type: ignore[no-redef]
@@ -242,6 +255,60 @@ class TaskRegistry:
 
     def items(self) -> list[tuple[str, dict]]:
         return [(tid, self._tasks[tid]) for tid in sorted(self._tasks)]
+
+
+# ── 对外可发的任务形状（白名单，不是黑名单） ─────────────────────────────────
+
+def public_task(task: dict, catalog: list[tuple[str, dict]] | None = None) -> dict:
+    """把任务裁成"学习者该看见的那部分"。
+
+    **必须是白名单**：任务 YAML 里有 `rubric_gate` / `rubric_credit` / `scoring` /
+    `test_inputs.expected` / `fault_injection`——那是答案与故障位。黑名单漏一个字段就是一次泄露，
+    白名单漏一个字段只是少显示一行。
+
+    `tools[].mock` 也裁掉：它写着数据从哪来、分页怎么切，属于实现细节，学习者照题面调就行。
+    """
+    meta = task.get("variant_meta") or {}
+    family = meta.get("family_id")
+    levels_total = 0
+    if family and catalog:
+        from . import training
+
+        try:
+            levels_total = len(training.levels_in_family(family, [t for _, t in catalog]))
+        except Exception:  # 族信息不全就不显示"共几档"，不影响别的字段
+            levels_total = 0
+
+    tools = []
+    for tool in task.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        params = []
+        for param in tool.get("parameters") or []:
+            if not isinstance(param, dict):
+                continue
+            item = {k: param[k] for k in ("name", "type", "required", "description",
+                                          "minimum", "maximum") if k in param}
+            params.append(item)
+        tools.append({
+            "name": tool.get("name"),
+            "description": tool.get("description"),
+            "parameters": params,
+        })
+
+    return {
+        "task_id": task.get("task_id"),
+        "task_version": task.get("task_version"),
+        "title": task.get("title"),
+        "domain": task.get("domain"),
+        "scenario": task.get("scenario"),
+        "primary_skill_id": task.get("primary_skill_id"),
+        "secondary_skill_ids": list(task.get("secondary_skill_ids") or []),
+        "difficulty": meta.get("difficulty"),
+        "family_id": family,
+        "levels_total": levels_total,
+        "tools": tools,
+    }
 
 
 # ── 端点探测 ──────────────────────────────────────────────────────────────────
@@ -551,6 +618,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_html(self, status: int, page: str) -> None:
+        data = page.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _read_json(self) -> Any:
         raw_len = self.headers.get("Content-Length")
         if raw_len is None:
@@ -612,6 +687,20 @@ class _Handler(BaseHTTPRequestHandler):
                     "tasks": self.ctx["registry"].ids(),
                 })
                 return
+            if path == "/tasks":
+                self._send(200, {"tasks": [
+                    public_task(task, self.ctx["registry"].items())
+                    for _tid, task in self.ctx["registry"].items()
+                ]})
+                return
+            if path.startswith("/tasks/"):
+                task_id = path[len("/tasks/"):].strip("/")
+                if not task_id:
+                    raise SubmissionError("bad_request", "缺 task_id", status=400)
+                self._send(200, public_task(
+                    self.ctx["registry"].get(task_id), self.ctx["registry"].items()
+                ))
+                return
             if path.startswith("/submissions/"):
                 rest = path[len("/submissions/"):].strip("/")
                 if not rest:
@@ -624,6 +713,9 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 if rest.endswith("/appeals"):
                     self._send_appeals(rest[: -len("/appeals")].strip("/"))
+                    return
+                if rest.endswith("/report.html"):
+                    self._send_report_html(rest[: -len("/report.html")].strip("/"))
                     return
 
                 self._send_report(rest, _parse_view(parts.query))
@@ -645,6 +737,28 @@ class _Handler(BaseHTTPRequestHandler):
             raise SubmissionError("not_found", str(exc), status=404) from exc
         finally:
             conn.close()
+
+    def _send_report_html(self, submission_id: str) -> None:
+        """把报告渲染成一页 HTML 直接返回——浏览器打开就能看，不用先存文件再跑命令。"""
+        if not submission_id:
+            raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        conn = self.ctx["conn_factory"]()
+        try:
+            report = store.effective_report(conn, submission_id)
+        except store.StoreError as exc:
+            raise SubmissionError("not_found", str(exc), status=404) from exc
+        finally:
+            conn.close()
+
+        task = None
+        task_id = (report.get("submission") or {}).get("task_id")
+        if task_id:
+            try:
+                task = self.ctx["registry"].get(task_id)
+            except SubmissionError:
+                task = None          # 任务文件被换掉了，也照样把当时的报告给人看
+        title = (task or {}).get("title") or ""
+        self._send_html(200, report_html.render_html(report, task_title=title, task=task))
 
     def _send_reappraisals(self, submission_id: str) -> None:
         """重评链（按 revision 升序）。

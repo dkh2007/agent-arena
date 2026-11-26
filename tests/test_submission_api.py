@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import http.client
+import re
 import json
 import socket
 import sys
@@ -527,3 +528,79 @@ def test_appeal_cannot_be_filed_on_behalf_of_someone_else(live):
                             {"user_id": "someone-else", "reason_text": "判错了"})
     assert status == 400, err
     assert "只能对自己的判分提申诉" in err["error"]["message"]
+
+
+# ── 6. 只读端点：题面与报告页（B-50） ────────────────────────────────────────
+
+TASK_PUBLIC_KEYS = {
+    "task_id", "task_version", "title", "domain", "scenario",
+    "primary_skill_id", "secondary_skill_ids", "difficulty",
+    "family_id", "levels_total", "tools",
+}
+
+
+def test_tasks_endpoint_lists_every_task_with_a_whitelist_of_fields(live):
+    """`/tasks` 是给前端做选题页的，任务 YAML 里有答案与故障位——**只能是白名单**。
+
+    这条用"键集合恰等于白名单"判：多带一个键也算泄露，不靠人工比对。
+    """
+    status, body = live.call("GET", "/tasks")
+    assert status == 200
+    tasks = body["tasks"]
+    assert len(tasks) == len(list((ROOT / "tasks").glob("*.yaml")))
+    for task in tasks:
+        assert set(task) == TASK_PUBLIC_KEYS, f"{task.get('task_id')} 多带或少带了键"
+        for tool in task["tools"]:
+            assert set(tool) == {"name", "description", "parameters"}, "mock 块不该发出去"
+    raw = json.dumps(body, ensure_ascii=False)
+    for word in ("rubric_gate", "rubric_credit", "scoring", "expected",
+                 "fault_injection", "fixture_ref", "pagination"):
+        assert word not in raw, f"/tasks 泄露了 {word}"
+
+
+def test_task_endpoint_gives_the_prompt_a_learner_needs(live):
+    status, body = live.call("GET", "/tasks/dbg-001-order-report")
+    assert status == 200
+    assert body["title"] and body["scenario"], "题面与标题是选题/做题的前提"
+    assert [t["name"] for t in body["tools"]] == ["fetch_orders", "write_report"]
+    params = body["tools"][0]["parameters"]
+    assert {p["name"] for p in params} == {"offset", "limit"}
+    assert body["difficulty"] == 1 and body["levels_total"] >= 1
+
+
+def test_unknown_task_is_a_404_with_the_code(live):
+    status, body = live.call("GET", "/tasks/no-such-task")
+    assert status == 404
+    assert body["error"]["code"] == "unknown_task"
+
+
+def _get_html(live, path: str) -> tuple[int, str, str]:
+    conn = http.client.HTTPConnection(live.host, live.port, timeout=15)
+    conn.request("GET", path)
+    resp = conn.getresponse()
+    payload = resp.read().decode("utf-8")
+    content_type = resp.getheader("Content-Type") or ""
+    conn.close()
+    return resp.status, content_type, payload
+
+
+def test_report_html_endpoint_renders_the_page_for_a_browser(live):
+    """交完就能在浏览器里看——不用先存 JSON、再跑一条命令。
+
+    页面里带训练单与复述框（`--task` 那条路的内容），所以这里连 textarea 一起判。
+    """
+    _, posted = live.call("POST", "/submissions", _payload(_fixture("raw-perfect")))
+    sid = posted["submission"]["submission_id"]
+
+    status, content_type, page = _get_html(live, f"/submissions/{sid}/report.html")
+    assert status == 200
+    assert content_type.startswith("text/html"), content_type
+    assert "订单数据核对报告" in page, "标题没带出来"
+    assert not re.search(r"\bR\d+_[a-z_]+", page), "报告页里出现了断言 id"
+    assert "<textarea" in page, "复述框没渲染（说明 task 没传进去）"
+    assert "<script" not in page.lower()
+
+
+def test_report_html_for_an_unknown_submission_is_404(live):
+    status, _content_type, _page = _get_html(live, "/submissions/sub-nope/report.html")
+    assert status == 404
