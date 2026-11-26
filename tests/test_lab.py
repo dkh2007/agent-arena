@@ -328,3 +328,149 @@ def test_show_trace_does_not_need_a_task_or_start_a_server(capsys):
     """这条入口是纯读文件：给 --show-trace 就返回，别把 mock 服务起起来占端口。"""
     assert lab.main(["--show-trace", str(_raw_trace_file()), "--catalog", str(TASKS)]) == 0
     assert "服务地址" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 跑完怎么交回来（B-46）：服务端日志 → 提交
+# ---------------------------------------------------------------------------
+
+def _post(base: str, tool: str, body: dict) -> tuple[int, dict]:
+    """打一次工具，成功和 4xx 都要拿到 (状态码, 返回体) —— 失败调用才是重试题的证据。"""
+    req = urllib.request.Request(
+        f"{base}/tools/{tool}", json.dumps(body).encode(),
+        {"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+@pytest.fixture()
+def logged(tmp_path):
+    task = load_task(TASKS / "dbg-001-order-report.yaml")
+    log_path = tmp_path / "calls.jsonl"
+    call_log = lab.CallLog(log_path)
+    server, _service = lab.serve(task, port=0, on_call=call_log)
+    host, port = server.server_address[:2]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://{host}:{port}", log_path, task
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        call_log.close()
+
+
+def test_call_log_numbers_calls_on_the_server_side(logged):
+    """编号由服务端自己数：1 起、连续、按到达顺序。
+
+    这条是「日志能不能当证据」的根——编号若由学习者/Agent 给，就能删掉一次失败调用。
+    """
+    base, log_path, _task = logged
+    _post(base, "fetch_orders", {"offset": 0, "limit": 5})
+    _post(base, "fetch_orders", {"offset": 5, "limit": 5})
+    calls, _artifacts = lab.read_call_log(log_path)
+    assert [c["call_index"] for c in calls] == [1, 2]
+    assert [c["name"] for c in calls] == ["fetch_orders", "fetch_orders"]
+
+
+def test_call_log_keeps_the_failed_call_with_http_status(logged):
+    """200 的日志不稀奇，要证明 400 也照记——不然 R3/R4 就没有可判的证据。"""
+    base, log_path, _task = logged
+    status, _body = _post(base, "fetch_orders", {"offset": 0, "limit": 99})
+    assert status == 400, "这个参数越界本来就该被服务拒绝"
+    calls, _ = lab.read_call_log(log_path)
+    assert calls[0]["http_status"] == 400
+
+    task = load_task(TASKS / "dbg-001-order-report.yaml")
+    submission = lab.build_submission(calls, {}, task, user_id="u-01")
+    item = submission["trace"]["tool_calls"][0]
+    assert item["status"] == "error" and item["http_status"] == 400
+
+
+def test_call_log_keeps_written_artifact_content(logged):
+    """`write_report` 的返回体里只有路径和字节数，正文藏在入参里——不记就等于丢了产物。"""
+    base, log_path, task = logged
+    _post(base, "write_report", {"path": "/workspace/report.json", "content": '{"valid_count": 1}'})
+    calls, artifacts = lab.read_call_log(log_path)
+    assert artifacts == {"/workspace/report.json": '{"valid_count": 1}'}
+    submission = lab.build_submission(calls, artifacts, task, user_id="u-01")
+    assert submission["artifacts"]["/workspace/report.json"] == '{"valid_count": 1}'
+
+
+def test_build_submission_withholds_platform_derivations(logged):
+    """F1：`trace_audit` / `assertion_results` 是平台算的，提交里出现就是自报结论。"""
+    base, log_path, task = logged
+    _post(base, "fetch_orders", {"offset": 0, "limit": 5})
+    calls, artifacts = lab.read_call_log(log_path)
+    submission = lab.build_submission(calls, artifacts, task, user_id="u-01")
+    assert set(submission) == {"task_id", "task_version", "user_id", "agent_id",
+                               "trace", "artifacts"}
+    assert submission["task_version"] == task["task_version"], "版本号要从任务里取，不能让提交方自己写"
+
+
+def test_from_log_cli_writes_a_submittable_file(logged, tmp_path, capsys):
+    base, log_path, _task = logged
+    _post(base, "fetch_orders", {"offset": 0, "limit": 5})
+    _post(base, "write_report", {"path": "/workspace/report.json", "content": "{}"})
+    out = tmp_path / "submission.json"
+    code = lab.main(["--from-log", str(log_path), "--task", "dbg-001-order-report",
+                     "--user", "u-trial-01", "--out", str(out), "--catalog", str(TASKS)])
+    assert code == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["user_id"] == "u-trial-01"
+    assert len(data["trace"]["tool_calls"]) == 2
+    assert data["artifacts"], "产物没跟出来，等于交了半份"
+    assert "已写出" in capsys.readouterr().out
+
+
+def test_from_log_rejects_a_log_without_calls(tmp_path, capsys):
+    """空日志是最常见的失败：服务没带 --log 起来，或他们发的是别的文件。"""
+    path = tmp_path / "empty.jsonl"
+    path.write_text("", encoding="utf-8")
+    code = lab.main(["--from-log", str(path), "--task", "dbg-001-order-report",
+                     "--catalog", str(TASKS)])
+    assert code == 2
+    assert "没有一次工具调用" in capsys.readouterr().out
+
+
+def test_from_log_needs_a_task(tmp_path, capsys):
+    path = tmp_path / "c.jsonl"
+    path.write_text(json.dumps({"call_index": 1, "name": "fetch_orders",
+                                "params": {}, "http_status": 200, "body": {}}) + "\n",
+                    encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        lab.main(["--from-log", str(path), "--catalog", str(TASKS)])
+    assert exc.value.code == 2
+    assert "--task" in capsys.readouterr().err
+
+
+def test_logged_trial_ends_in_a_real_report(logged, tmp_path):
+    """整条链的判据：他们交回来的日志，能走完提交接口变成一份报告。
+
+    这是「让他们跑」这件事的唯一验收点——只看日志长得对不够，要出得来报告。
+    """
+    from arena import store, submission_api as api
+
+    base, log_path, task = logged
+    _post(base, "fetch_orders", {"offset": 0, "limit": 5})
+    _post(base, "fetch_orders", {"offset": 0, "limit": 99})   # 越界，留一条失败调用
+    _post(base, "write_report", {"path": "/workspace/report.json", "content": "{}"})
+    calls, artifacts = lab.read_call_log(log_path)
+    payload = lab.build_submission(calls, artifacts, task, user_id="u-01")
+
+    db = tmp_path / "trial.db"
+    registry = api.TaskRegistry(TASKS)
+
+    def conn_factory():
+        return store.connect(db)
+
+    api.bootstrap(db, registry)
+    report = api.submit(payload, registry=registry, conn_factory=conn_factory)
+    assert report["trace_audit"]["call_count"] == 3
+    assert report["trace_audit"]["schema_valid"] is True, report["trace_audit"]["invalid_reasons"]
+    assert len(report["assertions"]) >= 3, "报告里没有断言就不是诊断"
