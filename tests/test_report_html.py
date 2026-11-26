@@ -169,3 +169,111 @@ def test_failed_report_does_not_claim_everything_passed():
 
     page = report_html.render_html(run_fixture("raw-fake-retry"))
     assert "全过了" not in page.split("</style>", 1)[-1]
+
+
+def _task():
+    from arena.diagnosis_report import load_task
+
+    return load_task(ROOT / "tasks" / "dbg-001-order-report.yaml")
+
+
+def test_page_carries_training_sheet_and_recall_when_task_is_given():
+    """「太简洁了」的修法不是加装饰，是把另外两页的内容也搬进来。
+
+    报告页原来只到「诊断」——学习者看完不知道该做什么。训练单给下一步，
+    复述让他把话说出来，这两块的数据本来就有（`training` / `feynman`），只是没渲染。
+    """
+    from arena.trace_pipeline import run_fixture
+
+    page = report_html.render_html(run_fixture("raw-perfect"), task=_task())
+    body = page.split("</style>", 1)[-1]
+    assert "接下来练什么" in body
+    assert "采购单金额核对报告" in body, "同族下一道没带出来"
+    assert "什么算练会" in body
+    assert "讲一遍（复述）" in body
+    for question in ("这题要你交什么", "你这次卡在哪一步", "下次具体改哪一处"):
+        assert question in body, f"复述缺了这一问：{question}"
+
+
+def test_page_without_task_still_renders_but_omits_those_blocks():
+    """没给任务就只出诊断部分——不能因为缺数据就崩，也不能瞎编一张训练单。"""
+    from arena.trace_pipeline import run_fixture
+
+    body = report_html.render_html(run_fixture("raw-perfect")).split("</style>", 1)[-1]
+    assert "接下来练什么" not in body
+    assert "讲一遍（复述）" not in body
+    assert "全过了" in body, "诊断部分照旧"
+
+
+def test_page_never_prints_the_layered_hints():
+    """「看提示要不要降权」还没拍板（B-32）。提示一律不进页面，免得先给了再收回去。"""
+    from arena.trace_pipeline import run_fixture
+
+    body = report_html.render_html(run_fixture("raw-fake-retry"),
+                                   task=_task()).split("</style>", 1)[-1]
+    for label in ("题目到底要几步", "把期望和实际念一遍"):
+        assert label not in body, f"提示层漏进了页面：{label}"
+
+
+def test_recall_box_is_a_real_textarea_without_scripts():
+    """要有真输入框，系统的语音输入才有地方落字；同时这页仍然不许有脚本。"""
+    from arena.trace_pipeline import run_fixture
+
+    body = report_html.render_html(run_fixture("raw-perfect"),
+                                   task=_task()).split("</style>", 1)[-1]
+    assert "<textarea" in body
+    assert "<script" not in body.lower(), "自包含页里加脚本，等于把可审计性卖掉了"
+
+
+def _task():
+    from arena.diagnosis_report import load_task
+
+    return load_task(ROOT / "tasks" / "dbg-001-order-report.yaml")
+
+
+def test_page_carries_training_sheet_and_recall_when_task_is_given():
+    """「太简洁了」的修法不是加装饰，是把另外两页的内容也搬进来。
+
+    报告页原来只到「诊断」——学习者看完不知道该做什么。训练单给下一步，
+    复述让他把话说出来，这两块的数据本来就有（`training` / `feynman`），只是没渲染。
+    """
+    from arena.trace_pipeline import run_fixture
+
+    page = report_html.render_html(run_fixture("raw-perfect"), task=_task())
+    body = page.split("</style>", 1)[-1]
+    assert "接下来练什么" in body
+    assert "采购单金额核对报告" in body, "同族下一道没带出来"
+    assert "什么算练会" in body
+    assert "讲一遍（复述）" in body
+    for question in ("这题要你交什么", "你这次卡在哪一步", "下次具体改哪一处"):
+        assert question in body, f"复述缺了这一问：{question}"
+
+
+def test_page_without_task_still_renders_but_omits_those_blocks():
+    """没给任务就只出诊断部分——不能因为缺数据就崩，也不能瞎编一张训练单。"""
+    from arena.trace_pipeline import run_fixture
+
+    body = report_html.render_html(run_fixture("raw-perfect")).split("</style>", 1)[-1]
+    assert "接下来练什么" not in body
+    assert "讲一遍（复述）" not in body
+    assert "全过了" in body, "诊断部分照旧"
+
+
+def test_page_never_prints_the_layered_hints():
+    """「看提示要不要降权」还没拍板（B-32）。提示一律不进页面，免得先给了再收回去。"""
+    from arena.trace_pipeline import run_fixture
+
+    body = report_html.render_html(run_fixture("raw-fake-retry"),
+                                   task=_task()).split("</style>", 1)[-1]
+    for label in ("题目到底要几步", "把期望和实际念一遍"):
+        assert label not in body, f"提示层漏进了页面：{label}"
+
+
+def test_recall_box_is_a_real_textarea_without_scripts():
+    """要有真输入框，系统的语音输入才有地方落字；同时这页仍然不许有脚本。"""
+    from arena.trace_pipeline import run_fixture
+
+    body = report_html.render_html(run_fixture("raw-perfect"),
+                                   task=_task()).split("</style>", 1)[-1]
+    assert "<textarea" in body
+    assert "<script" not in body.lower(), "自包含页里加脚本，等于把可审计性卖掉了"

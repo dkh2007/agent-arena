@@ -80,6 +80,10 @@ th { color: #6b7280; font-weight: 500; }
 code { font-family: ui-monospace, Consolas, monospace; font-size: 13px;
        background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
 .foot { color: #6b7280; font-size: 12px; margin-top: 26px; }
+textarea { width: 100%; min-height: 120px; padding: 10px 12px; font: inherit; font-size: 15px;
+           border: 1px solid #d6d9dd; border-radius: 10px; resize: vertical; background: #fff; }
+.q { margin: 10px 0 4px; font-weight: 600; }
+.note { color: #6b7280; font-size: 13px; }
 """
 
 
@@ -214,7 +218,84 @@ def _all_pass_block(report: dict) -> str:
             "讲得清才算真会。</div></div>")
 
 
-def render_html(report: dict, *, task_title: str = "", task_id: str = "") -> str:
+def _training_block(report: dict, task: dict, catalog_path: str | None) -> str:
+    """训练单：下一步做哪道题、什么算练会、练完回来看哪几条。
+
+    数据来自 `training.drill_brief()`，这里只负责排版。生成不出来就整块不出现，
+    不写"暂无数据"——那会让人以为训练单从来没有。
+    """
+    from . import training
+
+    try:
+        failed = [str(a["id"]) for a in report.get("assertions") or []
+                  if a.get("id") is not None and a.get("state") != "pass"]
+        titles = {str(a["id"]): str(a.get("title") or "")
+                  for a in report.get("assertions") or [] if a.get("id") is not None}
+        brief = training.drill_brief(
+            task, training.load_catalog(catalog_path or training.DEFAULT_CATALOG),
+            focus_assertions=failed, assertion_titles=titles,
+        )
+    except Exception:  # 训练单是附加信息，算不出来不能连累整页
+        return ""
+
+    if brief.get("status") == "no_family":
+        return ""
+    parts = ['<h2>接下来练什么</h2><div class="card">']
+    nxt = brief.get("next")
+    if brief.get("status") == "has_next" and isinstance(nxt, dict):
+        level = nxt.get("difficulty")
+        level_text = f"（第 {level} 档）" if isinstance(level, int) else ""
+        parts.append(f'<div class="ttl">下一道：{_esc(nxt.get("title"))}{_esc(level_text)}</div>')
+        asks = [a for a in (nxt.get("asks") or []) if isinstance(a, str)]
+        if asks:
+            parts.append('<div class="note">它会要求你：</div><ul>')
+            parts.extend(f"<li>{_esc(item)}</li>" for item in asks)
+            parts.append("</ul>")
+    else:
+        parts.append('<div class="ttl">这一族你已经到最高档了</div>')
+
+    if brief.get("criterion"):
+        parts.append(f'<div class="hint">什么算练会：{_esc(brief["criterion"])}</div>')
+
+    focus = [str(row.get("title") or "") for row in (brief.get("focus_assertions") or [])
+             if isinstance(row, dict) and row.get("title")]
+    if focus:
+        parts.append('<div class="note">练完回来看这份报告里的：' + _esc("、".join(focus)) + "</div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _recall_block(report: dict, task: dict) -> str:
+    """复述：三个问题 + 一个输入框。
+
+    为什么把输入框放进报告页：一份满分报告此前"没什么可说的"，而满分恰恰是最需要
+    复述的时刻——讲得出来才算真会。桌面端和手机浏览器的**语音输入都走系统输入法**
+    （Windows 是 Win+H，手机是键盘上的麦克风键），所以这里只要有一个真正的文本框。
+
+    **不渲染 `hints`**：「看提示要不要降权」还没拍板（BACKLOG B-32），提示一律不进页面。
+    """
+    from . import feynman
+
+    try:
+        prompt = feynman.build_prompt(report, task)
+    except Exception:
+        return ""
+    questions = [q for q in (prompt.get("questions") or []) if isinstance(q, dict) and q.get("text")]
+    if not questions:
+        return ""
+    parts = ['<h2>讲一遍（复述）</h2><div class="card">',
+             '<div class="note">念出来或打出来都行：桌面上按 Win+H 用系统语音输入，'
+             '手机上用输入法空格键旁边那个麦克风。</div>']
+    for question in questions:
+        parts.append(f'<div class="q">{_esc(question["text"])}</div>')
+    parts.append('<textarea placeholder="在这里写。写完把这段文字发回给我。"></textarea>')
+    parts.append('<div class="note">这一步没有自动判分——它要的是你的话，不是分数。</div>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def render_html(report: dict, *, task_title: str = "", task_id: str = "",
+                task: dict | None = None, catalog_path: str | None = None) -> str:
     """报告 dict → 完整 HTML 字符串。**不读磁盘、不联网**，纯函数好测。"""
     submission = report.get("submission") or {}
     tid = task_id or str(submission.get("task_id") or "")
@@ -237,6 +318,9 @@ def render_html(report: dict, *, task_title: str = "", task_id: str = "") -> str
         parts.append(_assertion_card(assertion))
     parts.append(_skill_block(report))
     parts.append(_trace_block(report))
+    if task is not None:
+        parts.append(_training_block(report, task, catalog_path))
+        parts.append(_recall_block(report, task))
     parts.append(
         '<p class="foot">这不是成绩单：它只说明这一次提交里哪些要求没满足、下一步可以先改什么。'
         "页面不联网，也不会上传任何东西。</p>"
@@ -249,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="诊断报告 → 自包含 HTML（B-48）")
     parser.add_argument("--report", required=True, help="报告 JSON 路径")
     parser.add_argument("--out", required=True, help="输出的 .html 路径")
-    parser.add_argument("--task", help="任务 YAML 或 task_id；给了就用它的中文标题")
+    parser.add_argument("--task", help="任务 YAML 或 task_id；给了就带出标题、训练单与复述题")
+    parser.add_argument("--catalog", help="任务目录（默认仓库的 tasks/）")
     args = parser.parse_args(argv)
 
     path = Path(args.report)
@@ -265,16 +350,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{path} 顶层应是对象，实际 {type(report).__name__}", flush=True)
         return 2
 
+    task: dict | None = None
     task_title = ""
     if args.task:
         from .diagnosis_report import load_task
         from .lab import DEFAULT_CATALOG, resolve_task_file
 
-        task = load_task(resolve_task_file(args.task, DEFAULT_CATALOG))
+        task = load_task(resolve_task_file(args.task, args.catalog or DEFAULT_CATALOG))
         task_title = str(task.get("title") or "")
 
     out = Path(args.out)
-    out.write_text(render_html(report, task_title=task_title), encoding="utf-8")
+    out.write_text(
+        render_html(report, task_title=task_title, task=task, catalog_path=args.catalog),
+        encoding="utf-8",
+    )
     print(f"已写出 {out}", flush=True)
     return 0
 
