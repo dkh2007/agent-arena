@@ -263,7 +263,27 @@ class CallLog:
         self.path = _log_path(path)
         self._handle = self.path.open("a", encoding="utf-8")
         self._lock = threading.Lock()
-        self._seq = 0
+        self._seq = self._count_existing_calls()
+
+    def _count_existing_calls(self) -> int:
+        """断点续记：同一天跑第二遍不重置编号。
+
+        否则第二次起服务又从 1 数，日志里出现重复的 `call_index`，交上去会被判
+        `not_sequential` ——学习者只是重跑了一次，报告却说过程不合规。
+        """
+        if not self.path.is_file():
+            return 0
+        count = 0
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # 坏行由 read_call_log 报，这里只数得出来的
+            if isinstance(record, dict) and "name" in record:
+                count += 1
+        return count
 
     def __call__(self, name: str, params: dict, status: int, body: dict) -> None:
         with self._lock:

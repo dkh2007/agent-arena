@@ -2400,8 +2400,26 @@
   `--from-log` 交进 `submission_api.submit()`，`call_count` 等于调用行数、`schema_valid=True`、
   报告里有断言。另 7 条锁住：编号 1 起连续、400 照记、产物正文不丢、提交体不含派生物、空日志退 2。
 - **给人看的那一页**：`docs/试用包-跑一道题-v1.md`（同学侧三条命令 + 回我三句话；维护者侧三步）。
-- **没做**：给同学打包成 zip（现在靠 `git clone` 或整目录拷贝，门槛偏高，见 BACKLOG 待办）；
-  静态 HTML 报告导出（回件 Q1 的「代跑路线」还差这一步）。
+- **没做**：静态 HTML 报告导出（回件 Q1 的「代跑路线」还差这一步）。打包 zip 见 B-47。
+
+### [x] B-47 「解压就能跑」的试用 zip（2026-11-26 落地）
+
+- **要解决的问题**：`git clone` 对非技术同学不是一个动作，是三个（装 git、选目录、cd 对）。
+  试用本来就是一推就走的场景，任何一步都能把它变成"算了"。
+- **产出**：`python scripts/make_trial_pack.py --verify` →
+  `dist/arena-trial-v1.zip`（42 个文件 / 308 KB / sha256 `e44fc79ed57a8eec`）。解压后双击
+  `start.bat`（Windows）或 `sh start.sh`（macOS/Linux），第一次自动装 `pyyaml` + `jsonschema`。
+- **裁掉了什么（这条必须有，否则等于把答案一起发出去）**：任务 YAML 里的
+  `rubric_gate` / `rubric_credit` / `scoring` / `derivation` / `trace_requirements` 与
+  `test_inputs.expected`。**`tools` 与 `fault_injection` 一个字不动**——那是 mock 回放数据的依据，
+  动了就会出现"他看到的数和报告里说的不是同一份"。
+- **判据（`tests/test_trial_pack.py` 7 条）**：裁掉的字段一个不剩；留下的 `tools`/`fault_injection`
+  与原任务**相等**；README 截在维护者侧之前；无 `__pycache__`/测试；同样的内容打两次 sha 相同；
+  密钥扫描只拦"像钥匙的"（`sk-` 会误命中 `task-`，这条踩过）。
+- **最硬的那条**：`test_pack_runs_after_unzip` —— 真解压、真起服务、真调 3 次（含一次 400）、
+  真 `--from-log`、真 `submit()` 出报告。只看文件清单齐不齐不算数。
+- **没做**：包内不含题目切换（只放 `dbg-001` 一道）；不含报告导出（同 B-46 的待办）。
+
 
 ---
 

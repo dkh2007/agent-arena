@@ -40,3 +40,7 @@ android/.kotlin/
 *.aab
 *.jks
 *.keystore
+
+# 试用包产物（scripts/make_trial_pack.py 生成，不进仓）
+dist/
+.pytest-tmp-run/

@@ -474,3 +474,22 @@ def test_logged_trial_ends_in_a_real_report(logged, tmp_path):
     assert report["trace_audit"]["call_count"] == 3
     assert report["trace_audit"]["schema_valid"] is True, report["trace_audit"]["invalid_reasons"]
     assert len(report["assertions"]) >= 3, "报告里没有断言就不是诊断"
+
+
+def test_call_log_continues_numbering_across_restarts(tmp_path):
+    """重跑一次不重置编号。
+
+    不续记就会出现两条 `call_index=1`，交上去被判 `not_sequential`——
+    学习者只是把服务停了一次，报告却说他的过程不合规。
+    """
+    path = tmp_path / "calls.jsonl"
+    first = lab.CallLog(path)
+    first("fetch_orders", {"offset": 0, "limit": 5}, 200, {"orders": [1], "total": 20})
+    first.close()
+    second = lab.CallLog(path)
+    second("write_report", {"path": "/workspace/report.json", "content": "{}"}, 200, {"written": 1})
+    second.close()
+
+    calls, artifacts = lab.read_call_log(path)
+    assert [c["call_index"] for c in calls] == [1, 2]
+    assert artifacts, "第二次跑的产物也要在"
