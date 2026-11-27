@@ -50,8 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="只打印将要发送的材料，不调接口")
     ap.add_argument("--model", default="", help="覆盖 .env 里的模型名（默认用 LLM_MODEL）")
     ap.add_argument("--purpose", default="", help="这批实验想验证什么，写进记录里供以后复核")
-    ap.add_argument("--max-tokens", type=int, default=4096,
-                    help="单次输出上限。这是上限不是花销：给小了会把思考预算吃光、正文返回空")
+    ap.add_argument("--max-tokens", type=int, default=8192,
+                    help="单次输出上限。这是上限不是花销：给小了会把思考预算吃光、正文返回空"
+                         "（2026-11-27 实测 4096 被 raw-no-trace 的思考吃光）")
     args = ap.parse_args(argv)
 
     task = load_task(TASK_PATH)

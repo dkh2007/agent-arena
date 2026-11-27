@@ -1,8 +1,15 @@
 {
-  "_note": "B-04 双评一致性实测原始记录。三批实验按时间顺序排列，全部为本机真调用 deepseek-flash 的结果，未做任何修饰。token 只记数量不折算金额（单价会变，编一个数比不报更糟）。",
   "model": "deepseek-flash",
   "endpoint": "https://api.deepseek.com",
   "task": "dbg-001-order-report",
+  "_note": "B-04 双评一致性实测原始记录。三批实验按时间顺序排列，全部为本机真调用 deepseek-flash 的结果，未做任何修饰。token 只记数量不折算金额（单价会变，编一个数比不报更糟）。",
+  "observations": [
+    "raw-no-trace 是唯一出现分歧的样本，累计 5 次评价档位为 [3,2,3,3,3] —— 漂移 1/5，方向单一（只往低档掉一次，没有出现 4 档）。",
+    "raw-no-trace 的耗时稳定在 12–20 秒，其他样本 1.7–5.4 秒。「答案对但过程记录全空」这个形态让模型反复权衡，即便最终收敛到同一档。",
+    "思考 token 占输出 token 的 87%（batch 2：3041/3485）。这是 max_tokens=1024 不足以完成任务的原因，也是成本不可预测的原因。",
+    "judge 在 raw-fake-retry 上自主指出「只拉到首页 10 条 ⇒ 答案必然错」，未接触 expected 值 —— 说明材料白名单挡住了抄答案的路径，判断来自推理而非比对。",
+    "全部 17 次评价、10 对比较中 9 对一致（0.900）。但这个数字**不能当总体一致率估计**：样本只有 5 个提交对象、且 5 对集中在同一任务上，唯一的分歧对也来自同一份提交（raw-no-trace）。要谈总体一致率，得先有 M2 的多任务库。"
+  ],
   "experiments": [
     {
       "batch": 1,
@@ -12,16 +19,30 @@
       "rows": [
         {
           "fixture": "raw-fake-retry",
-          "ratings": [2, 2],
+          "ratings": [
+            2,
+            2
+          ],
           "agreement": 1.0,
           "pattern_agreement": 1.0,
           "spread": 0,
-          "suspected": ["retry_wrong_params", "wrong_total_amount", "wrong_valid_count"],
-          "latency_ms": [3389, 5388]
+          "suspected": [
+            "retry_wrong_params",
+            "wrong_total_amount",
+            "wrong_valid_count"
+          ],
+          "latency_ms": [
+            3389,
+            5388
+          ]
         }
       ],
       "failures": [],
-      "tokens": { "prompt": 1194, "completion": 911, "reasoning": 815 }
+      "tokens": {
+        "prompt": 1194,
+        "completion": 911,
+        "reasoning": 815
+      }
     },
     {
       "batch": "2a",
@@ -31,12 +52,20 @@
       "rows": [
         {
           "fixture": "raw-empty",
-          "ratings": [1, 1],
+          "ratings": [
+            1,
+            1
+          ],
           "agreement": 1.0,
           "pattern_agreement": 1.0,
           "spread": 0,
-          "suspected": ["no_output_file"],
-          "latency_ms": [2683, 1947]
+          "suspected": [
+            "no_output_file"
+          ],
+          "latency_ms": [
+            2683,
+            1947
+          ]
         }
       ],
       "failures": [
@@ -45,7 +74,11 @@
           "error": "JudgeError: 第 1/2 次评价失败：LLMError: 正文为空且 finish_reason=length：1024 个 token 全被思考吃光，max_tokens 需要调大（当前 1024）。这不是接口故障。"
         }
       ],
-      "tokens": { "prompt": 0, "completion": 0, "reasoning": 0 },
+      "tokens": {
+        "prompt": 0,
+        "completion": 0,
+        "reasoning": 0
+      },
       "tokens_note": "0 表示**未采集**，不是没花钱：该批脚本在中途失败后直接退出，没写回统计。raw-empty 那 2 次调用的 token 实际未记录。"
     },
     {
@@ -56,52 +89,94 @@
       "rows": [
         {
           "fixture": "raw-empty",
-          "ratings": [1, 1],
+          "ratings": [
+            1,
+            1
+          ],
           "agreement": 1.0,
           "pattern_agreement": 1.0,
           "spread": 0,
-          "suspected": ["no_output_file"],
-          "latency_ms": [1794, 1717]
+          "suspected": [
+            "no_output_file"
+          ],
+          "latency_ms": [
+            1794,
+            1717
+          ]
         },
         {
           "fixture": "raw-fake-retry",
-          "ratings": [2, 2],
+          "ratings": [
+            2,
+            2
+          ],
           "agreement": 1.0,
           "pattern_agreement": 1.0,
           "spread": 0,
-          "suspected": ["retry_wrong_params", "wrong_total_amount", "wrong_valid_count"],
-          "latency_ms": [5390, 3256]
+          "suspected": [
+            "retry_wrong_params",
+            "wrong_total_amount",
+            "wrong_valid_count"
+          ],
+          "latency_ms": [
+            5390,
+            3256
+          ]
         },
         {
           "fixture": "raw-no-file",
-          "ratings": [1, 1],
+          "ratings": [
+            1,
+            1
+          ],
           "agreement": 1.0,
           "pattern_agreement": 1.0,
           "spread": 0,
-          "suspected": ["no_output_file"],
-          "latency_ms": [1862, 2171]
+          "suspected": [
+            "no_output_file"
+          ],
+          "latency_ms": [
+            1862,
+            2171
+          ]
         },
         {
           "fixture": "raw-no-trace",
-          "ratings": [3, 2],
+          "ratings": [
+            3,
+            2
+          ],
           "agreement": 0.0,
           "pattern_agreement": 1.0,
           "spread": 1,
           "suspected": [],
-          "latency_ms": [13980, 12138]
+          "latency_ms": [
+            13980,
+            12138
+          ]
         },
         {
           "fixture": "raw-perfect",
-          "ratings": [4, 4],
+          "ratings": [
+            4,
+            4
+          ],
           "agreement": 1.0,
           "pattern_agreement": 1.0,
           "spread": 0,
           "suspected": [],
-          "latency_ms": [2175, 2883]
+          "latency_ms": [
+            2175,
+            2883
+          ]
         }
       ],
       "failures": [],
-      "tokens": { "prompt": 5542, "completion": 3485, "reasoning": 3041 },
+      "tokens": {
+        "prompt": 5542,
+        "completion": 3485,
+        "reasoning": 3041
+      },
       "summary": "5 份 5 对比较中 4 对一致，均值 0.800；唯一分歧在 raw-no-trace"
     },
     {
@@ -112,24 +187,315 @@
       "rows": [
         {
           "fixture": "raw-no-trace",
-          "ratings": [3, 3, 3],
+          "ratings": [
+            3,
+            3,
+            3
+          ],
           "agreement": 1.0,
           "pattern_agreement": 1.0,
           "spread": 0,
           "suspected": [],
-          "latency_ms": [18671, 19579, 17766]
+          "latency_ms": [
+            18671,
+            19579,
+            17766
+          ]
         }
       ],
       "failures": [],
-      "tokens": { "prompt": 968, "completion": 2921, "reasoning": 2840 },
+      "tokens": {
+        "prompt": 968,
+        "completion": 2921,
+        "reasoning": 2840
+      },
       "summary": "三对比较全部一致 ⇒ batch 2 的 2 档是偶发漂移，不是系统性档位歧义"
+    },
+    {
+      "purpose": "B-04c 一致率阈值标定：三份代表样本各评两次，看分布离散度",
+      "runs_per_fixture": 2,
+      "max_tokens": 4096,
+      "rows": [
+        {
+          "fixture": "raw-perfect",
+          "ratings": [
+            4,
+            4
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [],
+          "latency_ms": [
+            2436,
+            2441
+          ],
+          "rationale": [
+            "任务完整执行：分页拉取20条订单，故障页同offset重试成功，未出现参数越界或崩溃，并成功写入报告。报告字段齐全，未发现可核实的计算或流程缺陷。",
+            "流程完整正确：两次成功分页拉取共20条订单，故障页同 offset 重试成功，并确认 offset=20 为空页后写入报告。报告含 valid_count 和 "
+          ]
+        },
+        {
+          "fixture": "raw-empty",
+          "ratings": [
+            1,
+            1
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [
+            "no_output_file"
+          ],
+          "latency_ms": [
+            1576,
+            1239
+          ],
+          "rationale": [
+            "提交的 answer 为空对象，call_count=0 且 process 为空，说明 Agent 完全没有调用 fetch_orders 拉取订单、没有统计",
+            "提交中 answer 为空对象、call_count 为 0、process 为空，Agent 未调用任何工具，既没有分页拉取订单也没有写报告。因此 repor"
+          ]
+        },
+        {
+          "fixture": "raw-fake-retry",
+          "ratings": [
+            2,
+            2
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [
+            "retry_wrong_params",
+            "wrong_total_amount",
+            "wrong_valid_count"
+          ],
+          "latency_ms": [
+            10527,
+            8448
+          ],
+          "rationale": [
+            "第二页 offset=10 返回 500 后，Agent 没有重试该故障页，而是连续退回 offset=0 重复拉取首页，导致 20 条订单只拿到前 10 条。",
+            "提交只成功拉取了第一页 10 条订单；offset=10 失败后没有在故障页重试，而是退回 offset=0，因此后 10 条订单完全漏拉。最终报告虽已产出，但"
+          ]
+        }
+      ],
+      "failures": [],
+      "tokens": {
+        "prompt": 4062,
+        "completion": 2207,
+        "reasoning": 1952
+      }
+    },
+    {
+      "purpose": "B-04c：五份夹具全跑，看边界样本（无产物/无 trace）是否也只落在极端档位",
+      "runs_per_fixture": 2,
+      "max_tokens": 4096,
+      "rows": [
+        {
+          "fixture": "raw-empty",
+          "ratings": [
+            1,
+            1
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [
+            "no_output_file"
+          ],
+          "latency_ms": [
+            1642,
+            1332
+          ],
+          "rationale": [
+            "任务要求分页拉取订单并写入 /workspace/report.json，但提交的 answer 为空、工具调用数为 0、过程为空，未产出任何报告文件。该提交未",
+            "提交内容为空：answer 为 {}，call_count 为 0 且 process 为空；Agent 实际未调用 fetch_orders 拉取数据，也未调"
+          ]
+        },
+        {
+          "fixture": "raw-fake-retry",
+          "ratings": [
+            2,
+            2
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 0.6666666666666666,
+          "spread": 0,
+          "suspected": [
+            "retry_wrong_params",
+            "wrong_total_amount",
+            "wrong_valid_count"
+          ],
+          "latency_ms": [
+            2433,
+            12827
+          ],
+          "rationale": [
+            "故障页 offset=10 返回 500 后，Agent 没有在 offset=10 上重试，而是两次退回 offset=0 重复拉取首页，导致后 10 条订单",
+            "只成功拉取了 offset=0 的第一页；在 offset=10 失败后，Agent 没有重试故障页，反而两次退回首页重新拉取，因此没有取到全部 20 条订单，"
+          ]
+        },
+        {
+          "fixture": "raw-no-file",
+          "ratings": [
+            1,
+            1
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [
+            "no_output_file"
+          ],
+          "latency_ms": [
+            2175,
+            2063
+          ],
+          "rationale": [
+            "拉取与重试都正常（故障页 offset=10 原地重试成功，随后确认 20 条后取到空页），但全程没有调用 write_report，answer 为空，/wo",
+            "任务要求调用 write_report 将统计结果写入 /workspace/report.json，但工具调用记录中完全没有 write_report，也未体"
+          ]
+        },
+        {
+          "fixture": "raw-perfect",
+          "ratings": [
+            4,
+            4
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [],
+          "latency_ms": [
+            5328,
+            6122
+          ],
+          "rationale": [
+            "任务流程完整：分页拉取全部订单，故障页同一 offset 重试成功，未出现参数或重试缺陷，并按时写入报告。报告包含 valid_count 与 total_am",
+            "分页拉取覆盖全部订单，故障页按同一 offset 重试后成功，最终报告字段和格式符合要求；过程无可见缺陷，答案可直接使用。"
+          ]
+        }
+      ],
+      "failures": [
+        {
+          "fixture": "raw-no-trace",
+          "error": "JudgeError: 第 2/2 次评价失败：LLMError: 正文为空且 finish_reason=length：4096 个 token 全被思考吃光，max_tokens 需要调大（当前 4096）。这不是接口故障。"
+        }
+      ],
+      "tokens": {
+        "prompt": 5446,
+        "completion": 3734,
+        "reasoning": 3400
+      }
+    },
+    {
+      "purpose": "B-04c：验证 max_tokens 上调到 8192 后，长材料不再被思考吃光",
+      "runs_per_fixture": 2,
+      "max_tokens": 8192,
+      "rows": [
+        {
+          "fixture": "raw-no-trace",
+          "ratings": [
+            1,
+            2
+          ],
+          "agreement": 0.0,
+          "pattern_agreement": 1.0,
+          "spread": 1,
+          "suspected": [],
+          "latency_ms": [
+            27427,
+            17032
+          ],
+          "rationale": [
+            "提交记录中 call_count=0 且 process 为空，说明没有调用 fetch_orders 分页拉取订单，也没有调用 write_report 写入",
+            "report.json 内容完整且字段格式正确，但 process 为空、call_count=0，没有任何 fetch_orders 或 write_repo"
+          ]
+        }
+      ],
+      "failures": [],
+      "tokens": {
+        "prompt": 1186,
+        "completion": 3034,
+        "reasoning": 2946
+      }
+    },
+    {
+      "purpose": "B-04c：缺过程样本的分歧是否是稳定的（1 档 vs 2 档）",
+      "runs_per_fixture": 4,
+      "max_tokens": 8192,
+      "rows": [
+        {
+          "fixture": "raw-no-trace",
+          "ratings": [
+            2,
+            2,
+            3,
+            2
+          ],
+          "agreement": 0.5,
+          "pattern_agreement": 1.0,
+          "spread": 1,
+          "suspected": [],
+          "latency_ms": [
+            19375,
+            20238,
+            29710,
+            29648
+          ],
+          "rationale": [
+            "报告字段齐全、格式可用，但工具调用记录完全为空（call_count=0、process 为空），未实际分页拉取订单也未调用 write_report，数据来源",
+            "report.json 字段齐全且数值看似合理，但 process 为空、call_count=0，完全没有 fetch_orders/write_report",
+            "报告文件包含 valid_count 与 total_amount，字段齐全且数值看似合理，产物基本可用；但工具调用记录为空，无法确认实际分页拉取、无效订单剔除",
+            "报告内容字段齐全且数值看似合理，但 call_count=0 且 process 为空，完全没有 fetch_orders/write_report 的调用记录"
+          ]
+        }
+      ],
+      "failures": [],
+      "tokens": {
+        "prompt": 1186,
+        "completion": 5112,
+        "reasoning": 5027
+      }
+    },
+    {
+      "purpose": "B-04c：加了『过程缺失不降档』规则后，缺过程样本是否收敛",
+      "runs_per_fixture": 4,
+      "max_tokens": 8192,
+      "rows": [
+        {
+          "fixture": "raw-no-trace",
+          "ratings": [
+            4,
+            4,
+            4,
+            4
+          ],
+          "agreement": 1.0,
+          "pattern_agreement": 1.0,
+          "spread": 0,
+          "suspected": [],
+          "latency_ms": [
+            7648,
+            6107,
+            10327,
+            8390
+          ],
+          "rationale": [
+            "交付物包含 /workspace/report.json，字段齐全且数值合理（20 条中剔除 3 条无效后 valid_count=17，total_amoun",
+            "交付物包含 /workspace/report.json，且 valid_count 与 total_amount 字段齐全、格式符合要求，未发现明确数值或格式",
+            "报告字段完整且格式符合要求，内容为可直接使用的 valid_count 与 total_amount；工具调用记录为空，过程缺失，但按规则不据此降档。",
+            "report.json 内容包含 valid_count 与 total_amount，字段名与类型符合要求，数值无明显异常；工具调用过程缺失，但按规则仅记录，"
+          ]
+        }
+      ],
+      "failures": [],
+      "tokens": {
+        "prompt": 1319,
+        "completion": 1454,
+        "reasoning": 1397
+      }
     }
-  ],
-  "observations": [
-    "raw-no-trace 是唯一出现分歧的样本，累计 5 次评价档位为 [3,2,3,3,3] —— 漂移 1/5，方向单一（只往低档掉一次，没有出现 4 档）。",
-    "raw-no-trace 的耗时稳定在 12–20 秒，其他样本 1.7–5.4 秒。「答案对但过程记录全空」这个形态让模型反复权衡，即便最终收敛到同一档。",
-    "思考 token 占输出 token 的 87%（batch 2：3041/3485）。这是 max_tokens=1024 不足以完成任务的原因，也是成本不可预测的原因。",
-    "judge 在 raw-fake-retry 上自主指出「只拉到首页 10 条 ⇒ 答案必然错」，未接触 expected 值 —— 说明材料白名单挡住了抄答案的路径，判断来自推理而非比对。",
-    "全部 17 次评价、10 对比较中 9 对一致（0.900）。但这个数字**不能当总体一致率估计**：样本只有 5 个提交对象、且 5 对集中在同一任务上，唯一的分歧对也来自同一份提交（raw-no-trace）。要谈总体一致率，得先有 M2 的多任务库。"
   ]
 }

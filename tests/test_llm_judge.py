@@ -312,3 +312,31 @@ def test_stub_judge_records_every_call():
     ctx = {"task_id": "dbg-001", "answer": {"valid_count": 17}}
     lj.double_judge(stub, ctx, vocab=VOCAB)
     assert stub.calls == [ctx, ctx], "两次评价必须各自拿到完整上下文"
+
+
+# ---------------------------------------------------------------------------
+# 提示词的两条硬规则（2026-11-27 真跑实测后写进来的）
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_forbids_docking_a_grade_for_missing_process():
+    """「过程缺失不降档」这一句删掉，同一份材料的一致率从 1.00 掉回 0.50。
+
+    实测（`judge_agreement_experiment.py`，2026-11-27）：
+    - 补这句之前：`raw-no-trace`（有产物、无过程）四次评价 = [2, 2, 3, 2]，一致率 0.50；
+    - 补上之后：四次都是 4 档，一致率 1.00，rationale 里直接引用了这条规则。
+
+    这不是"让模型别想太多"：缺过程已经由门禁层处理（那次不计入长期掌握度），
+    judge 再降一档就是和按产物判分的那一层直接矛盾。
+    """
+    assert "过程缺失不降档" in lj.JUDGE_SYSTEM_PROMPT
+    assert "由另一层决定" in lj.JUDGE_SYSTEM_PROMPT
+
+
+def test_default_max_tokens_leaves_room_for_reasoning():
+    """4096 被思考吃光过：`raw-no-trace` 第 2 次评价 `finish_reason=length`、正文为空。
+
+    这个参数是**上限不是花销**，给大不额外花钱，给小会把任务直接判死。
+    """
+    judge = lj.LLMJudge(object(), [])
+    assert judge.max_tokens >= 8192
