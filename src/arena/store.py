@@ -1885,6 +1885,33 @@ def close_due_reviews(conn: sqlite3.Connection, user_id: str, skill_ids, *,
     return int(cur.rowcount or 0)
 
 
+def mark_review_done(conn: sqlite3.Connection, user_id: str, review_id: str, *,
+                     at: str | None = None) -> bool:
+    """学生自己点「做完了」：把他本人的一条 **pending** 复习项标 `done`。返回是否真的改了。
+
+    三条边界：
+
+    1. **只改自己的**（`WHERE user_id = ?`）：`review_id` 会出现在链接里，别人拿到也用不了。
+    2. **只改 pending 的**：已 done / skipped 的重复点击是幂等 no-op，不是错误——
+       刷新页面、点两次、浏览器预抓链接都会重放这个请求，报错反而制造噪声。
+    3. **不推进 FSRS 卡、不改 P、不计一次"复习成功"**。点按钮不是证据：证据只能来自
+       交了一份卷子（`close_due_reviews` 那条路）。若这里顺手推卡，就会出现
+       "页面说他掌握了、成绩单上没有"这种两套账。
+       代价是这次复习**不计入记忆强度**——那是保守的低估，不会高估，可以接受。
+
+    `at` 只为留痕（当前不写任何时间列）；传与不传行为一致。
+    """
+    if not isinstance(review_id, str) or not review_id:
+        raise StoreError("缺 review_id")
+    with atomic(conn):
+        cur = conn.execute(
+            "UPDATE review_items SET status = 'done' "
+            "WHERE review_id = ? AND user_id = ? AND status = 'pending'",
+            (review_id, user_id),
+        )
+    return bool(cur.rowcount)
+
+
 def save_schedule(conn: sqlite3.Connection, result, *, user_id: str | None = None) -> dict:
     """把一次调度的结果整体落库：先关已完成、再更新卡片、最后加新复习项。
 

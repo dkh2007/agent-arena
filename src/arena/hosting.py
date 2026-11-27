@@ -697,16 +697,28 @@ def review_of(conn, user_id: str, *, at: str | None = None) -> dict | None:
         return None
 
 
-def _review_block(review: dict | None) -> str:
-    """「今天该复习」那一块。没有可复习的就整块不出现——空盒子比没有更让人困惑。"""
+def _review_block(review: dict | None, *, root: str = "") -> str:
+    """「今天该复习」那一块。没有可复习的就整块不出现——空盒子比没有更让人困惑。
+
+    「做完了」是 B-08c 补的最后一环：以前这一块只**告诉**他该复习，没有任何地方
+    能让他把项做掉，队列只增不减。链接是 GET（这一页不许有脚本），点完 303 回本页。
+
+    **文字里不出现 `review_id`**：它只进 `href`。页面上能看见的仍然只有
+    技能名、形态、逾期天数（`reminder` 的第 3 条口径）。
+    """
     if not review or review.get("empty"):
         return ""
     rows = []
     for row in review.get("today") or []:
         extra = f"（{row['task_title']}）" if row.get("task_title") else ""
+        done = ""
+        if root and row.get("review_id"):
+            href = f"{root.rstrip('/')}/review/{row['review_id']}/done"
+            done = f'　<a class="done" href="{html.escape(href)}">做完了</a>'
         rows.append(
             f"<li>{html.escape(str(row['skill']))}　{html.escape(str(row['kind_label']))}"
-            f"{html.escape(extra)}　<span class=\"muted\">{html.escape(str(row['overdue_text']))}</span></li>"
+            f"{html.escape(extra)}　<span class=\"muted\">{html.escape(str(row['overdue_text']))}</span>"
+            f"{done}</li>"
         )
     notice = f'<div class="muted">{html.escape(str(review["notice"]))}</div>' if review.get("notice") else ""
     return (
@@ -782,7 +794,7 @@ def _progress_block(since_last: dict | None) -> str:
 
 def render_landing(session: dict, public_task: dict, base_url: str, *,
                    review: dict | None = None, report_url: str | None = None,
-                   since_last: dict | None = None) -> str:
+                   since_last: dict | None = None, just_marked: bool = False) -> str:
     """学习者打开链接看到的那一页。
 
     **同一页要能回答四种状态**，否则回访的人只会看到一段过时的做题说明：
@@ -857,6 +869,14 @@ def render_landing(session: dict, public_task: dict, base_url: str, *,
         )
         subtitle = "做题地址（这条链接就是你，别转发）"
 
+    # 「做完了」点完回本页：整块可能因为最后一条被关掉而消失，若不吭声，
+    # 学习者的第一反应是"我的复习项丢了"。所以回一句，并说清它不产生成绩。
+    marked = (
+        '<div class="card"><b>记下了</b>：这一条不会再提醒。'
+        '<div class="muted">点这个按钮不产生成绩——下一轮的排期按你下次交的卷子算。</div></div>'
+        if just_marked else ""
+    )
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -876,13 +896,15 @@ th {{ color:#6b7280; font-weight:600; }}
 .muted {{ color:#6b7280; font-size:13px; }}
 .cta {{ display:inline-block; margin-top:6px; padding:10px 16px; background:#1d4ed8; color:#fff;
         text-decoration:none; border-radius:8px; font-weight:600; }}
+.done {{ color:#1d4ed8; text-decoration:none; border-bottom:1px solid #bfdbfe; white-space:nowrap; }}
 </style></head>
 <body><main>
 <h1>{title}</h1>
 <div class="muted">{subtitle}</div>
 {head}
+{marked}
 {_progress_block(since_last)}
-{_review_block(review)}
+{_review_block(review, root=root)}
 <h2>④ 说明</h2>
 <div class="card muted">
 你调工具的每一次请求都由服务器记下（包括失败的）。这不是监视，是判分的依据：

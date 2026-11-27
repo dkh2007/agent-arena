@@ -102,6 +102,9 @@ def build_reminder(items: Iterable[dict], *, at: str, cap: int,
         _check_plain(text)
         task_id = row.get("task_id")
         rows.append({
+            # `review_id` 只用来拼「做完了」的链接（B-08c），**不印在文案里**：
+            # 页面上的字仍然只有技能名、形态、逾期天数（第 3 条口径不变）。
+            "review_id": row["review_id"],
             "skill_id": skill_id,
             "skill": skill_names[skill_id],
             "kind": kind,

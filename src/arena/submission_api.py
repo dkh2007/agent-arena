@@ -910,6 +910,18 @@ class _Handler(BaseHTTPRequestHandler):
         except hosting.HostError as exc:
             raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
 
+        if len(parts) == 5 and parts[2] == "review" and parts[4] == "done":
+            # 「做完了」：只把**他本人的**那条 pending 项标掉，不动卡片、不动掌握度
+            # （点按钮不是证据，证据只能来自交卷）。已 done 的重复点击是幂等的，
+            # 所以浏览器预抓、连点两次都不会报错。
+            conn = self.ctx["conn_factory"]()
+            try:
+                store.mark_review_done(conn, session["user_id"], parts[3])
+            finally:
+                conn.close()
+            self._redirect(f"/s/{token}?marked=1")
+            return
+
         if len(parts) == 3 and parts[2] == "report":
             sid = session.get("submission_id")
             if not sid:
@@ -936,6 +948,7 @@ class _Handler(BaseHTTPRequestHandler):
                 review=review,
                 report_url=(f"/s/{token}/report" if submitted else None),
                 since_last=since_last,
+                just_marked=parse_qs(urlsplit(self.path).query).get("marked") == ["1"],
             )
             self._send_html(200, page)
             return

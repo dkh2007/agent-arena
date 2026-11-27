@@ -38,8 +38,12 @@ REGEN = (f"python scripts/review_page.py --at {ASSET_AT} "
 
 TOP_KEYS = {"generated_at", "cap", "due_total", "today", "deferred",
             "empty", "headline", "notice"}
-ROW_KEYS = {"skill_id", "skill", "kind", "kind_label", "task_id",
+ROW_KEYS = {"review_id", "skill_id", "skill", "kind", "kind_label", "task_id",
             "task_title", "due", "overdue_days", "overdue_text"}
+
+# `review_id` 2026-11-27 进契约（B-08c）：「做完了」的链接要用它拼。
+# Kotlin 侧仍是 `optString` 按名取、忽略未知字段，所以多这一个键不会让页面解析失败；
+# 它**只进 `href`，不进任何一句显示文字**——页面文字那一层由下面的 INTERNAL 单独守。
 
 # 页面上不许出现的内部词（与 reminder._check_plain 同一张单子）
 INTERNAL = ("review_id", "submission_id", "skill_id", "pending", "ratio")

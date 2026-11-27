@@ -135,8 +135,12 @@ def test_empty_skill_names_is_rejected():
 
 def test_user_facing_text_has_no_internal_words():
     data = _build([_item(i, days=-i) for i in range(1, 4)], cap=1)
+    # `review_id` 是「做完了」链接的唯一标识（B-08c）：它必须传出去，但只进 `href`，
+    # 不进任何一句给人看的话。所以这里查的是**文案字段**——键名本身不是文案。
+    # 真正"页面上看得到什么"由 `tests/test_hosting.py` 那条去标签后检查的用例守。
+    rows = [{k: v for k, v in row.items() if k != "review_id"} for row in data["today"]]
     blob = json.dumps(
-        {k: data[k] for k in ("headline", "notice")} | {"today": data["today"]},
+        {k: data[k] for k in ("headline", "notice")} | {"today": rows},
         ensure_ascii=False,
     )
     for word in ("review_id", "submission_id", "pending", "ratio"):

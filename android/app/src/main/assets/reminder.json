@@ -4,6 +4,7 @@
   "due_total": 3,
   "today": [
     {
+      "review_id": "r-1",
       "skill_id": "tool_param_validation",
       "skill": "工具参数校验",
       "kind": "fault_injection",
@@ -15,6 +16,7 @@
       "overdue_text": "逾期 2 天"
     },
     {
+      "review_id": "r-2",
       "skill_id": "multi_step_planning",
       "skill": "多步任务分解",
       "kind": "replay",
