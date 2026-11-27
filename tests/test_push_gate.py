@@ -76,7 +76,20 @@ def test_password_assignment_is_blocked():
 
 
 def test_bearer_token_is_blocked():
-    assert "SECRET" in _tags("Authorization: " + "Bea" "rer " + "abc.def.ghi")
+    """真凭据形状照拦：协议词 + 一段够长的随机串。"""
+    jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+    assert "SECRET" in _tags("Authorization: " + "Bea" "rer " + jwt)
+
+
+def test_bearer_placeholder_in_docs_is_not_a_secret():
+    """文档里教人怎么调接口，写的是占位符，不是钥匙。
+
+    2026-11-27 实测：`Authorization: Bea rer <会话编号>` 被裸前缀判成泄露，
+    整批提交被 BLOCKED。那与 2026-11-22 的 `sk-` 假阳性同类——前缀本身不构成凭据，
+    必须连"够长的随机串"一起才算法。
+    """
+    assert "SECRET" not in _tags("Authorization: " + "Bea" "rer " + "<会话编号>")
+    assert "SECRET" not in _tags("请求头用 " + "Bea" "rer " + "加会话编号")
 
 
 # ── 5. 匿名纪律的两个面 ─────────────────────────────────────────────────

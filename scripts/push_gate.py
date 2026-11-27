@@ -39,11 +39,14 @@ SELF = Path(__file__).resolve()
 #
 # 只有"凭据文件标记"这类本身就有意义的放这里；**令牌前缀不放**——
 # 它们必须连一个足够长的随机串一起才算数（见 SECRET_PATTERNS）。
+#
+# `Bea rer ` 2026-11-27 从下面移到了 SECRET_PATTERNS：它是**协议词**，不是凭据标记。
+# 文档里写 "Authorization: Bea rer <会话编号>"（教人怎么调接口）会被裸前缀判成泄露，
+# 和 2026-11-22 那次 `sk-` 的 37 处假阳性是同一类错——靠"前缀本身有罪"必然误伤。
 SECRET_PREFIXES = (
     "-----" "BEGIN",
     "PASS" "WORD=",
     "P" "AT=",
-    "Bea" "rer ",
 )
 
 # 令牌形状：前缀 + 足够长的 base62 串 + 左边界不是字母数字。
@@ -59,6 +62,9 @@ SECRET_PATTERNS = (
     re.compile(_LEFT_EDGE + "s" "k-" + _TOKEN_TAIL),
     re.compile(_LEFT_EDGE + "g" "hp_" + _TOKEN_TAIL),
     re.compile(_LEFT_EDGE + "github" "_pat_" + _TOKEN_TAIL),
+    # 协议词 + 真凭据的形状。`(?!<)` 是给文档留的口子：`Bea rer <会话编号>` 是
+    # 用法说明，不是一把钥匙；而 `Bea rer eyJhbGciOi...` 那种仍然照拦。
+    re.compile(_LEFT_EDGE + "Bea" "rer " + r"(?!<)" + _TOKEN_TAIL),
 )
 
 EXIT_CLEAN = 0
