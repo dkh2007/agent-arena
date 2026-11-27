@@ -432,7 +432,8 @@ class ReferenceAgent:
 
         if self.flaw == "ask_late":
             rows = self._fetch_all_orders(notes)
-            answer = _summarize_orders(rows, drop_cancelled=True)
+            answer = _summarize_orders(rows, drop_cancelled=True,
+                                       distinct_by=_distinct_by(self.task))
             status, _ = self._invoke(ask_tool, question)
             if status != 200:
                 raise AgentError(f"{ask_tool} 最终失败：{status}")
@@ -459,7 +460,8 @@ class ReferenceAgent:
             "（**不是**从 mock.pagination 读的——那等于不问题也知道答案）"
         )
         rows = self._fetch_all_orders(notes, page_size=page)
-        return _summarize_orders(rows, drop_cancelled=drop_cancelled)
+        return _summarize_orders(rows, drop_cancelled=drop_cancelled,
+                                 distinct_by=_distinct_by(self.task))
 
     def _write_report(self, answer: dict, path: str) -> None:
         content = json.dumps(answer, ensure_ascii=False, sort_keys=True)
@@ -553,8 +555,22 @@ def _page_size_from_answer(policy: str) -> int:
     return int(m.group(1))
 
 
+def _distinct_by(task: dict) -> str | None:
+    """这道题的身份字段（`derivation.distinct_by`）：同一单号只算一次时才有。
+
+    **为什么从任务声明读、而不是从答复文本里用关键词猜**：答复是中文散文，
+    「同一个 order_id 出现两次时只算一次」这句可以有一百种说法；声明是它机器可读的那一版。
+    两者不一致时不会悄悄放过——`correct` 形态会算错 R2，`test_task_runs_to_full_marks`
+    当场就红（`ask-004` 就是这么把这条口径钉住的）。
+    """
+    rule = task.get("derivation") or {}
+    key = rule.get("distinct_by") if isinstance(rule, dict) else None
+    return key if isinstance(key, str) and key else None
+
+
 def _summarize_orders(rows: list[dict], *, apply_filter: bool = True,
-                      drop_cancelled: bool = False) -> dict[str, Any]:
+                      drop_cancelled: bool = False,
+                      distinct_by: str | None = None) -> dict[str, Any]:
     """剔除无效行（amount 缺失 / null / 负数，可选再剔 status=cancelled），统计条数与合计。
 
     判定规则来自任务 scenario 第 2 条，不是从代码里"推断"出来的：
@@ -564,7 +580,25 @@ def _summarize_orders(rows: list[dict], *, apply_filter: bool = True,
     缺失/非数值当 0。它必须在 R2 上失败——否则说明 R2 判不出"没剔除"。
 
     `drop_cancelled` 由交接题按**问到的口径**决定，默认 False 保持另两套骨架的语义不变。
+
+    `distinct_by` 同理来自题目声明（`derivation.distinct_by`）：那是**规则**，不是答案。
+    它必须是**选填**：不给就不去重——若默认去重，一个"数据里故意有重复"的题会被
+    参考 Agent 悄悄做对，而它从没问过任何人"重复的怎么算"（`ask-004` 正是这道题）。
+    **去重在筛之前**（与 `derivation` 同序，`:60` 写了理由）：反过来的话，
+    「同一单号抄两行、一行有效一行无效」就能靠去重挑出能过的那份。
     """
+    if distinct_by and apply_filter:
+        seen: set[Any] = set()
+        unique: list[dict] = []
+        for row in rows:
+            key = row.get(distinct_by) if isinstance(row, dict) else None
+            if key is not None:
+                if key in seen:
+                    continue            # 同一身份只算首次出现的那行（不判哪行对，那是数据质量问题）
+                seen.add(key)
+            unique.append(row)
+        rows = unique
+
     if not apply_filter:
         total = 0.0
         for r in rows:

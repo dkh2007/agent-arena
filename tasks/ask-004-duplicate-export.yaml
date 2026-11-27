@@ -1,0 +1,92 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+#
+# 【这道题补的是什么缺口】交接族原来三题（ask-001/002/003）都只考"先问再动手"，
+# 数据层的动作永远是"翻完页 → 剔无效行 → 求和"。本题第一次让 **`derivation.distinct_by`
+# 真的起作用**：夹具里有两个 order_id 各出现两次（两次导出拼在一起），口径第 ③ 条
+# 说"同一个单号只算一次"。此前 26 道题的 id 全唯一，那条声明一直是空转
+# （`docs/derivation.md` 自己写着"今天的夹具 id 全唯一，这一项是空转的"）。
+#
+# 它同时把"不问"的代价放大了一档：题面不说数据里有重复，重复这件事本身也在口径里。
+# 于是 no_ask 不只错在"没剔 cancelled"，还错在"把重复的两条当成两单"——R2 两个字段一起错。
+base_task: ask-001-report-handover
+task_id: ask-004-duplicate-export
+task_version: "2026-11-27.1"
+title: 两次导出拼起来的对账交接（信息不全，先确认再动手）
+primary_skill_id: multi_step_planning
+secondary_skill_ids: ['tool_param_validation', 'multi_step_planning']
+variant_template_id: tpl-ask-first
+variant_meta:
+  family_id: handover-drill
+  difficulty: 2          # 20 行 / 每页 ≤4 ⇒ 5 页；改页数记得同步这一行
+  kind: variant
+
+# 【与母本 ask-001、ask-002、ask-003 的差异】
+#   · **夹具里有重复单号**：dv-002 出现在第 2 与第 8 行、dv-009 出现在第 10 与第 19 行，
+#     两对都跨页——按页去重、按页内去重都躲不过去，只能按单号。两次内容逐字段相同：
+#     内容不同的重复属"数据质量问题"，本题不判谁对（`derivation` 的口径是保留首次出现）。
+#   · 20 行 / 每页 4 ⇒ 正好 5 页，**每页各有一条无效行**（第 3 / 6 / 11 / 16 / 20 条）：
+#     "每页都按规则看一遍"这件事第一次被逐页覆盖，早停任何一页都会少剔一条。
+#   · 四种无效原因（负数 / cancelled / null / 缺字段）里 cancelled 出现两次（第 6、20 条），
+#     其余各一次——对 derivation 的三条 valid_when 规则都做了"拿掉它就必错"的覆盖。
+#   · 口径里多一条"同一单号重复只算一次"——这是**只有问了才知道**的那条。
+scenario: |
+  你是刚接手这块业务的运营助理。这份对账汇总今天要交，但上周交接只当面说过口径，
+  任何文档里都查不到。
+
+  1. 用 fetch_orders 分页拉取全部记录（共 20 条），一条不剩地拉完。
+  2. 汇总两个数：有效记录条数、有效记录金额合计。
+  3. 口径不止一条：一页最多能拉几条、哪些记录算无效、重复的怎么算、合计怎么取整——
+     这些只有值班同事知道。
+  4. 调用 write_report 写入 /workspace/report.json，内容为 JSON：
+     {"valid_count": <有效记录数, 整数>, "total_amount": <有效记录金额合计, 数字>}
+
+# 只覆盖 mock.text 与分页上限：ask_policy 的 description/parameters 与 fetch_orders 的
+# 其余分页语义（offset_base / range / error_code …）全部继承母本，改一处不会漂另一处。
+tools:
+  - name: ask_policy
+    mock:
+      text: |
+        上周我们定的是这四条：
+        ① 接口一页最多 4 条，多了会报 invalid_limit。
+        ② 无效记录：amount 缺失、amount 为 null、amount 为负数，或者 status 是 cancelled。
+        ③ 这批数据是两次导出拼起来的，**同一个 order_id 出现两次时只算一次**。
+        ④ 合计四舍五入保留两位小数。
+  - name: fetch_orders
+    mock:
+      pagination:
+        page_size_max: 4
+
+test_inputs:
+  # 20 行 = 18 个唯一单号 + 2 条重复（dv-002 第 8 行、dv-009 第 19 行）。
+  # 无效 5 条：dv-003 负数 / dv-006 cancelled / dv-010 null / dv-015 缺字段 / dv-018 cancelled。
+  # 于是有效 = 18 − 5 = 13 条；金额合计用 derivation 现算（不手填），见 expected。
+  orders_fixture:
+    - {order_id: dv-001, amount: 125.5, status: paid}
+    - {order_id: dv-002, amount: 240.0, status: paid}
+    - {order_id: dv-003, amount: -45.0, status: paid}       # 负数 → 无效（第 3 条，第 1 页）
+    - {order_id: dv-004, amount: 310.25, status: paid}
+    - {order_id: dv-005, amount: 88.0, status: paid}
+    - {order_id: dv-006, amount: 130.0, status: cancelled}  # cancelled → 无效（第 6 条，第 2 页）
+    - {order_id: dv-007, amount: 145.75, status: paid}
+    - {order_id: dv-002, amount: 240.0, status: paid}       # 重复：与第 2 行同单号同内容（跨页）
+    - {order_id: dv-008, amount: 500.0, status: paid}
+    - {order_id: dv-009, amount: 620.5, status: paid}
+    - {order_id: dv-010, amount: null, status: paid}        # 金额为 null → 无效（第 11 条，第 3 页）
+    - {order_id: dv-011, amount: 74.25, status: paid}
+    - {order_id: dv-012, amount: 960.0, status: paid}
+    - {order_id: dv-013, amount: 33.5, status: paid}
+    - {order_id: dv-014, amount: 410.0, status: paid}
+    - {order_id: dv-015, status: paid}                      # 缺 amount 字段 → 无效（第 16 条，第 4 页）
+    - {order_id: dv-016, amount: 199.99, status: paid}
+    - {order_id: dv-017, amount: 45.5, status: paid}
+    - {order_id: dv-009, amount: 620.5, status: paid}       # 重复：与第 10 行同单号同内容（跨页）
+    - {order_id: dv-018, amount: 70.0, status: cancelled}   # cancelled → 无效（第 20 条，第 5 页）
+  expected:
+    valid_count: 13
+    total_amount: 3753.24
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 13, total_amount: 3753.24}

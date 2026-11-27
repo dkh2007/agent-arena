@@ -51,10 +51,10 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 一次提交：取任务定义（**必须合并 base_task**，见 §7）→ 逐项判（确定性断言 + 语义双判，分歧进仲裁）
 → 先 gate 后 credit → 归因错误模式并绑技能 → 折熟练度、排复习 → 推荐下一题 → 渲染四页。
 
-任务库结构（**数字是 2026-11-24 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
-27 题 = 3 个基座 + 24 个参数变体，五族 7/7/5/5/3（`order-report` / `retry-drill` / `param-surface` / `locate-drill` / `handover-drill`），
+任务库结构（**数字是 2026-11-27 的取样，随扩题变化；要现值用 §9 命令数，别信这里的数**）：
+28 题 = 3 个基座 + 25 个参数变体，五族 7/7/5/5/4（`order-report` / `retry-drill` / `param-surface` / `locate-drill` / `handover-drill`），
 难度 1/2/3 全档覆盖；每题合并后都是 5 个判分项（2 前提 + 3 得分）。
-（取样时点 2026-11-24；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l` 或 `python scripts/new_task.py --list` 末行。）
+（取样时点 2026-11-27；加题后要同步这行，判据是 `ls tasks/*.yaml | wc -l` 或 `python scripts/new_task.py --list` 末行。）
 技能 3 个；错误类型 19 条，其中 4 条不映射技能（`no_output_file` / `empty_output_file` /
 `task_crashed` / `task_timeout`，属交付纪律类，语义上刻意如此）。
 **不会随扩题变的是结构**：每个变体合并后都必须是 5 项、未映射的那几条必须是前提失败类。
@@ -94,7 +94,7 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
 - **已落地**：B-26（待仲裁证据不进熟练度）；用户可见文案总表 194 条 + 一致性校验；复述页"先交后看"；
   **19 条错误模式的人话模板 + 报告页去机器码**（2026-11-24：`error-patterns-v0.yaml` 的 `human` +
   `arena/error_notes.py` + 报告 `assertions[].title` / `pattern_notes` / `display_labels.fields`）；
-  **区分度机制化**（`tests/test_discrimination.py`：27 题 × 5–6 形态，骨架级判据）；
+  **区分度机制化**（`tests/test_discrimination.py`：28 题 × 5–6 形态，骨架级判据）；
   **训练单页与复述页去机器码**（`focus_assertions` 带中文标题；复述页改读词表 `plain`，
   `description` 留给 judge）。**页面上现在不出现任何断言 id / 字段名**——这是三条线合起来的结果，
   新加页面时照这个标准来。
@@ -120,7 +120,7 @@ L0 定义   tasks/*.yaml · vocabulary · taxonomy · report schema
    description，标 `degraded`，测试要求零降级）；**拼不出人话的类别回执行器补结构化字段**
    （参数越界原先只有 `"20 > maximum 10"` 一句字符串，现已补 `value`/`bound`/`bound_kind`），
    不在模板里编。
-3. ~~**各题的区分度实验**~~（2026-11-24 已落地）：`tests/test_discrimination.py` 让 27 道题各跑
+3. ~~**各题的区分度实验**~~（2026-11-24 已落地）：`tests/test_discrimination.py` 让 28 道题各跑
    5–6 种形态（满分 / 答错 / 参数瞎填 / 无产物 / 空文件 / 无过程；定位与交接族各多一条专属形态），
    判据是**两两可分**——(分数, 失败断言, 错误模式) 三元组互不相同，只看分数不够
    （`ask_late` 与 `extra_param` 同为 0.75，一个掉 R6 一个掉 R4）。

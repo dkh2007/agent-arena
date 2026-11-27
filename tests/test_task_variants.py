@@ -461,7 +461,10 @@ def test_expected_values_match_the_fixture(all_tasks):
             policy = next(t for t in task["tools"]
                           if (t.get("mock") or {}).get("source") == "static")["mock"]["text"]
             rows = task["test_inputs"]["orders_fixture"]
-            got = ra._summarize_orders(rows, drop_cancelled="cancelled" in policy)
+            # 身份去重同理：这条口径写在 `derivation.distinct_by` 里（机器可读的那版），
+            # 现算要跟着它，否则"数据里有重复单号"的题会在这里算成两份答案。
+            got = ra._summarize_orders(rows, drop_cancelled="cancelled" in policy,
+                                       distinct_by=(task.get("derivation") or {}).get("distinct_by"))
         else:
             files = task["test_inputs"]["files"]
             got = ra._diagnose(files[task["locate"]["log_path"]],
