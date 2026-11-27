@@ -941,6 +941,8 @@ class _Handler(BaseHTTPRequestHandler):
                 # 「和上一次比」锚在**这一份**提交上：这个人可能已经交了四次，
                 # 而他现在看的是第二次那一页——拿"最近两次"来比会换掉卷子。
                 since_last = (hosting.since_last_of(conn, submitted) if submitted else None)
+                # 「你做过的其他题」：`mint --user` 绑出来的多条链接，彼此本来看不见。
+                others = hosting.others_of(conn, session["user_id"], token)
             finally:
                 conn.close()
             page = hosting.render_landing(
@@ -949,6 +951,7 @@ class _Handler(BaseHTTPRequestHandler):
                 report_url=(f"/s/{token}/report" if submitted else None),
                 since_last=since_last,
                 just_marked=parse_qs(urlsplit(self.path).query).get("marked") == ["1"],
+                others=others,
             )
             self._send_html(200, page)
             return

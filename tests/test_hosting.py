@@ -641,3 +641,63 @@ def test_landing_shows_todays_review_and_hides_it_when_empty(env):
 
     empty = dict(review, **{"empty": True, "today": []})
     assert "今天该复习" not in hosting.render_landing(session, task, "http://x", review=empty)
+
+
+# ── 「你做过的其他题」 ────────────────────────────────────────────────────
+
+
+def test_others_lists_only_this_persons_other_papers(env):
+    """`--user` 把三条链接绑成一个人，但那三条彼此看不见——这一块是唯一的横向视图。
+
+    安全边界就一条：只列 `user_id` 相同的会话。列错一次就是"一个学生看到别人的成绩"。
+    """
+    sessions, _submit, _registry = env
+    mine = sessions.create(TASK_ID, user_id="same-person")["token"]
+    sibling = sessions.create(TASK_ID, user_id="same-person")["token"]
+    sessions.create(TASK_ID, user_id="someone-else")
+
+    conn = sessions._conn_factory()
+    try:
+        others = hosting.others_of(conn, "same-person", mine)
+    finally:
+        conn.close()
+
+    tokens = [row["token"] for row in others]
+    assert sibling in tokens
+    assert mine not in tokens, "不该把当前这条列进去"
+    assert len(tokens) == 1, "同一道题只出现最近一次，不能连出两行同名"
+
+
+def test_others_carries_the_score_and_the_link(env):
+    """分数取生效值（重评过按新结论）：与报告页显示两个数是最容易被投诉的不一致。"""
+    sessions, submit_fn, _registry = env
+    first = sessions.create(TASK_ID, user_id="person")["token"]
+    current = sessions.create(TASK_ID, user_id="person")["token"]
+    sessions.call(first, "fetch_orders", {"offset": 0, "limit": 10})
+    sessions.grade(first, submit_fn)
+
+    conn = sessions._conn_factory()
+    try:
+        others = hosting.others_of(conn, "person", current)
+        assert others and others[0]["ratio"] is not None
+        page = hosting.render_landing(
+            sessions.get(current), {"title": "标题", "scenario": "题面", "tools": []},
+            "http://x", others=others,
+        )
+    finally:
+        conn.close()
+
+    assert "你做过的其他题" in page
+    assert others[0]["token"] in page, "没有链接就只能看不能用"
+    assert f"{others[0]['ratio']:.2f} 分" in page
+
+
+def test_others_block_disappears_when_there_is_nothing_to_show(env):
+    """只有一条链接的人不该看到一块空盒子。"""
+    sessions, _submit, _registry = env
+    token = sessions.create(TASK_ID)["token"]
+    page = hosting.render_landing(
+        sessions.get(token), {"title": "标题", "scenario": "题面", "tools": []},
+        "http://x", others=[],
+    )
+    assert "你做过的其他题" not in page

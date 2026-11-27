@@ -792,9 +792,74 @@ def _progress_block(since_last: dict | None) -> str:
     )
 
 
+def others_of(conn, user_id: str, current_token: str) -> list[dict]:
+    """这个人在**别的题**上的会话：题名、分数、他那条链接。倒序，最多 10 条。
+
+    为什么需要它：`mint --user` 存在的意义就是"一个人跨题累积"，但攒起来的
+    只是一条条互相看不见的链接——他做完三道题，手上三个链接，复习项在那三条页面里
+    各显示一份，谁也不知道另外两题什么情况。
+
+    **安全边界**：只列 `user_id` 相同的会话，也就是他自己的；`current_token` 那条排除掉
+    （本页就是它）。所以"一条链接能看到他全部成绩"——这本来就是 token 的身份语义，
+    文案里要提醒别转发。
+
+    分数取 `effective_ratio`（重评过按新结论）：页面上的分数与报告页必须一致，
+    否则同一份卷子在两处显示两个数。
+    """
+    rows = conn.execute(
+        "SELECT s.token, s.task_id, s.submission_id, t.title "
+        "FROM sessions s LEFT JOIN tasks t ON t.task_id = s.task_id "
+        "WHERE s.user_id = ? AND s.token != ? "
+        "ORDER BY s.created_at DESC, s.token DESC LIMIT 50",
+        (user_id, current_token),
+    ).fetchall()
+    out: list[dict] = []
+    seen_tasks: set[str] = set()
+    for row in rows:
+        # 同一道题只出现最近一次：重做同一题会在列表里连出三行同名，看着像系统故障。
+        # （"这次比上次好在哪"由「和上一次比」那一块回答，不靠这里堆行数。）
+        if row["task_id"] in seen_tasks or len(out) >= 10:
+            continue
+        seen_tasks.add(row["task_id"])
+        ratio = None
+        if row["submission_id"]:
+            try:
+                ratio = float(store.effective_ratio(conn, row["submission_id"]))
+            except store.StoreError:      # 提交被删了：照样列题，只是没分数
+                ratio = None
+        out.append({
+            "task_title": str(row["title"] or row["task_id"]),
+            "token": str(row["token"]),
+            "ratio": ratio,
+        })
+    return out
+
+
+def _others_block(others: list[dict] | None, *, base_url: str) -> str:
+    """「你做过的其他题」。没有就别出现——空盒子比没有更让人困惑（同一页的既有规矩）。"""
+    if not others:
+        return ""
+    items = []
+    for row in others:
+        score = "还没交卷" if row["ratio"] is None else f"{row['ratio']:.2f} 分"
+        href = f"{base_url.rstrip('/')}/s/{row['token']}"
+        items.append(
+            f'<li>{html.escape(str(row["task_title"]))}　'
+            f'<span class="muted">{html.escape(score)}</span>　'
+            f'<a class="done" href="{html.escape(href)}">打开</a></li>'
+        )
+    return (
+        '<h2>你做过的其他题</h2><div class="card">'
+        f'<ul style="margin:0; padding-left:20px">{"".join(items)}</ul>'
+        '<div class="muted">这些都记在同一个人名下（掌握度与复习项是按人累积的）。'
+        "链接即身份，别转发。</div></div>"
+    )
+
+
 def render_landing(session: dict, public_task: dict, base_url: str, *,
                    review: dict | None = None, report_url: str | None = None,
-                   since_last: dict | None = None, just_marked: bool = False) -> str:
+                   since_last: dict | None = None, just_marked: bool = False,
+                   others: list[dict] | None = None) -> str:
     """学习者打开链接看到的那一页。
 
     **同一页要能回答四种状态**，否则回访的人只会看到一段过时的做题说明：
@@ -904,6 +969,7 @@ th {{ color:#6b7280; font-weight:600; }}
 {head}
 {marked}
 {_progress_block(since_last)}
+{_others_block(others, base_url=base_url)}
 {_review_block(review, root=root)}
 <h2>④ 说明</h2>
 <div class="card muted">
