@@ -508,6 +508,32 @@ def render_summary(data: dict) -> str:
     return "\n".join(lines)
 
 
+def render_progress(data: dict) -> str:
+    """命令行版的「和上一次比」。与页面同一句话打头，下面逐条列。
+
+    **不印断言 id**：助教看到的是"结论是否与判据一致"，不是 `R2_report_correct`。
+    id 只在 `roster` / `summary` 的 CSV 里出现（那是给维护者对题面用的）。
+    """
+    lines = [data["headline"]]
+    for label, key in (("这次改好了", "fixed"), ("还是没过", "still_failing"),
+                       ("上次过了、这次没过", "broke")):
+        rows = data.get(key) or []
+        if rows:
+            lines.append("")
+            lines.append(f"{label}：")
+            lines.extend(f"  - {row['title']}" for row in rows)
+
+    patterns = data.get("patterns") or {}
+    if patterns.get("cleared"):
+        lines.append("")
+        lines.append("上次犯的错法这次没再出现：" + "、".join(patterns["cleared"]))
+    if patterns.get("persisted"):
+        lines.append("两次都在犯的错法：" + "、".join(patterns["persisted"]))
+    if patterns.get("new"):
+        lines.append("这次新出现的错法：" + "、".join(patterns["new"]))
+    return "\n".join(lines)
+
+
 def _summary_verdict(rows: list[dict], submitted: int) -> list[str]:
     """判读提示。**样本不足时不下结论**——2 份提交里 1 个人没做到，什么都说明不了。
 
@@ -535,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import csv
 
+    from . import progress                       # 同上：只在这个入口用得到
     from . import submission_api as api          # 函数内导入：本模块被它 import，顶层引入会成环
 
     parser = argparse.ArgumentParser(description="托管会话的运维入口（B-51）")
@@ -562,6 +589,11 @@ def main(argv: list[str] | None = None) -> int:
     summary_p = sub.add_parser("summary", help="聚合：哪条要求最多人没做到")
     common(summary_p)
     summary_p.add_argument("--out", help="写成 CSV")
+
+    progress_p = sub.add_parser("progress", help="这个人这道题：最近一次比上一次怎样")
+    common(progress_p)
+    progress_p.add_argument("--user", required=True)
+    progress_p.add_argument("--task", required=True)
 
     args = parser.parse_args(argv)
 
@@ -599,6 +631,18 @@ def main(argv: list[str] | None = None) -> int:
                         writer.writerow([row["id"], row["title"], row["fail"], row["pass"],
                                          row["blocked"], f"{row['share']:.2f}"])
                 print(f"\n已写出 {args.out}")
+            return 0
+
+        if args.cmd == "progress":
+            data = progress.of(conn, args.user, args.task)
+            if data is None:
+                print(f"{args.user} 在 {args.task} 上还没有两次提交，没有可对比的。"
+                      "（要拿到对比，得给他两条链接、做两遍。）")
+                return 0
+            print(f"{args.user}　{args.task}")
+            print(f"上一次 {data['prev_at']}　这一次 {data['cur_at']}")
+            print()
+            print(render_progress(data))
             return 0
 
         rows = roster(conn)
@@ -673,16 +717,84 @@ def _review_block(review: dict | None) -> str:
     )
 
 
+def since_last_of(conn, submission_id: str) -> dict | None:
+    """这一份比它上一份怎样（B-56）。回答不了就返回 `None`（页面少一块），不编造。
+
+    三件"没有"都归到 `None`：这是他第一次做这道题；库里的上一份被删了；
+    组合页面的那一步出了任何差错。**渲染一块对比不该让整页 500**——
+    报告链接才是他要的东西，对比是附赠。
+    """
+    from . import progress
+
+    try:
+        return progress.of_submission(conn, submission_id)
+    except Exception as exc:                       # noqa: BLE001 - 见上：附赠内容不配拖垮整页
+        sys.stderr.write(f"[和上次比没渲染] {type(exc).__name__}: {exc}\n")
+        return None
+
+
+def _short_time(value: str | None) -> str:
+    """`2026-11-24T09:12:00Z` → `2026-11-24 09:12`。认不出来就原样返回，不猜。"""
+    text = str(value or "")
+    if len(text) >= 16 and text[4] == "-" and text[10] in "T ":
+        return f"{text[:10]} {text[11:16]}"
+    return text
+
+
+def _progress_block(since_last: dict | None) -> str:
+    """「和上一次比」那一块。没有上一次就整块不出现。
+
+    **不可比时只印那一句原因，不印两边各自的分数**：0.20 和 0.95 并排摆着，
+    任何人都会自己相减，而这两次之间题目改过——白纸黑字的两个数字会推翻那句提醒。
+    """
+    if not since_last:
+        return ""
+    head = html.escape(str(since_last.get("headline") or ""))
+    if not since_last.get("comparable"):
+        return f'<h2>和上一次比</h2><div class="card">{head}</div>'
+
+    groups = [
+        ("这次改好了", [row["title"] for row in since_last.get("fixed") or []]),
+        ("还是没过", [row["title"] for row in since_last.get("still_failing") or []]),
+        ("上次过了、这次没过", [row["title"] for row in since_last.get("broke") or []]),
+    ]
+    rows = "".join(
+        f'<li>{html.escape(label)}：{"、".join(html.escape(str(t)) for t in titles)}</li>'
+        for label, titles in groups if titles
+    )
+    extra = []
+    if since_last.get("prev_at"):
+        extra.append("上一次交卷：" + _short_time(since_last["prev_at"]))
+    cleared = since_last.get("patterns", {}).get("cleared") or []
+    if cleared:
+        extra.append("上次那几个错法这次没再出现：" + "、".join(cleared))
+    if since_last.get("unjudged"):
+        extra.append(f"另有 {len(since_last['unjudged'])} 条这次没判成（没交过程或产物），没有算进对比。")
+    notes = "".join(f'<div class="muted">{html.escape(text)}</div>' for text in extra)
+    return (
+        '<h2>和上一次比</h2><div class="card">'
+        f"<div>{head}</div>"
+        + (f'<ul style="margin:8px 0 0; padding-left:20px">{rows}</ul>' if rows else "")
+        + notes
+        + "</div>"
+    )
+
+
 def render_landing(session: dict, public_task: dict, base_url: str, *,
-                   review: dict | None = None, report_url: str | None = None) -> str:
+                   review: dict | None = None, report_url: str | None = None,
+                   since_last: dict | None = None) -> str:
     """学习者打开链接看到的那一页。
 
-    **同一页要能回答三种状态**，否则回访的人只会看到一段过时的做题说明：
+    **同一页要能回答四种状态**，否则回访的人只会看到一段过时的做题说明：
     | 状态 | 页面先给什么 |
     |---|---|
     | 还没做 | 贴给 AI 的那段话 + 工具清单 |
     | 已经交过卷 | 报告入口；做题地址收起来，并说明这条链接只能用一次 |
+    | 交过不止一次 | 「和上一次比」：哪条改好了、哪条还没过——**这是他重做的全部回报** |
     | 有复习项 | 「今天该复习」放在报告入口下面（不管交没交） |
+
+    `since_last` 由 `since_last_of()` 现算，锚在**这一份提交**上而不是"最近两次"
+    （同一个人交了四次时，回看第二次那一页不能拿第三、四次来比）。
 
     `public_task` 必须是**已经过白名单**的题面（`submission_api.public_task`），
     本函数只负责排版——白名单逻辑不在这里复制第二份。
@@ -769,6 +881,7 @@ th {{ color:#6b7280; font-weight:600; }}
 <h1>{title}</h1>
 <div class="muted">{subtitle}</div>
 {head}
+{_progress_block(since_last)}
 {_review_block(review)}
 <h2>④ 说明</h2>
 <div class="card muted">

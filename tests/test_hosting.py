@@ -571,6 +571,57 @@ def test_landing_after_submission_leads_with_the_report(env):
     assert "找老师要一条新的链接" in page, "没说清这条链接不能重复用"
 
 
+def test_landing_progress_block_names_the_fixed_and_the_remaining_assertions(env):
+    """走一遍真实路由取页面的做法：学生页上的对比块只印中文要求名，不印断言 id。"""
+    import json
+
+    sessions, submit_fn, _registry = env
+
+    def one_round(tries: int, count: int) -> str:
+        token = sessions.create(TASK_ID, user_id="zhao-liu")["token"]
+        for _ in range(tries):
+            sessions.call(token, "fetch_orders", {"offset": 10, "limit": 10})
+        sessions.call(token, "write_report", {
+            "path": "/workspace/report.json", "content": json.dumps({"valid_count": count})})
+        sessions.grade(token, submit_fn)
+        return token
+
+    one_round(tries=1, count=9)
+    token = one_round(tries=2, count=17)
+    session = sessions.get(token)
+
+    db = sessions._conn_factory()
+    try:
+        since_last = hosting.since_last_of(db, session["submission_id"])
+        assert since_last is not None and since_last["comparable"] is True
+        page = hosting.render_landing(session, {"title": "标题", "scenario": "题面", "tools": []},
+                                      "http://x", since_last=since_last)
+    finally:
+        db.close()
+
+    assert "和上一次比" in page
+    assert "这次改好了：关键步骤是否走到" in page
+    assert "还是没过：结论是否与判据一致" in page
+    assert "未重试" in page, "上次犯的错法应该用中文名告诉他这次没再出现"
+    for leaked in ("R3_retry_evidence", "R2_report_correct", "still_failing", "fixed"):
+        assert leaked not in page, f"页面上出现了机器码 {leaked}"
+
+
+def test_landing_progress_block_hides_the_numbers_when_incomparable(env):
+    """题目改过时**只印那一句原因**：两个分数并排摆着，任何人都会自己相减。"""
+    sessions, _submit, _registry = env
+    session = sessions.create(TASK_ID)
+    page = hosting.render_landing(
+        session, {"title": "标题", "scenario": "题面", "tools": []}, "http://x",
+        since_last={"comparable": False, "reason": "这两次之间题目改过，检查项的含义可能变了，不能直接比。",
+                    "headline": "这两次之间题目改过，检查项的含义可能变了，不能直接比。",
+                    "score": {"before": 0.2, "after": 0.95}, "fixed": [], "still_failing": [],
+                    "broke": [], "unjudged": [], "patterns": {}, "counts": {}},
+    )
+    assert "题目改过" in page
+    assert "0.95" not in page and "0.20" not in page
+
+
 def test_landing_shows_todays_review_and_hides_it_when_empty(env):
     """有复习项就摆出来，没有就整块不出现——空盒子比没有更让人困惑。"""
     sessions, _submit, _registry = env

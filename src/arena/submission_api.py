@@ -847,15 +847,19 @@ class _Handler(BaseHTTPRequestHandler):
             # 复习项与"已交卷"状态都在库里：这一页是学习者唯一会自己回访的地方，
             # 每次打开都现算，而不是让他记住上一次那一页。
             conn = self.ctx["conn_factory"]()
+            submitted = session.get("submission_id")
             try:
                 review = hosting.review_of(conn, session["user_id"])
+                # 「和上一次比」锚在**这一份**提交上：这个人可能已经交了四次，
+                # 而他现在看的是第二次那一页——拿"最近两次"来比会换掉卷子。
+                since_last = (hosting.since_last_of(conn, submitted) if submitted else None)
             finally:
                 conn.close()
-            submitted = session.get("submission_id")
             page = hosting.render_landing(
                 session, public_task(task, self.ctx["registry"].items()), self._base_url(),
                 review=review,
                 report_url=(f"/submissions/{submitted}/report.html" if submitted else None),
+                since_last=since_last,
             )
             self._send_html(200, page)
             return
