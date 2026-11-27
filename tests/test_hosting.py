@@ -347,3 +347,142 @@ def test_creating_and_calling_does_not_deadlock(env):
     thread.start()
     thread.join(timeout=20)
     assert not thread.is_alive(), "create/call 死锁了"
+
+
+# ── 7. 助教视角：哪条要求最多人没做到 ────────────────────────────────────────
+
+def _do_and_submit(sessions, submit_fn, calls, write_content):
+    session = sessions.create(TASK_ID)
+    token = session["token"]
+    for name, params in calls:
+        sessions.call(token, name, params)
+    sessions.call(token, "write_report",
+                  {"path": "/workspace/report.json", "content": write_content})
+    report, _created = sessions.grade(token, submit_fn)
+    return token, report["score"]["ratio"]
+
+
+def test_summary_aggregates_missed_requirements(env):
+    """两三个人交卷后，助教要能一眼看出"哪条要求大家都没做到"。"""
+    import json
+
+    sessions, submit_fn, _registry = env
+    sessions.mint(TASK_ID, 1)                       # 一个开了没做的，不该进分母
+    _do_and_submit(sessions, submit_fn, [
+        ("fetch_orders", {"offset": 0, "limit": 10}),
+        ("fetch_orders", {"offset": 10, "limit": 10}),
+        ("fetch_orders", {"offset": 10, "limit": 10}),
+    ], json.dumps({"valid_count": 17, "total_amount": 1837.99}))
+    _do_and_submit(sessions, submit_fn, [
+        ("fetch_orders", {"offset": 0, "limit": 10}),
+    ], json.dumps({"valid_count": 9, "total_amount": 861.24}))
+
+    conn = sessions._conn_factory()
+    try:
+        data = hosting.summary(conn)
+    finally:
+        conn.close()
+
+    assert data["sessions"] == 3 and data["submitted"] == 2
+    by_title = {row["title"]: row for row in data["assertions"]}
+    assert by_title["结论是否与判据一致"]["fail"] == 1
+    assert by_title["结论是否与判据一致"]["pass"] == 1
+    assert by_title["交付物是否存在"]["fail"] == 0
+    assert data["assertions"][0]["share"] >= data["assertions"][-1]["share"], "没按占比排序"
+    assert data["patterns"], "命中的错法没聚合出来"
+    assert all(item["label"] and not item["label"].startswith(("wrong_", "no_"))
+               for item in data["patterns"]), "错法显示成机器码了"
+
+
+def test_summary_does_not_count_platform_failures_as_the_learners_fault():
+    """`blocked`（平台没判成）与 `unscored`（这条不适用）都不算"没做到"。
+
+    把它们混进去，等于替学习者认错——而这两种状态恰恰是"没拿到证据"。
+    """
+    data = {
+        "sessions": 1, "submitted": 1, "avg_ratio": 0.0,
+        "assertions": [{"id": "R1", "title": "交付物是否存在", "fail": 0,
+                        "blocked": 1, "pass": 0, "unscored": 0, "share": 0.0}],
+        "patterns": [],
+    }
+    text = hosting.render_summary(data)
+    assert "0/1" in text, "blocked 被算成了没做到"
+
+
+def test_summary_verdict_refuses_to_advise_on_a_tiny_sample():
+    """2 份提交里 1 个人没做到，不能拿去改题面——这是判读门槛存在的全部理由。"""
+    data = {
+        "sessions": 2, "submitted": 2, "avg_ratio": 0.6,
+        "assertions": [{"id": "R1", "title": "结论是否与判据一致", "fail": 1,
+                        "blocked": 0, "pass": 1, "unscored": 0, "share": 0.5}],
+        "patterns": [],
+    }
+    text = hosting.render_summary(data)
+    assert "样本只有 2 份" in text
+    assert "先看这一条" not in text, "样本不足却给出了改题面的建议"
+
+
+def test_summary_verdict_points_at_the_worst_requirement_with_enough_samples():
+    data = {
+        "sessions": 10, "submitted": 10, "avg_ratio": 0.5,
+        "assertions": [
+            {"id": "R2", "title": "结论是否与判据一致", "fail": 8, "blocked": 0,
+             "pass": 2, "unscored": 0, "share": 0.8},
+            {"id": "R3", "title": "关键步骤是否走到", "fail": 2, "blocked": 0,
+             "pass": 8, "unscored": 0, "share": 0.2},
+        ],
+        "patterns": [],
+    }
+    text = hosting.render_summary(data)
+    assert "先看这一条" in text and "结论是否与判据一致" in text
+    assert "优先怀疑题面" in text
+
+
+def test_summary_flags_a_task_with_no_discrimination():
+    data = {
+        "sessions": 6, "submitted": 6, "avg_ratio": 1.0,
+        "assertions": [{"id": "R1", "title": "结论是否与判据一致", "fail": 0,
+                        "blocked": 0, "pass": 6, "unscored": 0, "share": 0.0}],
+        "patterns": [],
+    }
+    text = hosting.render_summary(data)
+    assert "区分度" in text
+
+
+def test_summary_on_an_empty_activity_says_so(env):
+    sessions, _submit, _registry = env
+    conn = sessions._conn_factory()
+    try:
+        assert hosting.summary(conn)["submitted"] == 0
+    finally:
+        conn.close()
+    assert "还没有人交卷" in hosting.render_summary(
+        {"sessions": 0, "submitted": 0, "avg_ratio": None, "assertions": [], "patterns": []})
+
+
+def test_summary_cli_prints_the_table_and_keeps_ids_in_the_csv(env, tmp_path, capsys):
+    """表里不出现内部编号，CSV 里要有——CSV 是给维护者对题面用的。"""
+    import json
+
+    sessions, submit_fn, _registry = env
+    _do_and_submit(sessions, submit_fn, [
+        ("fetch_orders", {"offset": 0, "limit": 10}),
+    ], json.dumps({"valid_count": 9, "total_amount": 861.24}))
+    # 夹具里的库里已经有数据，直接走 CLI 读同一个文件
+    db_path = _db_path_of(sessions)
+    out = tmp_path / "汇总.csv"
+    assert hosting.main(["summary", "--db", str(db_path), "--tasks", str(ROOT / "tasks"),
+                         "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "没做到" in printed and "1/1" in printed
+    assert "R2_" not in printed, "表里出现了断言 id"
+    assert "断言id" in out.read_text(encoding="utf-8-sig")
+
+
+def _db_path_of(sessions) -> Path:
+    """从 registry 拿库路径：`conn_factory` 是个闭包，测试里不拆它，直接问注册表。"""
+    conn = sessions._conn_factory()
+    try:
+        return Path(conn.execute("PRAGMA database_list").fetchone()[2])
+    finally:
+        conn.close()

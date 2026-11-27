@@ -83,6 +83,9 @@ MAX_TOKEN_LEN = 64
 # 一次最多开多少个会话。防手滑（`--count 3000`），不是防坏人——开链接要管理口令。
 MAX_MINT = 500
 
+# 少于这么多份提交就只给事实、不给判读。3 个人的数据改题面，改的是噪声。
+MIN_SUMMARY_SAMPLE = 4
+
 
 class HostError(Exception):
     """托管层的失败。带 HTTP 状态码，路由层直接 `_send`，不再猜。"""
@@ -377,6 +380,127 @@ def roster(conn) -> list[dict]:
             for row in rows]
 
 
+def summary(conn) -> dict:
+    """把"谁卡在哪"聚成一张表——**助教真正要的那个视图**。
+
+    分数只回答"这个人怎么样"，回答不了"这题怎么样"。一个问题如果 8/10 的人都没做到，
+    先该怀疑题面说不清或判据过严，而不是这 8 个人都不行。这张表就是为这句话服务的。
+
+    三条口径：
+    1. **用 `effective_report`（当前生效）而不是落库那份**：重评过的提交若还按旧分数汇总，
+       表上会出现"某人 0.5，但断言一列全过"这种自相矛盾的行。
+    2. **"没做到"只算 `fail`**。`blocked` 是平台没判成（没交产物/没交过程），
+       `unscored` 是这一条不适用于这份提交——把它们混进"没做到"，等于替学习者认错。
+    3. **只看交集**：分母是"已交卷的人数"，不是会话总数。没交卷的人不是"没做到某条要求"，
+       他们是没来。
+    """
+    from .diagnosis_report import load_pattern_labels
+
+    rows = conn.execute(
+        "SELECT submission_id FROM sessions WHERE submission_id IS NOT NULL"
+    ).fetchall()
+    labels = load_pattern_labels()
+
+    per_assertion: dict[str, dict] = {}
+    per_pattern: dict[str, int] = {}
+    ratios: list[float] = []
+    for row in rows:
+        try:
+            report = store.effective_report(conn, row["submission_id"])
+        except store.StoreError:      # 会话指向的提交被删了：跳过这一行，不让整张表崩
+            continue
+        ratios.append(float((report.get("score") or {}).get("ratio") or 0.0))
+        for item in report.get("assertions") or []:
+            key = str(item.get("id") or "")
+            if not key:
+                continue
+            bucket = per_assertion.setdefault(
+                key, {"id": key, "title": str(item.get("title") or "这项检查"),
+                      "fail": 0, "blocked": 0, "pass": 0, "unscored": 0},
+            )
+            state = str(item.get("state") or "")
+            if state in bucket:
+                bucket[state] += 1
+            if state == "fail":
+                for pattern in item.get("error_patterns") or []:
+                    per_pattern[str(pattern)] = per_pattern.get(str(pattern), 0) + 1
+
+    total = len(ratios)
+    assertions = []
+    for bucket in per_assertion.values():
+        missed = bucket["fail"]
+        assertions.append({**bucket, "share": (missed / total) if total else 0.0})
+    # 先按"没做到的比例"排，再按人数：10 个人里 5 个没做到，比 2 个人里 1 个更值得看。
+    assertions.sort(key=lambda a: (-a["share"], -a["fail"], a["id"]))
+
+    patterns = [
+        {"pattern_id": pid, "label": labels.get(pid, pid), "count": count}
+        for pid, count in sorted(per_pattern.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    return {
+        "sessions": int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]),
+        "submitted": total,
+        "avg_ratio": (sum(ratios) / total) if total else None,
+        "assertions": assertions,
+        "patterns": patterns,
+    }
+
+
+def _pad(text: str, width: int) -> str:
+    """按**显示宽度**补空格：一个汉字占两格，`str.ljust` 只数代码点，中文表格会歪。"""
+    import unicodedata
+
+    used = sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+    return text + " " * max(0, width - used)
+
+
+def render_summary(data: dict) -> str:
+    """把 `summary()` 的结果排成人能读的几段。**不带内部编号**：看的是"哪条要求"，不是 id。"""
+    lines: list[str] = []
+    submitted, sessions = data["submitted"], data["sessions"]
+    if not submitted:
+        return f"共 {sessions} 个会话，还没有人交卷——先让他们做题。"
+    avg = data["avg_ratio"] or 0.0
+    lines.append(f"共 {sessions} 个会话，{submitted} 份已交卷，平均分 {avg:.2f}。")
+    lines.append("")
+
+    rows = data["assertions"]
+    width = max((sum(2 if "\u4e00" <= ch <= "\u9fff" else 1 for ch in r["title"])
+                 for r in rows), default=8)
+    lines.append(_pad("要求", width) + "  没做到   通过  没判成")
+    for row in rows:
+        share = f"{row['fail']}/{submitted}"
+        lines.append(f"{_pad(row['title'], width)}  {share:>6}   {row['pass']:>4}   {row['blocked']:>4}")
+
+    if data["patterns"]:
+        lines.append("")
+        lines.append("最常见的错法：")
+        for item in data["patterns"][:5]:
+            lines.append(f"  {item['label']}　{item['count']} 次")
+
+    lines.append("")
+    lines.extend(_summary_verdict(rows, submitted))
+    return "\n".join(lines)
+
+
+def _summary_verdict(rows: list[dict], submitted: int) -> list[str]:
+    """判读提示。**样本不足时不下结论**——2 份提交里 1 个人没做到，什么都说明不了。
+
+    这一步是这张表的意义所在：没有判读，它只会被当成一张排行榜，然后被拿去说
+    "这届学生不行"。有这个门槛，才不会拿 3 个人的数据去改题面。
+    """
+    if submitted < MIN_SUMMARY_SAMPLE:
+        return [f"样本只有 {submitted} 份（少于 {MIN_SUMMARY_SAMPLE} 份），"
+                "这张表只能当线索：别据此改题面，等更多人来。"]
+    worst = max(rows, key=lambda r: (r["share"], r["fail"]), default=None)
+    if worst and worst["share"] >= 0.5:
+        return [f"**先看这一条**：「{worst['title']}」{worst['fail']}/{submitted} 的人没做到。"
+                "超过一半时，优先怀疑题面说得不够清楚、或者判据太严——不是这半数人都不行。"]
+    if worst and worst["fail"] == 0:
+        return ["所有要求都有人做到过。若分数普遍很高，检查这道题是不是没有区分度。"]
+    return ["没有哪条要求被一半以上的人漏掉：失分是分散的，属于个人差异。"]
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python scripts/host.py mint|roster ...`。
 
@@ -408,6 +532,10 @@ def main(argv: list[str] | None = None) -> int:
     common(roster_p)
     roster_p.add_argument("--out", help="写成 CSV（不带完整 token）")
 
+    summary_p = sub.add_parser("summary", help="聚合：哪条要求最多人没做到")
+    common(summary_p)
+    summary_p.add_argument("--out", help="写成 CSV")
+
     args = parser.parse_args(argv)
 
     registry = api.TaskRegistry(args.tasks)
@@ -429,6 +557,20 @@ def main(argv: list[str] | None = None) -> int:
                     for index, (token, url, uid) in enumerate(rows, 1):
                         writer.writerow([index, token[:12], url, uid])
                 print(f"已写出 {args.out}（含完整链接，发完就删，不要进仓库）")
+            return 0
+
+        if args.cmd == "summary":
+            data = summary(conn)
+            print(render_summary(data))
+            if args.out and data["submitted"]:
+                with open(args.out, "w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.writer(handle)
+                    # 内部 id 只进 CSV：它是给维护者对题面用的，不该出现在给人看的表里
+                    writer.writerow(["断言id", "要求", "没做到", "通过", "没判成", "占比"])
+                    for row in data["assertions"]:
+                        writer.writerow([row["id"], row["title"], row["fail"], row["pass"],
+                                         row["blocked"], f"{row['share']:.2f}"])
+                print(f"\n已写出 {args.out}")
             return 0
 
         rows = roster(conn)

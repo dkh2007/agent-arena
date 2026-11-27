@@ -2407,7 +2407,7 @@
 - **要解决的问题**：`git clone` 对非技术同学不是一个动作，是三个（装 git、选目录、cd 对）。
   试用本来就是一推就走的场景，任何一步都能把它变成"算了"。
 - **产出**：`python scripts/make_trial_pack.py --verify` →
-  `dist/arena-trial-v1.zip`（47 个文件 / 340 KB；sha256 由打包命令当场输出，内容一改就变，
+  `dist/arena-trial-v1.zip`（47 个文件 / 343 KB；sha256 由打包命令当场输出，内容一改就变，
   不在此固定）。解压后双击
   `start.bat`（Windows）或 `sh start.sh`（macOS/Linux），第一次自动装 `pyyaml` + `jsonschema`。
 - **裁掉了什么（这条必须有，否则等于把答案一起发出去）**：任务 YAML 里的
@@ -2589,6 +2589,24 @@
 - **踩到的坑（已锁）**：`create` 在持锁时解析任务，而 `task()` 也要同一把锁，
   `threading.Lock` 不可重入 → **死锁**，表现为"测试文件挂住 7 分钟、没有任何报错"。
   判据 `test_creating_and_calling_does_not_deadlock`（超时兜住，不让 CI 卡死）。
+
+### [x] B-54 助教视角的汇总：哪条要求最多人没做到（2026-11-27 落地）
+
+- **分数回答不了的问题**：`roster` 只说"这个人 0.58"，说不出"这道题是不是有问题"。
+  一条要求如果 19/24 的人都没做到，先该怀疑题面说不清或判据太严，而不是这 19 个人都不行。
+- **落地**：`hosting.summary(conn)` + `render_summary()` + `host.py summary`。
+  聚合两件事：每条要求的 fail / pass / blocked 计数与占比；命中的错误模式按次数排（用词表 `label`，
+  不显示 `wrong_valid_count` 这种机器码）。
+- **三条口径**：
+  1. 用 `store.effective_report()`（当前生效）而不是落库那份——重评过的提交若按旧分数汇总，
+     表上会出现"某人 0.5 但断言一列全过"这种自相矛盾的行。
+  2. **`blocked` 不算"没做到"**。它是"平台没判成"（没交产物/没交过程），混进去等于替学习者认错。
+  3. 分母是**已交卷人数**，不是会话总数；没交卷的人不是"没做到某条"，是没来。
+- **判读门槛（这条比表本身重要）**：`MIN_SUMMARY_SAMPLE = 4`。少于 4 份提交只给事实、
+  不给建议——拿 3 个人的数据改题面，改的是噪声。判据：
+  `test_summary_verdict_refuses_to_advise_on_a_tiny_sample`（2 份、50% 时**不许**出现"先看这一条"）。
+- **表格按显示宽度对齐**：汉字占两格，`str.ljust` 只数代码点，中文表格会歪（`_pad()`）。
+- **id 只进 CSV**：给人看的表里不出现 `R2_report_correct`，维护者对题面时看 CSV。
 
 
 
