@@ -701,3 +701,60 @@ def test_others_block_disappears_when_there_is_nothing_to_show(env):
         "http://x", others=[],
     )
     assert "你做过的其他题" not in page
+
+
+def test_roster_csv_flags_a_full_mark_that_was_never_explained(env, tmp_path, capsys):
+    """结果.csv 里要能一眼看出「满分、但没讲过」——那是活动结束后最该先问的几份。
+
+    三行分别对应三种状态：讲过 / 满分没讲 / 没讲。把它们混成两档（讲过 / 没讲），
+    助教就得自己对分数——那这两列就白加了。
+
+    同时锁一条：命令行那张小表**不印复述原文**。一行几百字塞进终端表格，
+    会把"谁交了谁没交"这个主视图挤没。
+    """
+    sessions, submit_fn, _registry = env
+
+    def perfect(user_id: str) -> str:
+        token = sessions.create(TASK_ID, user_id=user_id)["token"]
+        for offset in (0, 10, 10):                       # 第二页那次必然 500，重试才算走到
+            sessions.call(token, "fetch_orders", {"offset": offset, "limit": 10})
+        sessions.call(token, "write_report", {
+            "path": "/workspace/report.json",
+            "content": json.dumps({"valid_count": 17, "total_amount": 1837.99})})
+        report, _created = sessions.grade(token, submit_fn)
+        assert report["score"]["ratio"] == 1.0
+        return token
+
+    told = perfect("u-told")
+    silent = perfect("u-silent")
+    broken = sessions.create(TASK_ID, user_id="u-broken")["token"]
+    sessions.call(broken, "fetch_orders", {"offset": 0, "limit": 10})
+    sessions.call(broken, "write_report",
+                  {"path": "/workspace/report.json", "content": '{"valid_count": 9}'})
+    sessions.grade(broken, submit_fn)
+
+    conn = sessions._conn_factory()
+    try:
+        store.save_recall(conn, sessions.get(told)["submission_id"], user_id="u-told",
+                          text="第二页 500，我拿同一个 offset 又试了一次")
+        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    finally:
+        conn.close()
+
+    out = tmp_path / "结果.csv"
+    assert hosting.main(["roster", "--db", db_path, "--tasks", str(ROOT / "tasks"),
+                         "--out", str(out)]) == 0
+
+    import csv
+
+    with open(out, encoding="utf-8-sig", newline="") as handle:
+        rows = {row["user_id"]: row for row in csv.DictReader(handle)}
+    assert rows["u-told"]["recall"] == "讲过"
+    assert "同一个 offset" in rows["u-told"]["recall_text"]
+    assert rows["u-silent"]["recall"] == "满分没讲"
+    assert rows["u-silent"]["recall_text"] == ""
+    assert rows["u-broken"]["recall"] == "没讲"
+
+    printed = capsys.readouterr().out
+    assert "同一个 offset" not in printed, "原文只进 CSV，不进终端主视图"
+    assert silent[:12] in printed and broken[:12] in printed

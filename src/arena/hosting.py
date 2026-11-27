@@ -385,24 +385,51 @@ class SessionRegistry:
 
 
 def roster(conn) -> list[dict]:
-    """一次活动结束后要的那张表：编号、题、调了几次、分数、有没有交卷。
+    """一次活动结束后要的那张表：编号、题、调了几次、分数、交没交、讲没讲。
 
     **编号 = token 前 12 位**。学生手上只有整条链接，报给我们时也只会报一小段，
     所以表里直接给这一段——但完整 token 不在这张表里：它只出现在发链接那一份 CSV，
     那份是凭证，不该跟着成绩到处传。
+
+    **复述两列（B-58）**：`recall` 是状态（讲过 / 没讲 / **满分没讲**）、`recall_text` 是原文。
+    命令行那张小表不印它们（一行字塞不下），只在 `--out` 的 CSV 里出现——CSV 是活动结束后
+    坐下来逐份看的东西，也正是在那里"满分却没讲"最该被看见。
+
+    **分数取 `effective_ratio`**（重评过按新结论），与报告页、`others_of`、`recalls_of`
+    显示同一个数：同一份卷子在这四处出现两个数，是最容易被投诉的那种不一致。
     """
     rows = conn.execute(
         "SELECT s.token, s.task_id, s.user_id, s.created_at, s.submission_id, "
         "       (SELECT COUNT(*) FROM session_calls c WHERE c.token = s.token) AS calls, "
-        "       sub.assert_score "
+        "       sub.assert_score, r.text AS recall_text, r.updated_at AS recall_at "
         "FROM sessions s LEFT JOIN submissions sub ON sub.submission_id = s.submission_id "
+        "LEFT JOIN recalls r ON r.submission_id = s.submission_id "
         "ORDER BY s.created_at, s.token"
     ).fetchall()
-    return [{"code": row["token"][:12], "task_id": row["task_id"], "user_id": row["user_id"],
-             "calls": int(row["calls"]), "ratio": row["assert_score"],
-             "submitted": bool(row["submission_id"]),
-             "submission_id": row["submission_id"], "created_at": row["created_at"]}
-            for row in rows]
+    out: list[dict] = []
+    for row in rows:
+        ratio = None
+        if row["submission_id"]:
+            try:
+                ratio = float(store.effective_ratio(conn, row["submission_id"]))
+            except store.StoreError:      # 报告读不出来：照样列人，只是没分数
+                ratio = row["assert_score"]
+        text = row["recall_text"]
+        if not row["submission_id"]:
+            state = ""                    # 没交卷就没有"讲一遍"这回事，留空而不是写"没讲"
+        elif text:
+            state = "讲过"
+        elif ratio is not None and ratio >= 1.0:
+            state = "满分没讲"
+        else:
+            state = "没讲"
+        out.append({"code": row["token"][:12], "task_id": row["task_id"],
+                    "user_id": row["user_id"], "calls": int(row["calls"]), "ratio": ratio,
+                    "submitted": bool(row["submission_id"]),
+                    "submission_id": row["submission_id"], "created_at": row["created_at"],
+                    "recall": state, "recall_text": text or "",
+                    "recall_at": row["recall_at"] or ""})
+    return out
 
 
 def summary(conn) -> dict:
