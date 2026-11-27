@@ -2407,7 +2407,7 @@
 - **要解决的问题**：`git clone` 对非技术同学不是一个动作，是三个（装 git、选目录、cd 对）。
   试用本来就是一推就走的场景，任何一步都能把它变成"算了"。
 - **产出**：`python scripts/make_trial_pack.py --verify` →
-  `dist/arena-trial-v1.zip`（47 个文件 / 343 KB；sha256 由打包命令当场输出，内容一改就变，
+  `dist/arena-trial-v1.zip`（47 个文件 / 346 KB；sha256 由打包命令当场输出，内容一改就变，
   不在此固定）。解压后双击
   `start.bat`（Windows）或 `sh start.sh`（macOS/Linux），第一次自动装 `pyyaml` + `jsonschema`。
 - **裁掉了什么（这条必须有，否则等于把答案一起发出去）**：任务 YAML 里的
@@ -2607,6 +2607,34 @@
   `test_summary_verdict_refuses_to_advise_on_a_tiny_sample`（2 份、50% 时**不许**出现"先看这一条"）。
 - **表格按显示宽度对齐**：汉字占两格，`str.ljust` 只数代码点，中文表格会歪（`_pad()`）。
 - **id 只进 CSV**：给人看的表里不出现 `R2_report_correct`，维护者对题面时看 CSV。
+
+### [x] B-55 复习链路闭环：提交后真排期，提醒回到学生手上（2026-11-27 落地）
+
+- **补的是一个"功能全在、链路是断的"的洞**：`scheduler` / `reminder` / Android 提醒页
+  全都写好了，但 `store.save_schedule()` 的调用者只有两个 walk 脚本——
+  **真实提交路径上从来没排过期**。提醒页读的是打包时烘好的 `reminder.json`，
+  一个真学生做完题，库里一条复习项都没有。功能全在，一个都不生效。
+- **落地**：`submit()` 落库后调 `_schedule_after_submission()`：
+  `scheduler.schedule_submission()`（含 `task_has_fault` → 复习形态是"重做上次出错的那一页"）
+  → `store.save_schedule()`。
+- **四条口径**：
+  1. **单独一层 savepoint**：排期失败只回滚排期，不带半截卡片提交，也不把已算好的报告回滚掉。
+  2. **排期失败不让提交失败**，但**绝不静默**——往 stderr 打一行。报告的价值高于排期，
+     而"复习再也不出现"这种故障必须能在日志里查到。判据：
+     `test_scheduling_failure_does_not_take_the_report_away`（返回 201 且 stderr 有"排期失败"）。
+  3. **全对不排复习**（`c >= 1.0` → `passed`）是 `scheduler` 的既有口径，本步不改，
+     但要钉住它——它决定了"满分的人打开提醒页什么都看不到"：
+     `test_a_perfect_submission_schedules_cards_but_no_review_items`。要改这条口径的人
+     会看见这段说明再决定。
+  4. 复习项的 `due` 常是"一分钟后"这种学习步长，所以**刚交完卷那一刻页面上的"今天该复习"是空的**，
+     这是对的；测试里把"现在"推到 5 分钟后再看。
+- **同一页要能回答三种状态**（`render_landing` 的 `report_url` / `review`）：
+  没做 → 做题说明；已交卷 → 报告入口（做题地址收起来，并说明链接只能用一次）；有复习项 → 「今天该复习」。
+  回访的人不该再看到一段过时的做题说明。
+- **`--user`：把多条链接绑到同一个人**。掌握度、FSRS 卡、复习项都以 `user_id` 为键，
+  而一条链接默认一个人——**做三题 = 三个人，复习队列永远是空的**。
+  判据 `test_mint_with_a_user_binds_several_links_to_one_person`；
+  `user_id` 空白/带空格直接 400（空用户名会撞 `display_name NOT NULL`，报错离出错点很远）。
 
 
 

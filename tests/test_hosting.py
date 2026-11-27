@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -486,3 +487,106 @@ def _db_path_of(sessions) -> Path:
         return Path(conn.execute("PRAGMA database_list").fetchone()[2])
     finally:
         conn.close()
+
+
+# ── 8. 一个人跨题累积 + 复习项回到他手上（B-55） ─────────────────────────────
+
+def test_mint_with_a_user_binds_several_links_to_one_person(env):
+    """做三题 = 三个人，复习队列永远是空的。
+
+    掌握度、FSRS 卡、复习项都以 `user_id` 为键，所以组织者要能把多条链接绑到同一个人。
+    """
+    sessions, _submit, _registry = env
+    rows = sessions.mint(TASK_ID, 3, user_id="zhang-san")
+    assert {r["user_id"] for r in rows} == {"zhang-san"}
+    assert len({r["token"] for r in rows}) == 3, "链接本身仍是一人一条，只是同一个人"
+
+    with pytest.raises(hosting.HostError) as exc:
+        sessions.mint(TASK_ID, 1, user_id="zhang san")
+    assert exc.value.code == "bad_user"
+
+
+def test_a_low_score_submission_leaves_review_items_for_that_person(env):
+    """交完卷要长出复习项——这是"提醒页"能对真人说话的前提。
+
+    以前只有两个 walk 脚本会调 `save_schedule`，真实提交路径上从来不排期；
+    于是提醒页读的是打包时烘好的 `reminder.json`，真学生做完题库里一条都没有。
+    """
+    import json
+
+    sessions, submit_fn, _registry = env
+    session = sessions.create(TASK_ID, user_id="li-si")
+    token = session["token"]
+    sessions.call(token, "fetch_orders", {"offset": 0, "limit": 10})
+    sessions.call(token, "write_report",
+                  {"path": "/workspace/report.json",
+                   "content": json.dumps({"valid_count": 9, "total_amount": 861.24})})
+    sessions.grade(token, submit_fn)
+
+    conn = sessions._conn_factory()
+    try:
+        items = store.list_review_items(conn, "li-si", status="pending")
+        # 刚交完卷那一刻还没到复习点（FSRS 给的是"一分钟后"这种学习步长），
+        # 所以这里把"现在"推到 5 分钟后——这才是学生第二天打开页面的真实情形。
+        later = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(timespec="seconds")
+        review = hosting.review_of(conn, "li-si", at=later)
+    finally:
+        conn.close()
+    assert items, "做完一道错题却没有复习项"
+    assert review and not review["empty"]
+    assert review["today"], "今天该复习的列表是空的"
+    assert all(row["skill"] and not row["skill"].startswith(("multi_", "failure_"))
+               for row in review["today"]), "页面上露了英文技能 id"
+
+
+def test_review_of_a_stranger_is_none_not_an_error(env):
+    """还没做过题的人没有 users 行：这一块本来就不该出现，不是出错。"""
+    sessions, _submit, _registry = env
+    conn = sessions._conn_factory()
+    try:
+        assert hosting.review_of(conn, "nobody-here") is None
+    finally:
+        conn.close()
+
+
+def test_landing_after_submission_leads_with_the_report(env):
+    """回访的人先看到自己那次的结果；做题说明不该再占屏。"""
+    import json
+
+    sessions, submit_fn, _registry = env
+    session = sessions.create(TASK_ID, user_id="wang-wu")
+    token = session["token"]
+    sessions.call(token, "fetch_orders", {"offset": 0, "limit": 10})
+    sessions.call(token, "write_report",
+                  {"path": "/workspace/report.json", "content": json.dumps({"valid_count": 9})})
+    report, _ = sessions.grade(token, submit_fn)
+    sid = report["submission"]["submission_id"]
+
+    page = hosting.render_landing(
+        sessions.get(token), {"title": "标题", "scenario": "题面", "tools": []},
+        "http://x", report_url=f"/submissions/{sid}/report.html",
+    )
+    assert "已经交过卷" in page and f"/submissions/{sid}/report.html" in page
+    assert "/tools/" not in page, "交过卷了还把做题地址摆在最上面"
+    assert "找老师要一条新的链接" in page, "没说清这条链接不能重复用"
+
+
+def test_landing_shows_todays_review_and_hides_it_when_empty(env):
+    """有复习项就摆出来，没有就整块不出现——空盒子比没有更让人困惑。"""
+    sessions, _submit, _registry = env
+    session = sessions.create(TASK_ID)
+    task = {"title": "标题", "scenario": "题面", "tools": []}
+
+    review = {
+        "headline": "今天有 1 项该复习", "notice": "看不完的会留到明天",
+        "today": [{"skill": "失败重试策略", "kind_label": "重做上次出错的那一页",
+                   "task_title": "订单数据核对报告", "overdue_text": "逾期 2 天"}],
+        "empty": False, "due_total": 1, "deferred": 0,
+    }
+    page = hosting.render_landing(session, task, "http://x", review=review)
+    assert "今天该复习" in page
+    assert "失败重试策略" in page and "逾期 2 天" in page
+    assert "看不完的会留到明天" in page
+
+    empty = dict(review, **{"empty": True, "today": []})
+    assert "今天该复习" not in hosting.render_landing(session, task, "http://x", review=empty)

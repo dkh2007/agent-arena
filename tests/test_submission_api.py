@@ -776,3 +776,53 @@ def test_a_bad_token_is_404_on_every_session_path(roomy):
         status, page, _loc, _ctype = roomy.call("GET" if "tools" not in path else "POST",
                                                  path, {} if "tools" in path else None)
         assert status == 404, (path, status, page[:80])
+
+
+# ── 8. 交完卷要排期（B-55） ──────────────────────────────────────────────────
+
+def test_a_submission_leaves_review_items_in_the_database(live):
+    """真实提交路径上必须排期。
+
+    以前 `save_schedule()` 只有两个 walk 脚本在调——复习页能显示，但那是打包时烘好的
+    `reminder.json`；一个真学生做完题，库里一条复习项都没有。这条盯的就是那个断点。
+    """
+    status, report = live.call("POST", "/submissions", _payload(_fixture("raw-fake-retry")))
+    assert status == 201
+    user_id = "u-test"          # `_payload()` 里写死的提交人；报告里不带 user_id（schema 不装它）
+
+    conn = store.connect(live.db)
+    try:
+        items = store.list_review_items(conn, user_id, status="pending")
+        cards = store.load_fsrs_cards(conn, user_id)
+    finally:
+        conn.close()
+    assert cards, "连 FSRS 卡都没写"
+    assert items, "这道题只拿了 0.25，却没有任何复习项"
+    assert all(item["source_submission_id"] for item in items), "复习项没记来源提交"
+
+
+def test_a_perfect_submission_schedules_cards_but_no_review_items(live):
+    """全对不排复习——这是 `scheduler` 既有口径（`c >= 1.0` 记 `passed`），这里只是钉住它。
+
+    钉住的原因：它决定"满分的人打开提醒页什么都看不到"。若哪天要改成「成功也间隔复习」，
+    这条会红，改的人必须看到这段说明再决定。
+    """
+    status, report = live.call("POST", "/submissions", _payload(_fixture("raw-perfect")))
+    assert status == 201
+    conn = store.connect(live.db)
+    try:
+        items = store.list_review_items(conn, "u-test", status="pending")
+    finally:
+        conn.close()
+    assert items == []
+
+
+def test_scheduling_failure_does_not_take_the_report_away(live, monkeypatch, capsys):
+    """排期出错不能让学习者拿不到报告，但**不能静默**——服务器日志里要能看到。"""
+    def boom(*args, **kwargs):
+        raise api.sch.SchedulerError("模拟：复习排期算不出来")
+
+    monkeypatch.setattr(api.sch, "schedule_submission", boom)
+    status, report = live.call("POST", "/submissions", _payload(_fixture("raw-fake-retry")))
+    assert status == 201 and report["score"]["ratio"] > 0, "报告没返回，等于把功能做没了"
+    assert "排期失败" in capsys.readouterr().err

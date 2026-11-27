@@ -131,6 +131,7 @@ try:  # 作为包被 import
     from . import hosting
     from . import llm_judge as lj
     from . import report_html
+    from . import scheduler as sch
     from . import store
     from . import trace_pipeline as tp
 except ImportError:  # 作为独立脚本运行
@@ -139,6 +140,7 @@ except ImportError:  # 作为独立脚本运行
     import diagnosis_report as dr  # type: ignore[no-redef]
     import hosting  # type: ignore[no-redef]
     import report_html  # type: ignore[no-redef]
+    import scheduler as sch  # type: ignore[no-redef]
     import judge_pipeline as jp  # type: ignore[no-redef]
     import llm_judge as lj  # type: ignore[no-redef]
     import store  # type: ignore[no-redef]
@@ -614,9 +616,47 @@ def submit(payload: Any, *, registry: TaskRegistry, conn_factory, now: str | Non
             if outcome is not None:
                 # 必须在落库之后：队列外键指向 submissions，先入队会指向不存在的证据。
                 jp.record_arbitration(conn, outcome)
+            _schedule_after_submission(conn, report, prep)
     finally:
         conn.close()
     return report
+
+
+def _schedule_after_submission(conn, report: dict, prep) -> None:
+    """交完立刻排期（B-55）：卡片与复习项**从这份提交长出来**。
+
+    ## 为什么补这一步
+
+    `scheduler` / `reminder` / Android 的提醒页全都写好了，但 `save_schedule()` 的调用者
+    只有两个 walk 脚本——**真实提交路径上从来没排过期**。结果是：复习页能显示，
+    但那个页面读的是打包时烘好的 `reminder.json`，一个真学生做完题，库里一条复习项都没有。
+    功能全在，链路是断的。
+
+    ## 三条口径
+
+    1. **写在同一个事务里**，但**单独一层 savepoint**：排期失败要回滚排期，
+       不能带着半截卡片提交；也不能把已经算好的报告一起回滚掉。
+    2. **失败不让提交失败**。报告的价值高于排期，学习者不该因为排期出错就拿不到报告；
+       但**绝不静默**——往 stderr 打一行，服务器日志里能查到。吞掉等于把
+       "复习再也不出现了"变成无人知道的故障。
+    3. `task_has_fault` 取自任务 YAML 的 `fault_injection.enabled`：有故障位的题，
+       复习形态是「重做上次出错的那一页」；没有的就是原题重做（`scheduler` 里两种形态）。
+    """
+    task = getattr(prep, "task", None) or {}
+    fault = task.get("fault_injection") or {}
+    try:
+        with store.atomic(conn):
+            result = sch.schedule_submission(
+                report,
+                user_id=prep.user_id,
+                at=(report.get("submission") or {}).get("evaluated_at"),
+                cards=sch.cards_from_rows(store.load_fsrs_cards(conn, prep.user_id)),
+                task_id=task.get("task_id"),
+                task_has_fault=bool(fault.get("enabled")),
+            )
+            store.save_schedule(conn, result)
+    except (sch.SchedulerError, store.StoreError) as exc:
+        sys.stderr.write(f"[排期失败] {type(exc).__name__}: {exc}（报告已照常返回）\n")
 
 
 # ── HTTP 层 ──────────────────────────────────────────────────────────────────
@@ -804,8 +844,18 @@ class _Handler(BaseHTTPRequestHandler):
 
         if len(parts) == 2:
             task = sessions.task(session["task_id"])
+            # 复习项与"已交卷"状态都在库里：这一页是学习者唯一会自己回访的地方，
+            # 每次打开都现算，而不是让他记住上一次那一页。
+            conn = self.ctx["conn_factory"]()
+            try:
+                review = hosting.review_of(conn, session["user_id"])
+            finally:
+                conn.close()
+            submitted = session.get("submission_id")
             page = hosting.render_landing(
                 session, public_task(task, self.ctx["registry"].items()), self._base_url(),
+                review=review,
+                report_url=(f"/submissions/{submitted}/report.html" if submitted else None),
             )
             self._send_html(200, page)
             return

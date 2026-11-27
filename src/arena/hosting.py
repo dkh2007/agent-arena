@@ -86,6 +86,9 @@ MAX_MINT = 500
 # 少于这么多份提交就只给事实、不给判读。3 个人的数据改题面，改的是噪声。
 MIN_SUMMARY_SAMPLE = 4
 
+# 组织者指定"这批链接是谁的"时的长度上限（落库列是 TEXT，这是显示与核对上的限制）。
+MAX_USER_LEN = 40
+
 
 class HostError(Exception):
     """托管层的失败。带 HTTP 状态码，路由层直接 `_send`，不再猜。"""
@@ -108,6 +111,22 @@ def _looks_like_token(token: str) -> bool:
     return (isinstance(token, str)
             and MIN_TOKEN_LEN <= len(token) <= MAX_TOKEN_LEN
             and set(token) <= _TOKEN_ALPHABET)
+
+
+def _check_user_id(user_id: str) -> str:
+    """组织者可以显式指定"这批链接是谁的"，用于跨题累积掌握度与复习项。
+
+    不校验格式的话，`--user "  "` 会造出一个空用户名，而 `users.display_name` 有 NOT NULL
+    约束——报错会出现在落库那一刻，离出错的地方很远。这里先挡住空白与控制字符。
+    """
+    text = (user_id or "").strip()
+    if not text:
+        raise HostError("bad_user", "user_id 不能是空白", status=400)
+    if len(text) > MAX_USER_LEN:
+        raise HostError("bad_user", f"user_id 最长 {MAX_USER_LEN} 个字符", status=400)
+    if any(ch.isspace() for ch in text):
+        raise HostError("bad_user", "user_id 里不能有空格", status=400)
+    return text
 
 
 class SessionRegistry:
@@ -152,17 +171,22 @@ class SessionRegistry:
 
     # ── 会话 ────────────────────────────────────────────────────────────────
 
-    def create(self, task_id: str) -> dict:
+    def create(self, task_id: str, *, user_id: str | None = None) -> dict:
         """开一个会话，返回 `{token, task_id, user_id, max_calls, ...}`。
 
-        `user_id` 由 token 派生，**不收集姓名学号**：随机编号 + "本人拿编号找老师对号"
+        默认 `user_id` 由 token 派生，**不收集姓名学号**：随机编号 + "本人拿编号找老师对号"
         就够了，隐私负担接近于零（这也是外部回件里"完全可以不收集"那条的具体落地）。
+
+        给了 `user_id` 就让这批链接绑到同一个人。**这是跨题累积的前提**：掌握度、FSRS 卡、
+        复习项都是以 `user_id` 为键的，一条链接一个人意味着"做三题 = 三个人"，
+        复习队列永远是空的。
         """
-        session = self.mint(task_id, 1)[0]
+        session = self.mint(task_id, 1, user_id=user_id)[0]
         self._warm(session["token"], task_id)
         return session
 
-    def mint(self, task_id: str, count: int, *, now: str | None = None) -> list[dict]:
+    def mint(self, task_id: str, count: int, *, now: str | None = None,
+             user_id: str | None = None) -> list[dict]:
         """一次开 `count` 个会话，**只写库、不建 mock 实例**。
 
         为什么和 `create` 分开：办一场活动要一次发几十条链接，而 mock 实例是"用的时候才有
@@ -176,6 +200,7 @@ class SessionRegistry:
                 "too_many", f"一次最多开 {MAX_MINT} 个会话；要更多请分批", status=400,
             )
         self.task(task_id)                              # 题不存在就一个都不建
+        fixed_user = _check_user_id(user_id) if user_id is not None else None
         stamp = now or _now()
         sessions: list[dict] = []
         conn = self._conn_factory()
@@ -183,13 +208,13 @@ class SessionRegistry:
             with conn:
                 for _ in range(count):
                     token = secrets.token_urlsafe(TOKEN_BYTES)
-                    user_id = f"u-{token[:12]}"
+                    owner = fixed_user or f"u-{token[:12]}"
                     conn.execute(
                         "INSERT INTO sessions (token, task_id, user_id, max_calls, created_at) "
                         "VALUES (?, ?, ?, ?, ?)",
-                        (token, task_id, user_id, self._max_calls, stamp),
+                        (token, task_id, owner, self._max_calls, stamp),
                     )
-                    sessions.append({"token": token, "task_id": task_id, "user_id": user_id,
+                    sessions.append({"token": token, "task_id": task_id, "user_id": owner,
                                      "max_calls": self._max_calls, "created_at": stamp,
                                      "used": 0, "submission_id": None,
                                      "task_version": str(self.task(task_id).get("task_version") or "")})
@@ -527,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="学生能访问到的地址前缀（不要写 127.0.0.1，除非只在本机试）")
     mint_p.add_argument("--max-calls", type=int, default=DEFAULT_MAX_CALLS)
     mint_p.add_argument("--out", help="把 token/链接写成 CSV")
+    mint_p.add_argument("--user", help="把这批链接绑到同一个人：跨题累积掌握度与复习项用。"
+                                       "不给就一条链接一个人（各自独立，做完一题复习队列是空的）")
 
     roster_p = sub.add_parser("roster", help="导出名单与分数")
     common(roster_p)
@@ -544,7 +571,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "mint":
             sessions = SessionRegistry(args.tasks, conn_factory=lambda: store.connect(args.db),
-                                       max_calls=args.max_calls).mint(args.task, args.count)
+                                       max_calls=args.max_calls).mint(
+                args.task, args.count, user_id=getattr(args, "user", None))
             base = args.base_url.rstrip("/")
             rows = [(s["token"], f"{base}/s/{s['token']}", s["user_id"]) for s in sessions]
             for index, (token, url, _uid) in enumerate(rows, 1):
@@ -595,8 +623,66 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
 
 
-def render_landing(session: dict, public_task: dict, base_url: str) -> str:
-    """学习者打开链接看到的那一页：题面、他要贴给 AI 的地址、用了多少次、交卷入口。
+def review_of(conn, user_id: str, *, at: str | None = None) -> dict | None:
+    """这个人今天该复习什么。回答不了就返回 `None`（页面少一块），不编造。
+
+    三段数据各归各家：复习项读 `review_items`、每日上限读 `users`、技能中文名读 `skills`。
+    排序与截断**不在这里重写**，直接调 `reminder.build_reminder`（它内部走
+    `scheduler.take_daily`）——两处各排一次，迟早出现"页面上今天有、明天又冒出来"。
+
+    返回 `None` 的两种情况，都是"这块本来就没有"，不是出错：
+    还没做过任何题的人没有 `users` 行；技能名缺失时 `reminder` 会拒绝显示英文 id，
+    那也不该把整页拖垮。
+    """
+    from . import reminder
+
+    try:
+        cap = store.daily_review_cap(conn, user_id)
+    except store.StoreError:
+        return None
+    items = store.list_review_items(conn, user_id, status="pending")
+    names = {row["skill_id"]: row["name"]
+             for row in conn.execute("SELECT skill_id, name FROM skills")}
+    titles = {row["task_id"]: row["title"]
+              for row in conn.execute("SELECT task_id, title FROM tasks")}
+    try:
+        return reminder.build_reminder(items, at=at or _now(), cap=cap,
+                                       skill_names=names, task_titles=titles)
+    except reminder.ReminderError as exc:
+        sys.stderr.write(f"[复习项没渲染] {type(exc).__name__}: {exc}\n")
+        return None
+
+
+def _review_block(review: dict | None) -> str:
+    """「今天该复习」那一块。没有可复习的就整块不出现——空盒子比没有更让人困惑。"""
+    if not review or review.get("empty"):
+        return ""
+    rows = []
+    for row in review.get("today") or []:
+        extra = f"（{row['task_title']}）" if row.get("task_title") else ""
+        rows.append(
+            f"<li>{html.escape(str(row['skill']))}　{html.escape(str(row['kind_label']))}"
+            f"{html.escape(extra)}　<span class=\"muted\">{html.escape(str(row['overdue_text']))}</span></li>"
+        )
+    notice = f'<div class="muted">{html.escape(str(review["notice"]))}</div>' if review.get("notice") else ""
+    return (
+        '<h2>今天该复习</h2><div class="card">'
+        f'<div>{html.escape(str(review["headline"]))}</div>'
+        f'<ul style="margin:8px 0 0; padding-left:20px">{"".join(rows)}</ul>{notice}'
+        "</div>"
+    )
+
+
+def render_landing(session: dict, public_task: dict, base_url: str, *,
+                   review: dict | None = None, report_url: str | None = None) -> str:
+    """学习者打开链接看到的那一页。
+
+    **同一页要能回答三种状态**，否则回访的人只会看到一段过时的做题说明：
+    | 状态 | 页面先给什么 |
+    |---|---|
+    | 还没做 | 贴给 AI 的那段话 + 工具清单 |
+    | 已经交过卷 | 报告入口；做题地址收起来，并说明这条链接只能用一次 |
+    | 有复习项 | 「今天该复习」放在报告入口下面（不管交没交） |
 
     `public_task` 必须是**已经过白名单**的题面（`submission_api.public_task`），
     本函数只负责排版——白名单逻辑不在这里复制第二份。
@@ -631,6 +717,34 @@ def render_landing(session: dict, public_task: dict, base_url: str) -> str:
         f"题面：{scenario}\n\n"
         f"工具：{', '.join(str(t.get('name')) for t in tools)}"
     )
+
+    submitted = bool(report_url)
+    if submitted:
+        # 回访的人：先给他"我那次的结果"，做题说明不该再占屏。
+        head = (
+            '<h2>你这次已经交过卷</h2><div class="card">'
+            f'<a class="cta" href="{html.escape(str(report_url))}">打开我的报告</a>'
+            '<div class="muted">报告里有：哪一步没做到、证据是什么、下一步练什么、下一道做什么题。</div>'
+            "</div>"
+            '<div class="card muted">这条链接已经用过了（同一份提交只判一次，不会因为再点而重判）。'
+            "想再做一遍，找老师要一条新的链接。</div>"
+        )
+        subtitle = "你的做题链接（已交卷）"
+    else:
+        head = (
+            '<h2>① 让 AI 助手对着这个地址做</h2><div class="card">'
+            f"<pre>{html.escape(relay)}</pre>"
+            f'<div class="muted">完整前缀：<code>{html.escape(root)}/tools/</code>　'
+            f"已经调用 {session['used']} 次（上限 {session['max_calls']}）</div></div>"
+            '<h2>② 这道题有哪些工具</h2><div class="card"><table>'
+            "<tr><th>工具</th><th>参数</th><th>做什么</th></tr>"
+            f"{''.join(tool_rows)}</table></div>"
+            '<h2>③ 做完看报告</h2><div class="card">'
+            f'<a class="cta" href="{html.escape(root)}/submit">看我这次的报告</a>'
+            '<div class="muted">同一份提交只会判一次；再点开还是这一份。</div></div>'
+        )
+        subtitle = "做题地址（这条链接就是你，别转发）"
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -653,27 +767,9 @@ th {{ color:#6b7280; font-weight:600; }}
 </style></head>
 <body><main>
 <h1>{title}</h1>
-<div class="muted">做题地址（这条链接就是你，别转发）</div>
-
-<h2>① 让 AI 助手对着这个地址做</h2>
-<div class="card">
-<pre>{html.escape(relay)}</pre>
-<div class="muted">完整前缀：<code>{html.escape(root)}/tools/</code>　
-已经调用 {session['used']} 次（上限 {session['max_calls']}）</div>
-</div>
-
-<h2>② 这道题有哪些工具</h2>
-<div class="card"><table>
-<tr><th>工具</th><th>参数</th><th>做什么</th></tr>
-{''.join(tool_rows)}
-</table></div>
-
-<h2>③ 做完看报告</h2>
-<div class="card">
-<a class="cta" href="{html.escape(root)}/submit">看我这次的报告</a>
-<div class="muted">同一份提交只会判一次；再点开还是这一份。</div>
-</div>
-
+<div class="muted">{subtitle}</div>
+{head}
+{_review_block(review)}
 <h2>④ 说明</h2>
 <div class="card muted">
 你调工具的每一次请求都由服务器记下（包括失败的）。这不是监视，是判分的依据：
