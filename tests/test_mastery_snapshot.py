@@ -175,9 +175,9 @@ def test_criterion_migrate_from_real_v1_keeps_data_and_backfills(tmp_path):
                                       "submissions.artifacts", "reappraisals",
                                       "unrecoverable_marks", "appeals",
                                       "sessions", "session_calls",
-                                      "submissions.scoring_version"]
+                                      "submissions.scoring_version", "recalls"]
     assert result["backfilled"] == 3
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 9
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 10
     assert store.count_submissions(conn) == before
     assert store.load_report(conn, "old-1") == report          # 旧报告一个字节没动
     # 旧提交的产物补不回来 —— 迁移只加列，不给历史数据编造产物。
@@ -517,10 +517,16 @@ def test_v1_ddl_really_lacks_the_snapshot_table():
                       store.SCHEMA_SQL_V5, store.SCHEMA_SQL_V6, store.SCHEMA_SQL_V7):
             assert table not in older, f"{table} 被偷偷加回了旧版本的分段"
         assert table in store.SCHEMA_SQL_V8
+    # 2026-11-27 加 `recalls`（v10）：费曼复述原文
+    for older in (store.SCHEMA_SQL_V1, store.SCHEMA_SQL_V2, store.SCHEMA_SQL_V3,
+                  store.SCHEMA_SQL_V5, store.SCHEMA_SQL_V6, store.SCHEMA_SQL_V7,
+                  store.SCHEMA_SQL_V8):
+        assert "CREATE TABLE IF NOT EXISTS recalls" not in older, "recalls 被偷偷加回了旧版本的分段"
+    assert "CREATE TABLE IF NOT EXISTS recalls" in store.SCHEMA_SQL_V10
     assert store.SCHEMA_SQL == (store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2
                                 + store.SCHEMA_SQL_V3 + store.SCHEMA_SQL_V5
                                 + store.SCHEMA_SQL_V6 + store.SCHEMA_SQL_V7
-                                + store.SCHEMA_SQL_V8)
+                                + store.SCHEMA_SQL_V8 + store.SCHEMA_SQL_V10)
 
 
 # --- round-88 外部回件：三条新锁 ----------------------------------------------

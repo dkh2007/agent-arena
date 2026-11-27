@@ -84,6 +84,11 @@ textarea { width: 100%; min-height: 120px; padding: 10px 12px; font: inherit; fo
            border: 1px solid #d6d9dd; border-radius: 10px; resize: vertical; background: #fff; }
 .q { margin: 10px 0 4px; font-weight: 600; }
 .note { color: #6b7280; font-size: 13px; }
+.submit-row { margin-top: 10px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+button { font: inherit; font-weight: 600; padding: 9px 18px; border: 0; border-radius: 9px;
+         background: #1d4ed8; color: #fff; cursor: pointer; }
+.saved { background: #e8f5ec; color: #1f7a3d; border-radius: 10px; padding: 10px 12px;
+         font-size: 14px; margin: 0 0 10px; }
 """
 
 
@@ -275,12 +280,21 @@ def _training_block(report: dict, task: dict, catalog_path: str | None) -> str:
     return "".join(parts)
 
 
-def _recall_block(report: dict, task: dict) -> str:
-    """复述：三个问题 + 一个输入框。
+def _recall_block(report: dict, task: dict, *, action: str | None = None,
+                  existing: dict | None = None, flash: str | None = None) -> str:
+    """复述：三个问题 + 一个输入框（服务端渲染时还有"交上去"）。
 
     为什么把输入框放进报告页：一份满分报告此前"没什么可说的"，而满分恰恰是最需要
     复述的时刻——讲得出来才算真会。桌面端和手机浏览器的**语音输入都走系统输入法**
     （Windows 是 Win+H，手机是键盘上的麦克风键），所以这里只要有一个真正的文本框。
+
+    **两种形态，一条区别**：`action` 为空 = 离线文件（`report_html.py` 导出的 .html），
+    文字只能自己复制走；`action` 给了 = 服务端渲染，文字由这张表单交回服务器。
+    后者是 B-58 补的：以前两种形态都写着"发回给我"，而那一页根本没有出口，
+    关掉浏览器那段话就没了——"满分但讲不出来"这个状态因此永远抓不到。
+
+    **仍然不判分**：交上来只是存原文。页面上一句"不打分"必须留着，
+    否则学习者会以为这是一道还要被打分的附加题。
 
     **不渲染 `hints`**：「看提示要不要降权」还没拍板（BACKLOG B-32），提示一律不进页面。
     """
@@ -293,20 +307,46 @@ def _recall_block(report: dict, task: dict) -> str:
     questions = [q for q in (prompt.get("questions") or []) if isinstance(q, dict) and q.get("text")]
     if not questions:
         return ""
-    parts = ['<h2>讲一遍（复述）</h2><div class="card">',
-             '<div class="note">念出来或打出来都行：桌面上按 Win+H 用系统语音输入，'
-             '手机上用输入法空格键旁边那个麦克风。</div>']
+    parts = ['<h2>讲一遍（复述）</h2><div class="card">']
+    if flash == "saved":
+        parts.append('<div class="saved">记下了。想改就改完再交一次，覆盖上一版。</div>')
+    elif flash == "empty":
+        parts.append('<div class="note">这次什么都没写，所以什么都没存。</div>')
+    elif existing:
+        parts.append(
+            f'<div class="note">你已经在 {_esc(str(existing.get("updated_at") or "")[:16].replace("T", " "))}'
+            " 交过一版。改完再交一次就覆盖它。</div>"
+        )
+    parts.append('<div class="note">念出来或打出来都行：桌面上按 Win+H 用系统语音输入，'
+                 '手机上用输入法空格键旁边那个麦克风。</div>')
     for question in questions:
         parts.append(f'<div class="q">{_esc(question["text"])}</div>')
-    parts.append('<textarea placeholder="在这里写。写完把这段文字发回给我。"></textarea>')
-    parts.append('<div class="note">这一步没有自动判分——它要的是你的话，不是分数。</div>')
+
+    body = _esc(str((existing or {}).get("text") or ""))
+    if action:
+        parts.append(f'<form method="post" action="{_esc(action)}">')
+        parts.append(f'<textarea name="text">{body}</textarea>')
+        parts.append('<div class="submit-row"><button type="submit">交上去</button>'
+                     '<span class="note">只保存你写的话，不打分，也不影响掌握度。</span></div>')
+        parts.append("</form>")
+    else:
+        parts.append(f'<textarea placeholder="在这里写。写完把这段文字发回给我。">{body}</textarea>')
+        parts.append('<div class="note">这一步没有自动判分——它要的是你的话，不是分数。</div>')
     parts.append("</div>")
     return "".join(parts)
 
 
 def render_html(report: dict, *, task_title: str = "", task_id: str = "",
-                task: dict | None = None, catalog_path: str | None = None) -> str:
-    """报告 dict → 完整 HTML 字符串。**不读磁盘、不联网**，纯函数好测。"""
+                task: dict | None = None, catalog_path: str | None = None,
+                recall_action: str | None = None, recall: dict | None = None,
+                recall_flash: str | None = None) -> str:
+    """报告 dict → 完整 HTML 字符串。**不读磁盘、不联网**，纯函数好测。
+
+    三个可选参数只为复述那一格服务（B-58）：`recall_action` 给了就把输入框包进表单，
+    `recall` 是他上次讲过的那版（预填、并说明可以改），`recall_flash` 是刚交完的回执
+    （`saved` = 收下了 / `empty` = 什么都没写，所以什么都没存）。
+    不给这三个参数时，输出与"导出成 .html 自己看"那条路完全一致。
+    """
     submission = report.get("submission") or {}
     tid = task_id or str(submission.get("task_id") or "")
     title = task_title or "这次提交的诊断报告"
@@ -330,10 +370,17 @@ def render_html(report: dict, *, task_title: str = "", task_id: str = "",
     parts.append(_trace_block(report))
     if task is not None:
         parts.append(_training_block(report, task, catalog_path))
-        parts.append(_recall_block(report, task))
+        parts.append(_recall_block(report, task, action=recall_action,
+                                   existing=recall, flash=recall_flash))
+    # 脚注是**承诺**，不是装饰：离线导出的文件确实什么都不传；服务端这一页会把他写的
+    # 那几句话交给服务器。同一句话覆盖两种形态，就是在服务端那一页上撒谎。
+    if recall_action:
+        privacy = "只有你在复述框里写的话会交回服务器（存原文、不打分），其它一概不上传。"
+    else:
+        privacy = "页面不联网，也不会上传任何东西。"
     parts.append(
         '<p class="foot">这不是成绩单：它只说明这一次提交里哪些要求没满足、下一步可以先改什么。'
-        "页面不联网，也不会上传任何东西。"
+        f"{privacy}"
         f"{_scoring_note(report)}</p>"
     )
     parts.append("</main></body></html>")

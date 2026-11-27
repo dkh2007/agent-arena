@@ -47,13 +47,14 @@ def db(tmp_path):
 # --- 地基：建表、外键、真的落了盘 -------------------------------------------------
 
 def test_init_db_is_idempotent_and_creates_twelve_tables(tmp_path):
-    """建表两次不报错、表齐十二张、结构版本可读。
+    """建表两次不报错、表齐十五张、结构版本可读。
 
     **现状锁，改一次反转一次**：round-88（B-07c）7 → 8 张，round-90（B-04b）→ 9 张，
     round-91（B-04d）只加列不加表（v4），round-92 加 `reappraisals` → 10 张（v5），
     round-101（B-04h ②）加 `unrecoverable_marks` → 11 张（v6），
     2026-11-24 加 `appeals` → 12 张（v7），2026-11-26 加 `sessions` / `session_calls`
-    → 14 张（v8，托管会话：过程记录存服务端）。
+    → 14 张（v8，托管会话：过程记录存服务端），2026-11-27 加 `recalls`
+    → 15 张（v10，费曼复述原文）。
     锁的**不是数字本身**，而是「`init_db()` 会顺带把版本抬到 `SCHEMA_VERSION`」——
     表建了而版本没抬，才是真故障（半迁移）。
     """
@@ -64,9 +65,9 @@ def test_init_db_is_idempotent_and_creates_twelve_tables(tmp_path):
     assert {"users", "skills", "tasks", "error_patterns", "submissions",
             "user_skill_states", "review_items", "mastery_snapshots",
             "arbitration_queue", "reappraisals", "unrecoverable_marks",
-            "appeals", "sessions", "session_calls"} <= names
-    assert len({n for n in names if not n.startswith("sqlite_")}) == 14
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 9
+            "appeals", "sessions", "session_calls", "recalls"} <= names
+    assert len({n for n in names if not n.startswith("sqlite_")}) == 15
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 10
     cols = {r[1] for r in conn.execute("PRAGMA table_info(submissions)")}
     assert "artifacts" in cols
     assert "scoring_version" in cols, "v9：判分规则版本要能按列查"
@@ -320,8 +321,9 @@ def test_v7_database_upgrades_to_v8_and_keeps_old_rows(tmp_path):
     conn.commit()
 
     action = store.migrate(conn)
-    assert action["from"] == 7 and action["to"] == 9
-    assert {"sessions", "session_calls", "submissions.scoring_version"} <= set(action["added_tables"])
+    assert action["from"] == 7 and action["to"] == 10
+    assert {"sessions", "session_calls", "submissions.scoring_version",
+            "recalls"} <= set(action["added_tables"])
     assert conn.execute("SELECT display_name FROM users WHERE user_id='u-old'").fetchone()[0] == "老用户"
     conn.close()
 

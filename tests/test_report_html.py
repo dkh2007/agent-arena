@@ -327,3 +327,131 @@ def test_old_report_without_a_version_says_nothing_instead_of_unknown():
     body = report_html.render_html(report).split("</style>", 1)[-1]
     assert "版判分规则" not in body
     assert "未知" not in body
+
+
+# ── 复述框的两种形态（B-58）─────────────────────────────────────────────────
+
+def _recall_page(**kwargs) -> str:
+    from arena.trace_pipeline import run_fixture
+
+    return report_html.render_html(run_fixture("raw-perfect"), task=_task(), **kwargs)
+
+
+def test_a_served_page_puts_the_box_in_a_form_and_says_where_it_goes():
+    """服务端渲染时输入框必须是个真表单——不然"写完发回给我"没有出口。
+
+    仍然不许有脚本：浏览器原生表单就够了（这条约束从 B-48 起没松过）。
+    """
+    import re
+
+    body = _recall_page(recall_action="/s/abc/report/recall").split("</style>", 1)[-1]
+    assert re.search(r'<form method="post" action="/s/abc/report/recall">', body)
+    assert re.search(r'<textarea name="text"', body)
+    assert "<button" in body and "交上去" in body
+    assert "<script" not in body.lower()
+    assert "不打分" in body, "得说清它不打分，否则会被当成附加题"
+
+    foot = body.split('<p class="foot">', 1)[1]
+    assert "不会上传任何东西" not in foot, "这一页确实上传了他写的话"
+    assert "复述框里写的话" in foot
+
+
+def test_an_offline_page_keeps_the_copy_it_out_hint_and_the_honest_footnote():
+    """导出的 .html 没有服务器可交，只能自己复制走——那时"不联网"才是真话。"""
+    body = _recall_page().split("</style>", 1)[-1]
+    assert "<form" not in body
+    assert "发回给我" in body
+    assert "不会上传任何东西" in body
+
+
+def test_a_previous_retell_is_prefilled_and_flagged_as_replaceable():
+    """改过一版的人打开页面，要先看见自己上次写的，并知道再交会覆盖它。"""
+    body = _recall_page(recall_action="/s/abc/report/recall",
+                        recall={"text": "上次讲的那一版", "updated_at": "2026-11-26T10:09:00+00:00"}
+                        ).split("</style>", 1)[-1]
+    assert "上次讲的那一版" in body
+    assert "2026-11-26 10:09" in body
+    assert "覆盖" in body
+
+
+def test_the_retell_is_escaped_so_it_cannot_become_page_markup():
+    """复述是他自己打的字，会原样回到页面上——不转义就等于给页面开了个注入口。"""
+    body = _recall_page(recall_action="/s/abc/report/recall",
+                        recall={"text": "</textarea><script>alert(1)</script>",
+                                "updated_at": "2026-11-26T10:00:00+00:00"})
+    assert "<script>alert(1)</script>" not in body
+    assert "&lt;script&gt;" in body
+
+
+def test_the_two_flashes_are_different_sentences():
+    """「记下了」与「什么都没写」不能共用一个回执：前者会让人以为存上了。"""
+    saved = _recall_page(recall_action="/s/abc/report/recall",
+                         recall_flash="saved").split("</style>", 1)[-1]
+    empty = _recall_page(recall_action="/s/abc/report/recall",
+                         recall_flash="empty").split("</style>", 1)[-1]
+    assert "记下了" in saved and "什么都没写" not in saved
+    assert "什么都没写" in empty and "记下了" not in empty
+
+
+# ── 复述框的两种形态（B-58）─────────────────────────────────────────────────
+
+def _recall_page(**kwargs) -> str:
+    from arena.trace_pipeline import run_fixture
+
+    return report_html.render_html(run_fixture("raw-perfect"), task=_task(), **kwargs)
+
+
+def test_a_served_page_puts_the_box_in_a_form_and_says_where_it_goes():
+    """服务端渲染时输入框必须是个真表单——不然"写完发回给我"没有出口。
+
+    仍然不许有脚本：浏览器原生表单就够了（这条约束从 B-48 起没松过）。
+    """
+    import re
+
+    body = _recall_page(recall_action="/s/abc/report/recall").split("</style>", 1)[-1]
+    assert re.search(r'<form method="post" action="/s/abc/report/recall">', body)
+    assert re.search(r'<textarea name="text"', body)
+    assert "<button" in body and "交上去" in body
+    assert "<script" not in body.lower()
+    assert "不打分" in body, "得说清它不打分，否则会被当成附加题"
+
+    foot = body.split('<p class="foot">', 1)[1]
+    assert "不会上传任何东西" not in foot, "这一页确实上传了他写的话"
+    assert "复述框里写的话" in foot
+
+
+def test_an_offline_page_keeps_the_copy_it_out_hint_and_the_honest_footnote():
+    """导出的 .html 没有服务器可交，只能自己复制走——那时"不联网"才是真话。"""
+    body = _recall_page().split("</style>", 1)[-1]
+    assert "<form" not in body
+    assert "发回给我" in body
+    assert "不会上传任何东西" in body
+
+
+def test_a_previous_retell_is_prefilled_and_flagged_as_replaceable():
+    """改过一版的人打开页面，要先看见自己上次写的，并知道再交会覆盖它。"""
+    body = _recall_page(recall_action="/s/abc/report/recall",
+                        recall={"text": "上次讲的那一版", "updated_at": "2026-11-26T10:09:00+00:00"}
+                        ).split("</style>", 1)[-1]
+    assert "上次讲的那一版" in body
+    assert "2026-11-26 10:09" in body
+    assert "覆盖" in body
+
+
+def test_the_retell_is_escaped_so_it_cannot_become_page_markup():
+    """复述是他自己打的字，会原样回到页面上——不转义就等于给页面开了个注入口。"""
+    body = _recall_page(recall_action="/s/abc/report/recall",
+                        recall={"text": "</textarea><script>alert(1)</script>",
+                                "updated_at": "2026-11-26T10:00:00+00:00"})
+    assert "<script>alert(1)</script>" not in body
+    assert "&lt;script&gt;" in body
+
+
+def test_the_two_flashes_are_different_sentences():
+    """「记下了」与「什么都没写」不能共用一个回执：前者会让人以为存上了。"""
+    saved = _recall_page(recall_action="/s/abc/report/recall",
+                         recall_flash="saved").split("</style>", 1)[-1]
+    empty = _recall_page(recall_action="/s/abc/report/recall",
+                         recall_flash="empty").split("</style>", 1)[-1]
+    assert "记下了" in saved and "什么都没写" not in saved
+    assert "什么都没写" in empty and "记下了" not in empty

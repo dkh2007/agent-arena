@@ -24,6 +24,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 
@@ -703,9 +704,22 @@ def _hosted_server(tmp_path, *, max_calls: int, name: str):
         status, payload, _loc, _ct = call(method, path, body, headers)
         return status, (json.loads(payload) if payload else None)
 
+    def form_call(method: str, path: str, fields: dict[str, str]):
+        """浏览器表单：`application/x-www-form-urlencoded`，与页面上的 `<form>` 一致。"""
+        conn = http.client.HTTPConnection(host, port, timeout=20)
+        data = urlencode(fields).encode("utf-8")
+        conn.request(method, path, body=data,
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        payload = resp.read().decode("utf-8")
+        location = resp.getheader("Location")
+        ctype = resp.getheader("Content-Type") or ""
+        conn.close()
+        return resp.status, payload, location, ctype
+
     try:
-        yield SimpleNamespace(host=host, port=port, db=db, call=call,
-                             json_call=json_call, admin={"X-Admin-Token": ADMIN})
+        yield SimpleNamespace(host=host, port=port, db=db, call=call, json_call=json_call,
+                             form_call=form_call, admin={"X-Admin-Token": ADMIN})
     finally:
         srv.shutdown()
         srv.server_close()
@@ -908,3 +922,112 @@ def test_scheduling_failure_does_not_take_the_report_away(live, monkeypatch, cap
     status, report = live.call("POST", "/submissions", _payload(_fixture("raw-fake-retry")))
     assert status == 201 and report["score"]["ratio"] > 0, "报告没返回，等于把功能做没了"
     assert "排期失败" in capsys.readouterr().err
+
+
+# ── 8. 复述原文收回服务器（B-58） ───────────────────────────────────────────
+
+def _finish_a_paper(roomy) -> str:
+    """开一条链接 → 翻两页 → 撞 500 → 同参数重试 → 写报告 → 交卷。返回 token。"""
+    token = _open(roomy)["session"]["token"]
+    for offset in (0, 10, 10):
+        roomy.json_call("POST", f"/s/{token}/tools/fetch_orders",
+                        {"offset": offset, "limit": 10})
+    roomy.json_call("POST", f"/s/{token}/tools/write_report",
+                    {"path": "/workspace/report.json",
+                     "content": json.dumps({"valid_count": 17, "total_amount": 1837.99})})
+    status, _payload, location, _ctype = roomy.call("GET", f"/s/{token}/submit")
+    assert status == 303 and location == f"/s/{token}/report"
+    return token
+
+
+def test_the_report_page_offers_a_form_and_stops_promising_nothing_is_uploaded(roomy):
+    """服务端这一页必须有出口（表单），而且脚注不能再说"不会上传任何东西"。
+
+    以前那句话对离线导出的 .html 是真的，对服务器渲染的这一页是假的——
+    同一句话覆盖两种形态，就是在其中一种上撒谎。
+    """
+    token = _finish_a_paper(roomy)
+    status, page, _loc, ctype = roomy.call("GET", f"/s/{token}/report")
+    assert status == 200 and ctype.startswith("text/html")
+    assert f'action="/s/{token}/report/recall"' in page
+    assert 'name="text"' in page, "表单里得有个能装字的字段"
+    assert "<script" not in page.lower(), "这页仍然不许有脚本"
+    assert "不会上传任何东西" not in page, "这一页会把他写的话交回服务器"
+    assert "不打分" in page
+
+
+def test_a_retell_comes_back_on_the_page_and_lands_in_the_database(roomy):
+    """交上去 → 303 回报告页 → 页面上有他写的话 + 一句回执；库里存的是原文。
+
+    这是本轮补的那个洞：以前那句"把这段文字发回给我"没有任何出口。
+    """
+    token = _finish_a_paper(roomy)
+    typed = "第二页返回 500，我没有换参数，同一个 offset=10 又试了一次，然后才拿到数据。"
+
+    status, _payload, location, _ctype = roomy.form_call(
+        "POST", f"/s/{token}/report/recall", {"text": typed})
+    assert status == 303 and location == f"/s/{token}/report?recall=saved"
+
+    status, page, _loc, _ctype = roomy.call("GET", location)
+    assert status == 200
+    assert typed in page, "交上去的话要能看见，否则他不知道存的是不是这版"
+    assert "记下了" in page
+
+    conn = store.connect(roomy.db)
+    try:
+        rows = conn.execute("SELECT text, user_id FROM recalls").fetchall()
+    finally:
+        conn.close()
+    assert [row["text"] for row in rows] == [typed], "库里存的必须是他打的原文，不是改写版"
+
+
+def test_an_empty_retell_says_so_and_stores_nothing(roomy):
+    """手滑点一下不该变成"他讲过了"。回执要说清"什么都没写"，库里一行都不多。"""
+    token = _finish_a_paper(roomy)
+    status, _payload, location, _ctype = roomy.form_call(
+        "POST", f"/s/{token}/report/recall", {"text": "   \n  "})
+    assert status == 303 and location == f"/s/{token}/report?recall=empty"
+
+    status, page, _loc, _ctype = roomy.call("GET", location)
+    assert status == 200 and "什么都没写" in page
+
+    conn = store.connect(roomy.db)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM recalls").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_a_retell_before_submitting_is_refused(roomy):
+    """没交卷就没有"这一份"，也就不该有一篇复述挂在空气上。"""
+    token = _open(roomy)["session"]["token"]
+    status, payload, _loc, _ctype = roomy.form_call(
+        "POST", f"/s/{token}/report/recall", {"text": "我还没交卷"})
+    assert status == 409
+    assert json.loads(payload)["error"]["code"] == "nothing_to_grade"
+
+
+def test_a_retell_on_an_unknown_link_is_404_not_500(roomy):
+    """凭证不认识就 404——不是 500，也不回一句"这个 token 不存在"以外的东西。"""
+    status, payload, _loc, _ctype = roomy.form_call(
+        "POST", "/s/no-such-token/report/recall", {"text": "随便写写"})
+    assert status == 404
+    assert json.loads(payload)["error"]["code"] == "unknown_session"
+
+
+def test_too_long_a_retell_is_refused_with_the_count(roomy):
+    """超长不截断：告诉他写了多少字，让他自己删——截断会让他以为讲完了。"""
+    token = _finish_a_paper(roomy)
+    too_long = "啊" * (store.RECALL_MAX_CHARS + 1)
+    status, payload, _loc, _ctype = roomy.form_call(
+        "POST", f"/s/{token}/report/recall", {"text": too_long})
+    assert status == 413
+    error = json.loads(payload)["error"]
+    assert error["code"] == "recall_too_long"
+    assert str(store.RECALL_MAX_CHARS + 1) in error["message"]
+
+    conn = store.connect(roomy.db)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM recalls").fetchone()[0] == 0
+    finally:
+        conn.close()

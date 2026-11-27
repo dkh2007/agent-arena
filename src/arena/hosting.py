@@ -595,6 +595,10 @@ def main(argv: list[str] | None = None) -> int:
     progress_p.add_argument("--user", required=True)
     progress_p.add_argument("--task", required=True)
 
+    recall_p = sub.add_parser("recall", help="这个人讲过的复述（含「满分却没讲」的那几份）")
+    common(recall_p)
+    recall_p.add_argument("--user", required=True)
+
     args = parser.parse_args(argv)
 
     registry = api.TaskRegistry(args.tasks)
@@ -643,6 +647,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"上一次 {data['prev_at']}　这一次 {data['cur_at']}")
             print()
             print(render_progress(data))
+            return 0
+
+        if args.cmd == "recall":
+            print(render_recalls(args.user, recalls_of(conn, args.user)))
             return 0
 
         rows = roster(conn)
@@ -833,6 +841,74 @@ def others_of(conn, user_id: str, current_token: str) -> list[dict]:
             "ratio": ratio,
         })
     return out
+
+
+def recalls_of(conn, user_id: str, *, limit: int = 20) -> list[dict]:
+    """这个人最近 N 份提交的「讲没讲」：讲过的带原文，没讲过的也要列出来。
+
+    **"没讲"必须出现在表里**，这是这一栏存在的全部理由：这个工具真正要抓的状态是
+    **满分但讲不出来**（2026-11-26 第 1 份试用记录的结论）。只列已讲过的，
+    等于把最该问的那一行藏起来——看着像"大家都讲了"。
+
+    分数取 `effective_ratio`（重评过按新结论），与报告页显示同一个数。
+    """
+    rows = conn.execute(
+        "SELECT s.submission_id, s.task_id, s.created_at, "
+        "       r.text, r.updated_at "
+        "FROM submissions s LEFT JOIN recalls r ON r.submission_id = s.submission_id "
+        "WHERE s.user_id = ? "
+        "ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        try:
+            ratio = float(store.effective_ratio(conn, row["submission_id"]))
+        except store.StoreError:
+            ratio = None
+        text = row["text"]
+        out.append({
+            "submission_id": str(row["submission_id"]),
+            "task_id": str(row["task_id"]),
+            "at": str(row["created_at"]),
+            "ratio": ratio,
+            "text": str(text) if text else None,
+            "told_at": str(row["updated_at"]) if row["updated_at"] else None,
+        })
+    return out
+
+
+def render_recalls(user_id: str, rows: list[dict]) -> str:
+    """命令行这一栏的人话版本。
+
+    最后那句汇总（几份满分却没讲）是给助教的**下一步动作**，不是统计：
+    它直接对应"去问他一句"。
+    """
+    if not rows:
+        return f"{user_id} 还没有任何提交，也就没有可复述的东西。"
+    lines = [f"{user_id} 的复述（最近 {len(rows)} 份提交，最新的在前）", ""]
+    told = perfect_silent = 0
+    for index, row in enumerate(rows, 1):
+        score = "—" if row["ratio"] is None else f"{row['ratio']:.2f} 分"
+        if row["text"]:
+            told += 1
+            stamp = (row["told_at"] or "")[:16].replace("T", " ")
+            lines.append(f"[{index}] {row['at'][:16].replace('T', ' ')}　{row['task_id']}　{score}"
+                         f"　讲过（{len(row['text'])} 字，{stamp}）")
+            for line in row["text"].splitlines() or [""]:
+                lines.append(f"    {line}")
+        else:
+            if row["ratio"] is not None and row["ratio"] >= 1.0:
+                perfect_silent += 1
+                lines.append(f"[{index}] {row['at'][:16].replace('T', ' ')}　{row['task_id']}　{score}"
+                             "　**没讲过 —— 满分，但还不知道他会不会**")
+            else:
+                lines.append(f"[{index}] {row['at'][:16].replace('T', ' ')}　{row['task_id']}"
+                             f"　{score}　没讲过")
+    lines.append("")
+    lines.append(f"共 {len(rows)} 份提交，{told} 份讲过。"
+                 + (f"其中 {perfect_silent} 份是满分却没讲——先问这几份。" if perfect_silent else ""))
+    return "\n".join(lines)
 
 
 def _others_block(others: list[dict] | None, *, base_url: str) -> str:

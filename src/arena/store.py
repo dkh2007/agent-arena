@@ -63,7 +63,14 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # 把标记做成"从名单里消失"是这一层唯一危险的误读——那会变成静默忘掉一个人。
 # 标记带撤销字段（`revoked_at` / `revoked_reason`）而不是靠删行：
 # 将来若产物被补回来，要能说清"谁在什么时候说过它补不回来"。
-SCHEMA_VERSION = 9
+# v10（B-58）：新增 `recalls`（费曼复述的原文）。
+# 这张表存在的理由只有一条：**满分不等于会**。2026-11-26 第 1 份真实试用里，
+# 学弟的提交拿了 1.00，但日志只说明"某个程序做对了"，说不出"这个人会不会"。
+# 唯一能分辨的是让他用自己的话讲一遍"哪一步错了、证据是什么"——而那一页
+# 以前写着"写完把这段文字发回给我"，却没有任何地方能收：文本只在浏览器里，
+# 关掉就没了。表里存的是**原文**，不存分数：复述不给分（没有第二真相源），
+# 它的用途是给人看，而不是喂掌握度。
+SCHEMA_VERSION = 10
 
 # 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
 # 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
@@ -332,8 +339,26 @@ CREATE TABLE IF NOT EXISTS session_calls (
 );
 """
 
+SCHEMA_SQL_V10 = """
+-- 费曼复述的原文（B-58）。一份提交最多一条：改了就是改这条，不新增行——
+-- 复述不是提交，重讲一遍不该让"这个人讲了几次"变成可疑的计数。
+--
+-- **谁写谁**：`user_id` 冗余存一份，是为了在不 join submissions 的情况下查"这个人讲过什么"，
+-- 同时让"别人不能替你写"这条校验落在库这一层（写入口还会再校验一次归属）。
+CREATE TABLE IF NOT EXISTS recalls (
+    submission_id TEXT PRIMARY KEY REFERENCES submissions(submission_id),
+    user_id       TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+-- 助教侧按人查（"这个人每份提交讲的什么"），与 review_items 的排序约定一致：先看最近。
+CREATE INDEX IF NOT EXISTS idx_recalls_user ON recalls(user_id, updated_at DESC);
+"""
+
 SCHEMA_SQL = (SCHEMA_SQL_V1 + SCHEMA_SQL_V2 + SCHEMA_SQL_V3 + SCHEMA_SQL_V5
-              + SCHEMA_SQL_V6 + SCHEMA_SQL_V7 + SCHEMA_SQL_V8)
+              + SCHEMA_SQL_V6 + SCHEMA_SQL_V7 + SCHEMA_SQL_V8 + SCHEMA_SQL_V10)
 
 
 def _ensure_artifacts_column(conn: sqlite3.Connection) -> None:
@@ -382,6 +407,7 @@ MIGRATION_STEPS: dict[int, tuple[Any, tuple[str, ...]]] = {
     7: (SCHEMA_SQL_V7, ("appeals",)),
     8: (SCHEMA_SQL_V8, ("sessions", "session_calls")),
     9: (_ensure_scoring_version_column, ("submissions.scoring_version",)),
+    10: (SCHEMA_SQL_V10, ("recalls",)),
 }
 
 
@@ -1910,6 +1936,93 @@ def mark_review_done(conn: sqlite3.Connection, user_id: str, review_id: str, *,
             (review_id, user_id),
         )
     return bool(cur.rowcount)
+
+
+# ── 费曼复述原文（v10 / B-58）──────────────────────────────────────────────
+# 这一层只做一件事：**把他说的话原样收下来**。没有判分、没有掌握度、没有复习队列。
+RECALL_MAX_CHARS = 5000
+
+
+def save_recall(conn: sqlite3.Connection, submission_id: str, *, user_id: str,
+                text: str, at: str | None = None) -> dict:
+    """收下这份提交的复述原文，返回落库后的整行。
+
+    **为什么有这张表**：报告页的复述框以前写着"写完把这段文字发回给我"，可那段文字
+    只活在浏览器里——关掉就没了。而"满分但讲不出来"正是这套工具最该抓的状态
+    （2026-11-26 第 1 份试用记录：那份提交拿了 1.00，却分不清是他做对的还是 AI 写的）。
+
+    四条硬规矩：
+
+    1. **必须属于这个人**：提交不存在、或不是他的，都抛 `StoreError`。
+       不静默改别人的记录——复述是"这个人怎么想"的证据，串一条就全废了。
+    2. **不改写原文**：只去掉两侧空白，中间的换行与标点一字不动（分段是他的表达）。
+    3. **超长直接拒绝，不截断**：截断会让他以为自己讲完了，而库里只有前半段。
+    4. **一份提交一条**：改就是改这条（`created_at` 不动、抬 `updated_at`），不新增行——
+       重讲一遍不该让"讲了几次"变成可疑的计数。
+
+    **不判分、不改 P、不动复习项**：复述没有第二真相源，任何"你讲得 80 分"都是编的；
+    它的用途是给人看（助教/自己），不是喂模型。
+    """
+    if not isinstance(submission_id, str) or not submission_id:
+        raise StoreError("缺 submission_id")
+    if not isinstance(user_id, str) or not user_id:
+        raise StoreError("缺 user_id")
+    if not isinstance(text, str):
+        raise StoreError("复述内容必须是文本")
+    body = text.strip()
+    if not body:
+        raise StoreError("复述内容是空的")
+    if len(body) > RECALL_MAX_CHARS:
+        raise StoreError(f"复述内容 {len(body)} 字，超过上限 {RECALL_MAX_CHARS} 字")
+
+    owner = conn.execute(
+        "SELECT user_id FROM submissions WHERE submission_id = ?", (submission_id,)
+    ).fetchone()
+    if owner is None:
+        raise StoreError(f"没有这份提交：{submission_id}")
+    if owner["user_id"] != user_id:
+        raise StoreError("这份提交不属于这个用户")
+
+    stamp = at or _now()
+    with atomic(conn):
+        existing = conn.execute(
+            "SELECT created_at FROM recalls WHERE submission_id = ?", (submission_id,)
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO recalls (submission_id, user_id, text, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (submission_id, user_id, body, stamp, stamp),
+            )
+        else:
+            conn.execute(
+                "UPDATE recalls SET user_id = ?, text = ?, updated_at = ? "
+                "WHERE submission_id = ?",
+                (user_id, body, stamp, submission_id),
+            )
+    return load_recall(conn, submission_id) or {}
+
+
+def load_recall(conn: sqlite3.Connection, submission_id: str) -> dict | None:
+    """读这份提交的复述（没讲过返回 `None`，不是空串——"没讲"与"讲了空话"要分得开）。"""
+    row = conn.execute(
+        "SELECT submission_id, user_id, text, created_at, updated_at FROM recalls "
+        "WHERE submission_id = ?",
+        (submission_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {**dict(row), "chars": len(row["text"])}
+
+
+def list_recalls(conn: sqlite3.Connection, user_id: str, *, limit: int = 20) -> list[dict]:
+    """这个人讲过的复述，最近的在前。按 `updated_at` 排（他改过就以改的时间为准）。"""
+    rows = conn.execute(
+        "SELECT submission_id, user_id, text, created_at, updated_at FROM recalls "
+        "WHERE user_id = ? ORDER BY updated_at DESC, submission_id DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
+    return [{**dict(row), "chars": len(row["text"])} for row in rows]
 
 
 def save_schedule(conn: sqlite3.Connection, result, *, user_id: str | None = None) -> dict:

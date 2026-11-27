@@ -733,6 +733,34 @@ class _Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise SubmissionError("invalid_json", f"请求体不是合法 JSON：{exc}") from exc
 
+    def _read_form(self) -> dict[str, str]:
+        """读浏览器表单（`application/x-www-form-urlencoded`）。
+
+        为什么不用 JSON：报告页那条"不许有脚本"的约束还在——没有脚本，就只能靠
+        `<form method="post">` 原生的这一种编码。为此在这一层多一个解析器，
+        比为了省一个函数而在页面上引入一行 JS 划算：那行 JS 一进来，
+        "这页不上传任何东西"就再也说不清了。
+        """
+        raw_len = self.headers.get("Content-Length")
+        if raw_len is None:
+            raise SubmissionError("missing_body", "缺 Content-Length")
+        try:
+            length = int(raw_len)
+        except ValueError as exc:
+            raise SubmissionError("bad_form", "Content-Length 不是整数") from exc
+        if length <= 0:
+            raise SubmissionError("bad_form", "表单为空")
+        if length > MAX_BODY_BYTES:
+            raise SubmissionError(
+                "body_too_large", f"请求体超过 {MAX_BODY_BYTES} 字节", status=413
+            )
+        blob = self.rfile.read(length)
+        try:
+            pairs = parse_qs(blob.decode("utf-8"), keep_blank_values=True)
+        except UnicodeDecodeError as exc:
+            raise SubmissionError("bad_form", "表单不是 UTF-8", status=400) from exc
+        return {key: values[0] for key, values in pairs.items() if values}
+
     def _guard(self, fn) -> None:
         """统一错误出口。**只有这里能写响应**，避免一条请求写两次响应。"""
         try:
@@ -849,7 +877,7 @@ class _Handler(BaseHTTPRequestHandler):
         })
 
     def _session_post(self, path: str) -> bool:
-        """`/s/<token>/tools/<name>` 与 `/s/<token>/submit`。命中返回 True。"""
+        """`/s/<token>/tools/<name>`、`/s/<token>/submit`、`/s/<token>/report/recall`。"""
         parts = [p for p in path.split("/") if p]
         if len(parts) < 2 or parts[0] != "s":
             return False
@@ -857,6 +885,9 @@ class _Handler(BaseHTTPRequestHandler):
         token = parts[1]
         if len(parts) == 4 and parts[2] == "tools":
             self._session_tool(sessions, token, parts[3])
+            return True
+        if len(parts) == 4 and parts[2] == "report" and parts[3] == "recall":
+            self._save_session_recall(sessions, token)
             return True
         if len(parts) == 3 and parts[2] == "submit":
             report, created = self._grade_session(sessions, token)
@@ -871,6 +902,50 @@ class _Handler(BaseHTTPRequestHandler):
             })
             return True
         return False
+
+    def _save_session_recall(self, sessions, token: str) -> None:
+        """收下这一份提交的复述原文，然后 303 回到报告页。
+
+        **这一条不做判分**：复述没有第二真相源（理由写在 `store.save_recall` 里）。
+        这里只做三件：拿凭证认人 → 存原文 → 回报告页给一句回执。
+
+        边界三条，都是真实会发生的：
+
+        1. **没交卷就没有复述**：复述挂在**一份提交**上，没有提交时那一页本来也打不开。
+        2. **空提交不算错**：点两下、键盘误触都会产生空表单。回一句"没写内容"比甩一张
+           400 错误页合适——他不是攻击者，是手滑。
+        3. **超长报清楚字数**：不截断、不静默存半段（`store` 那边同样拒绝，这里是提前
+           给出人话版本）。字数上限只在这里读一次 `store.RECALL_MAX_CHARS`，不另抄一个数。
+        """
+        try:
+            session = sessions.get(token)
+        except hosting.HostError as exc:
+            raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
+        submission_id = session.get("submission_id")
+        if not submission_id:
+            raise SubmissionError("nothing_to_grade", "这个链接还没有交卷记录", status=409)
+
+        text = self._read_form().get("text", "")
+        if not text.strip():
+            self._redirect(f"/s/{token}/report?recall=empty")
+            return
+        if len(text.strip()) > store.RECALL_MAX_CHARS:
+            raise SubmissionError(
+                "recall_too_long",
+                f"复述 {len(text.strip())} 字，超过上限 {store.RECALL_MAX_CHARS} 字——"
+                "挑最要紧的那一处讲，不用写全",
+                status=413,
+            )
+
+        conn = self.ctx["conn_factory"]()
+        try:
+            store.save_recall(conn, str(submission_id), user_id=session["user_id"], text=text)
+        except store.StoreError as exc:
+            # 到这一步只剩"这份提交不存在/不是他的"两种可能。统一 404：403 等于承认存在。
+            raise SubmissionError("not_found", "没有这份报告", status=404) from exc
+        finally:
+            conn.close()
+        self._redirect(f"/s/{token}/report?recall=saved")
 
     def _session_tool(self, sessions, token: str, name: str) -> None:
         """代调一次工具，**状态码原样回放**。
@@ -927,7 +1002,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not sid:
                 # 还没交卷：说清楚，而不是给一个空报告或 404"没有这份"。
                 raise SubmissionError("nothing_to_grade", "这个链接还没有交卷记录", status=409)
-            self._send_report_html(str(sid), token=token)
+            self._send_report_html(
+                str(sid), token=token,
+                recall_flash=(parse_qs(urlsplit(self.path).query).get("recall") or [None])[0],
+            )
             return
 
         if len(parts) == 2:
@@ -1065,11 +1143,16 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _send_report_html(self, submission_id: str, *, token: str | None = None) -> None:
+    def _send_report_html(self, submission_id: str, *, token: str | None = None,
+                          recall_flash: str | None = None) -> None:
         """把报告渲染成一页 HTML 直接返回——浏览器打开就能看，不用先存文件再跑命令。
 
         `token` 由 `/s/<token>/report` 显式传进来：那条路径上 token 是路径的一段，
         查询串里没有，`_given_token()` 读不到它。
+
+        **只有走 token 这条路才给"交上去"的按钮**（B-58）：助教从 `/submissions/<id>`
+        抽查时，表单的 action 会是空的——那就退化成"只读"（预填已讲过的内容、不给提交），
+        而不是给一个点了会 404 的按钮。
         """
         if not submission_id:
             raise SubmissionError("bad_request", "缺 submission_id", status=400)
@@ -1078,6 +1161,7 @@ class _Handler(BaseHTTPRequestHandler):
         conn = self.ctx["conn_factory"]()
         try:
             report = store.effective_report(conn, submission_id)
+            recall = store.load_recall(conn, submission_id)
         except store.StoreError as exc:
             raise SubmissionError("not_found", str(exc), status=404) from exc
         finally:
@@ -1091,7 +1175,11 @@ class _Handler(BaseHTTPRequestHandler):
             except SubmissionError:
                 task = None          # 任务文件被换掉了，也照样把当时的报告给人看
         title = (task or {}).get("title") or ""
-        self._send_html(200, report_html.render_html(report, task_title=title, task=task))
+        self._send_html(200, report_html.render_html(
+            report, task_title=title, task=task,
+            recall_action=(f"/s/{token}/report/recall" if token else None),
+            recall=recall, recall_flash=recall_flash,
+        ))
 
     def _send_reappraisals(self, submission_id: str) -> None:
         """重评链（按 revision 升序）。
