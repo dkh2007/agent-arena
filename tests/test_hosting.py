@@ -244,3 +244,106 @@ def test_landing_page_escapes_the_scenario(env):
     page = hosting.render_landing(session, task, "http://x")
     assert "<script>alert(1)</script>" not in page
     assert "&lt;script&gt;" in page
+
+
+# ── 6. 办一场活动：批量发链接、事后出名单 ───────────────────────────────────
+
+def test_mint_creates_links_without_building_services(env):
+    """一次发 30 条链接时不该建 30 个 mock 实例——那是"做题那一刻"才需要的东西。
+
+    判据不用看内存，看 `_services`：mint 之后仍然是空的，第一次调用才补建。
+    """
+    sessions, _submit, _registry = env
+    rows = sessions.mint(TASK_ID, 5)
+    assert len(rows) == 5
+    assert len({r["token"] for r in rows}) == 5
+    assert sessions._services == {}, "mint 顺手建了实例，白占内存"
+    assert all(sessions.get(r["token"])["used"] == 0 for r in rows)
+
+
+def test_mint_refuses_an_unknown_task_and_creates_nothing(env):
+    """题不存在时一个都不能建：半批会话是最难处理的残留。"""
+    sessions, _submit, _registry = env
+    with pytest.raises(hosting.HostError) as exc:
+        sessions.mint("no-such-task", 3)
+    assert exc.value.status == 404
+    assert sessions.mint(TASK_ID, 1), "库还活着"
+    conn = sessions._conn_factory()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_mint_rejects_a_silly_count(env):
+    sessions, _submit, _registry = env
+    for bad in (0, -1, hosting.MAX_MINT + 1):
+        with pytest.raises(hosting.HostError) as exc:
+            sessions.mint(TASK_ID, bad)
+        assert exc.value.status == 400
+
+
+def test_roster_shows_progress_and_never_leaks_full_tokens(env):
+    """活动结束给的那张表：编号、调了几次、交没交、几分。
+
+    只给 token 前 12 位——学生报编号就够了；完整 token 是凭证，不该跟着成绩到处传。
+    """
+    sessions, submit_fn, _registry = env
+    a, b = sessions.mint(TASK_ID, 2)
+    sessions.call(a["token"], "fetch_orders", {"offset": 0, "limit": 10})
+    sessions.call(a["token"], "write_report",
+                  {"path": "/workspace/report.json", "content": '{"valid_count": 9}'})
+    sessions.grade(a["token"], submit_fn)
+
+    conn = sessions._conn_factory()
+    try:
+        rows = hosting.roster(conn)
+    finally:
+        conn.close()
+    assert len(rows) == 2
+    by_code = {row["code"]: row for row in rows}
+    assert set(by_code) == {a["token"][:12], b["token"][:12]}
+    done = by_code[a["token"][:12]]
+    assert done["calls"] == 2 and done["submitted"] is True
+    assert done["ratio"] is not None and done["ratio"] < 1.0
+    idle = by_code[b["token"][:12]]
+    assert idle["calls"] == 0 and idle["submitted"] is False and idle["ratio"] is None
+    assert all(len(row["code"]) == 12 for row in rows)
+    assert all(a["token"] not in row["code"] for row in rows)
+
+
+def test_mint_cli_writes_a_roster_and_a_gradeable_link(tmp_path, capsys):
+    """命令行这一层也要能跑：`mint` 写出的链接，服务端认。"""
+    db = tmp_path / "act.db"
+    out = tmp_path / "名单.csv"
+    code = hosting.main(["mint", "--db", str(db), "--tasks", str(ROOT / "tasks"),
+                         "--task", TASK_ID, "--count", "2",
+                         "--base-url", "http://10.0.0.5:8080", "--out", str(out)])
+    assert code == 0
+    text = out.read_text(encoding="utf-8-sig")
+    assert "http://10.0.0.5:8080/s/" in text
+    printed = capsys.readouterr().out
+    assert "就是凭证" in printed
+
+    assert hosting.main(["roster", "--db", str(db), "--tasks", str(ROOT / "tasks")]) == 0
+    assert "共 2 个会话，0 份已交卷" in capsys.readouterr().out
+
+
+def test_creating_and_calling_does_not_deadlock(env):
+    """回归锁：`task()` 自己也要同一把锁，而 `threading.Lock` 不可重入。
+
+    真踩过——`create` 里在锁内解析任务，整个测试文件挂住 7 分钟，报错信息是"没有"。
+    所以这里用超时兜住：真死锁时这条测试失败，而不是让 CI 卡住。
+    """
+    import threading
+
+    sessions, _submit, _registry = env
+
+    def work():
+        token = sessions.create(TASK_ID)["token"]
+        sessions.call(token, "fetch_orders", {"offset": 0, "limit": 5})
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(timeout=20)
+    assert not thread.is_alive(), "create/call 死锁了"

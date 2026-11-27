@@ -333,10 +333,24 @@ def render_html(report: dict, *, task_title: str = "", task_id: str = "",
         parts.append(_recall_block(report, task))
     parts.append(
         '<p class="foot">这不是成绩单：它只说明这一次提交里哪些要求没满足、下一步可以先改什么。'
-        "页面不联网，也不会上传任何东西。</p>"
+        "页面不联网，也不会上传任何东西。"
+        f"{_scoring_note(report)}</p>"
     )
     parts.append("</main></body></html>")
     return "\n".join(parts)
+
+
+def _scoring_note(report: dict) -> str:
+    """页脚带上判分规则版本。
+
+    学生在两种时刻需要它：一是**同一份提交在规则改前改后拿到两个分数**，他要能看出
+    这不是他退步了；二是老师/助教核对时要知道"这条分数是按哪一版算的"。
+    老报告没有这个字段就什么都不显示——不写"未知版本"这种占位话。
+    """
+    version = str(report.get("scoring_version") or "").strip()
+    if not version:
+        return ""
+    return f" 这一份按 {_esc(version)} 版判分规则计算。"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -2407,7 +2407,7 @@
 - **要解决的问题**：`git clone` 对非技术同学不是一个动作，是三个（装 git、选目录、cd 对）。
   试用本来就是一推就走的场景，任何一步都能把它变成"算了"。
 - **产出**：`python scripts/make_trial_pack.py --verify` →
-  `dist/arena-trial-v1.zip`（43 个文件 / 311 KB；sha256 由打包命令当场输出，内容一改就变，
+  `dist/arena-trial-v1.zip`（47 个文件 / 340 KB；sha256 由打包命令当场输出，内容一改就变，
   不在此固定）。解压后双击
   `start.bat`（Windows）或 `sh start.sh`（macOS/Linux），第一次自动装 `pyyaml` + `jsonschema`。
 - **裁掉了什么（这条必须有，否则等于把答案一起发出去）**：任务 YAML 里的
@@ -2550,7 +2550,45 @@
     结果不进成绩时这可以接受；**一旦进成绩或排名，这条必须收成"凭 token 取"**。
   - 每人限的是**调用次数**（默认 120），不是请求速率；几十人的规模靠多线程 + WAL 就够。
 - **没做（真缺口，已登记）**：判分版本号还没落库（外部回件第 7 条）。任务 YAML 的
-  `task_git_hash` 记了题目版本，但**判分规则**改了不会留下痕迹。
+  `task_git_hash` 记了题目版本，但**判分规则**改了不会留下痕迹。→ 见 B-52（已落地）。
+
+### [x] B-52 判分规则版本：同一份 trace 改前后两个分数，要能解释（2026-11-27 落地）
+
+- **为什么必须有**：判分规则还在调（权重、门禁口径、错误模式映射）。规则一改，
+  同一份 trace 会判出不同的分数，而库里两份记录长得一模一样——**事后无法解释**，
+  也没法回答"哪些提交是按旧规则判的、要不要重评"。
+- **落地**：`diagnosis_report.SCORING_VERSION`（`2026-11-27.1`）写进报告的 `scoring_version`，
+  `store` v9 加 `submissions.scoring_version` 一列。**两个都要**：
+  - 报告里那份是**快照**（这份报告自己带着当时的版本）；
+  - 库里那列是**查询入口**（`WHERE scoring_version < ?` 才叫得动），从 JSON 里逐行解析不算。
+- **历史行留 NULL，不补写**：给旧记录编一个版本号等于伪造审计信息——它本来就不是按这版算的。
+  判据 `test_scoring_version_is_recorded_and_absent_history_stays_null`。
+- **页面**：报告页脚加一句"这一份按 2026-11-27.1 版判分规则计算"。老报告没这个字段就
+  **什么都不写**——不写"未知版本"这种占位话，那只会让人来问。
+- **与 `task_git_hash` 的分工**：题目版本与规则版本是两件事。题目没动、规则动了时，
+  只有这一个字段能看出来。
+- **不升 `report_version`**：v2 的破坏性变更指的是"怎么读这份报告"（gate/credit 两层）；
+  加一个审计字段不改变读法。
+
+### [x] B-53 办一场活动的运维入口：批量发链接、事后出名单（2026-11-27 落地）
+
+- **为什么现在做**：原来开会话要手工 `curl` 一次一条。**50 个人就是 50 次 curl**，
+  这比任何技术缺口都更早挡住"真办一场活动"。
+- **落地**：`scripts/host.py mint|roster`（实现在 `hosting.mint` / `hosting.roster`）。
+  ```bash
+  python scripts/host.py mint --db arena.db --task dbg-001-order-report --count 30 \
+                              --base-url http://10.1.2.3:8080 --out 名单.csv
+  python scripts/host.py roster --db arena.db --out 结果.csv
+  ```
+- **`mint` 不循环调 `create`**：`create` 会顺手建 mock 实例（每个都深拷贝一份夹具），
+  而批量发链接时没人马上做题。`mint` 只写库，实例在第一次调用时补建。
+  判据：`mint` 之后 `_services` 仍为空。
+- **名单里只放 token 前 12 位**：学生报编号就够了；完整 token 是凭证，不该跟着成绩到处传。
+  完整链接只在 `mint` 那份 CSV 里，发完就该删。
+- **上限 500**：防手滑（`--count 3000`），不是防坏人——开链接本来就要管理口令。
+- **踩到的坑（已锁）**：`create` 在持锁时解析任务，而 `task()` 也要同一把锁，
+  `threading.Lock` 不可重入 → **死锁**，表现为"测试文件挂住 7 分钟、没有任何报错"。
+  判据 `test_creating_and_calling_does_not_deadlock`（超时兜住，不让 CI 卡死）。
 
 
 

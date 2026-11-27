@@ -307,3 +307,23 @@ def test_a_broken_recall_block_also_says_so(monkeypatch):
                                    task=_task()).split("</style>", 1)[-1]
     assert "没生成出来" in body and "词表缺一行" in body
     assert "接下来练什么" in body, "另一块不受影响"
+
+
+def test_page_states_which_scoring_rules_produced_the_score():
+    """同一份提交在规则改前改后拿到两个分数时，学习者要能看出不是自己退步了。"""
+    from arena.trace_pipeline import run_fixture
+
+    body = report_html.render_html(run_fixture("raw-perfect")).split("</style>", 1)[-1]
+    assert "版判分规则" in body
+    assert "2026-11-27" in body, "版本号没带到页面上"
+
+
+def test_old_report_without_a_version_says_nothing_instead_of_unknown():
+    """老报告没有这个字段：不写"未知版本"，也不写"v0"——那种占位话只会让人来问。"""
+    from arena.trace_pipeline import run_fixture
+
+    report = dict(run_fixture("raw-perfect"))
+    report.pop("scoring_version", None)
+    body = report_html.render_html(report).split("</style>", 1)[-1]
+    assert "版判分规则" not in body
+    assert "未知" not in body

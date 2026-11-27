@@ -174,9 +174,10 @@ def test_criterion_migrate_from_real_v1_keeps_data_and_backfills(tmp_path):
     assert result["added_tables"] == ["mastery_snapshots", "arbitration_queue",
                                       "submissions.artifacts", "reappraisals",
                                       "unrecoverable_marks", "appeals",
-                                      "sessions", "session_calls"]
+                                      "sessions", "session_calls",
+                                      "submissions.scoring_version"]
     assert result["backfilled"] == 3
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 8
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 9
     assert store.count_submissions(conn) == before
     assert store.load_report(conn, "old-1") == report          # 旧报告一个字节没动
     # 旧提交的产物补不回来 —— 迁移只加列，不给历史数据编造产物。

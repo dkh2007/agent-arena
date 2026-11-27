@@ -63,7 +63,7 @@ VOCAB_PATH = ROOT / "docs" / "error-patterns-v0.yaml"
 # 把标记做成"从名单里消失"是这一层唯一危险的误读——那会变成静默忘掉一个人。
 # 标记带撤销字段（`revoked_at` / `revoked_reason`）而不是靠删行：
 # 将来若产物被补回来，要能说清"谁在什么时候说过它补不回来"。
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # 迁移步骤表：按版本号逐级升。写成数据而不是一串 if，是为了加 v4 时只加一行，
 # 以及让"从这个版本升到那个版本要跑哪几步"能被测试逐一覆盖。
@@ -352,6 +352,21 @@ def _ensure_artifacts_column(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE submissions ADD COLUMN artifacts TEXT")
 
 
+def _ensure_scoring_version_column(conn: sqlite3.Connection) -> None:
+    """v9：给 `submissions` 补 `scoring_version`（B-52：判分规则版本）。
+
+    为什么是列而不是"从 diagnosis 里读"：`diagnosis` 是那份报告的快照，自己写着当时的
+    版本号；但**查询**（"哪些提交是按旧规则判的"）不能靠逐行解析 JSON。写成一列才能
+    `WHERE scoring_version < ?`。
+
+    历史行是 NULL，不补写——给旧记录编一个版本号，就是伪造审计信息。
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(submissions)")}
+    if "scoring_version" in columns:
+        return
+    conn.execute("ALTER TABLE submissions ADD COLUMN scoring_version TEXT")
+
+
 # 版本号 → 该版本要补的 DDL / 新建的表名。`migrate()` 只读这张表，不再写 if 分支。
 # 值可以是 SQL 文本，也可以是"接收连接的函数"——后者用于没法写成幂等 DDL 的步骤
 # （v4 的加列：SQLite 缺 `ADD COLUMN IF NOT EXISTS`）。两种形态都只跑一次，由版本号保证。
@@ -366,6 +381,7 @@ MIGRATION_STEPS: dict[int, tuple[Any, tuple[str, ...]]] = {
     6: (SCHEMA_SQL_V6, ("unrecoverable_marks",)),
     7: (SCHEMA_SQL_V7, ("appeals",)),
     8: (SCHEMA_SQL_V8, ("sessions", "session_calls")),
+    9: (_ensure_scoring_version_column, ("submissions.scoring_version",)),
 }
 
 
@@ -914,7 +930,8 @@ def save_submission(
         conn.execute(
             "INSERT INTO submissions (submission_id, user_id, task_id, task_git_hash, agent_endpoint_url, "
             "trace, artifacts, assert_score, judge_scores, judge_agreement, detected_patterns, diagnosis, "
-            "fsrs_rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "fsrs_rating, created_at, scoring_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 submission_id,
                 user_id,
@@ -930,6 +947,9 @@ def save_submission(
                 _dump(report),
                 fsrs_rating,
                 stamp,
+                # 报告里没写版本就存 NULL：那说明它来自一个还没有这个概念的版本，
+                # 补一个当前值等于伪造审计信息。
+                report.get("scoring_version"),
             ),
         )
         if refresh_mastery:

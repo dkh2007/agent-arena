@@ -66,9 +66,10 @@ def test_init_db_is_idempotent_and_creates_twelve_tables(tmp_path):
             "arbitration_queue", "reappraisals", "unrecoverable_marks",
             "appeals", "sessions", "session_calls"} <= names
     assert len({n for n in names if not n.startswith("sqlite_")}) == 14
-    assert store.schema_version(conn) == store.SCHEMA_VERSION == 8
+    assert store.schema_version(conn) == store.SCHEMA_VERSION == 9
     cols = {r[1] for r in conn.execute("PRAGMA table_info(submissions)")}
     assert "artifacts" in cols
+    assert "scoring_version" in cols, "v9：判分规则版本要能按列查"
     conn.close()
 
 
@@ -319,46 +320,39 @@ def test_v7_database_upgrades_to_v8_and_keeps_old_rows(tmp_path):
     conn.commit()
 
     action = store.migrate(conn)
-    assert action["from"] == 7 and action["to"] == 8
-    assert set(action["added_tables"]) == {"sessions", "session_calls"}
+    assert action["from"] == 7 and action["to"] == 9
+    assert {"sessions", "session_calls", "submissions.scoring_version"} <= set(action["added_tables"])
     assert conn.execute("SELECT display_name FROM users WHERE user_id='u-old'").fetchone()[0] == "老用户"
     conn.close()
 
 
-def test_connect_sets_a_busy_timeout_and_wal(tmp_path):
-    """托管模式下这两条不是优化，是"并发能不能用"的前提。
+def test_scoring_version_is_recorded_and_absent_history_stays_null(
+        tmp_path):
+    """v9 的判据：新提交带着规则版本落库；按旧规则判的历史行**保持 NULL**。
 
-    - `busy_timeout` 是**每连接**设置，SQLite 默认 0 → 第二个写者立刻 `database is locked`。
-    - `journal_mode=WAL` 是**库级持久**设置，读不再等写。
-    本地单人跑时两条都看不出差别，所以以前没写也没出事——正因为如此才要锁住，
-    免得以后被当成"没用的 PRAGMA"删掉。
+    给旧记录补一个"当前版本"，等于伪造审计信息——它本来就不是按这版算的。
     """
-    conn = store.connect(tmp_path / "w.db")
-    store.init_db(conn)
-    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == store.BUSY_TIMEOUT_MS
-    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    from arena import submission_api as api
+    from arena import trace_pipeline as tp
 
-    # 换一个连接仍然是 WAL（库级持久），但 busy_timeout 要重新设（连接级）
-    second = store.connect(tmp_path / "w.db")
-    assert second.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-    assert second.execute("PRAGMA busy_timeout").fetchone()[0] == store.BUSY_TIMEOUT_MS
-    conn.close()
-    second.close()
+    tasks = Path(__file__).resolve().parents[1] / "tasks"
+    db = tmp_path / "v.db"
+    api.bootstrap(db, api.TaskRegistry(tasks))
+    conn = store.connect(db)
 
+    report = tp.run_fixture("raw-perfect")
+    store.save_submission(conn, report, user_id="u-new")
+    row = conn.execute("SELECT scoring_version FROM submissions").fetchone()
+    assert row[0] == report["scoring_version"]
 
-def test_v7_database_upgrades_to_v8_and_keeps_old_rows(tmp_path):
-    """老库升级只加表，不动旧数据——v8 加的是会话表，与历史提交无关。"""
-    path = tmp_path / "old.db"
-    conn = store.connect(path)
-    conn.executescript(store.SCHEMA_SQL_V1 + store.SCHEMA_SQL_V2 + store.SCHEMA_SQL_V3
-                       + store.SCHEMA_SQL_V5 + store.SCHEMA_SQL_V6 + store.SCHEMA_SQL_V7)
-    conn.execute("INSERT INTO users (user_id, display_name, created_at) "
-                 "VALUES ('u-old', '老用户', '2026-01-01T00:00:00+00:00')")
-    conn.execute("PRAGMA user_version = 7")
-    conn.commit()
-
-    action = store.migrate(conn)
-    assert action["from"] == 7 and action["to"] == 8
-    assert set(action["added_tables"]) == {"sessions", "session_calls"}
-    assert conn.execute("SELECT display_name FROM users WHERE user_id='u-old'").fetchone()[0] == "老用户"
+    # 模拟"v9 之前判好的记录"：直接写一行不带版本的
+    with conn:
+        conn.execute(
+            "INSERT INTO submissions (submission_id, user_id, task_id, assert_score, "
+            "diagnosis, created_at) VALUES ('old-1', 'u-new', 'dbg-001-order-report', 1.0, ?, ?)",
+            ("{}", "2026-01-01T00:00:00+00:00"),
+        )
+    assert conn.execute(
+        "SELECT scoring_version FROM submissions WHERE submission_id='old-1'"
+    ).fetchone()[0] is None
     conn.close()

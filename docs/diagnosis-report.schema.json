@@ -7,6 +7,7 @@
   "additionalProperties": false,
   "required": [
     "report_version",
+    "scoring_version",
     "submission",
     "trace_audit",
     "score",
@@ -19,6 +20,11 @@
   ],
   "properties": {
     "report_version": { "const": "v2" },
+    "scoring_version": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}\\.[0-9]+$",
+      "description": "判分规则版本。题目版本在 submission.task_git_hash，两者都记；规则改了而题目没改时，只有这个字段能看出来。"
+    },
     "submission": {
       "type": "object",
       "additionalProperties": false,

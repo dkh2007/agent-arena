@@ -37,6 +37,11 @@ STATES = ("pass", "fail", "blocked", "unscored")
 GATE, CREDIT = "gate", "credit"
 TRACE_TYPE_PREFIX = "trace_"
 REPORT_VERSION = "v2"
+# 判分规则版本（B-52）。**任何影响分数或断言状态的东西改了都要升它**：rubric 权重、
+# 门禁口径、状态判定、错误模式映射、分母策略。不升的后果不是"少个字段"，是
+# 「同一份 trace 在改前改后判出两个分数，而库里两份记录长得一模一样」，事后无法解释。
+# 与 `task_git_hash`（题目版本）是两件事：题目没动、规则动了，也要能看出来。
+SCORING_VERSION = "2026-11-27.1"
 # 判据指纹的算法版本（B-04e）。换定义必须升这个串——否则"改了归一化规则"和
 # "改了判据"在库里长得一模一样，历史指纹会集体失真且无从发现。
 FINGERPRINT_VERSION = "rubric-fp-v1"
@@ -976,6 +981,8 @@ def build_report(task: dict, raw: dict, vocab: set[str] | None = None,
 
     report = {
         "report_version": REPORT_VERSION,
+        # 审计字段：这份分数是按哪一套判分规则算的。历史提交据此回答"能不能按新规则重评"。
+        "scoring_version": SCORING_VERSION,
         "submission": raw["submission"],
         "trace_audit": trace_audit,
         "score": score_obj,
