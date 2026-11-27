@@ -2687,6 +2687,28 @@
 - **甲方案已定（2026-11-27 人拍板）**：**全对不排复习**，`c >= 1.0` 记 `passed`、不进队列，维持现状。
   想改这条的人先看 B-55 口径 3 与 `test_a_perfect_submission_schedules_cards_but_no_review_items`。
 
+### [x] B-57 报告凭 id 可看 → 收成凭 token（2026-11-27 落地）
+
+- **是什么**：B-50 起 `GET /submissions/{id}/report.html` 与 `GET /submissions/{id}` 只要知道 id
+  就能看——而 id 会随名单 CSV、报告页 URL、复查脚本到处走。一场活动结束后，一条链接的持有者
+  能看全班的逐条断言、期望金额与错误模式。
+- **触发条件早就写明**（B-51 已知边界）：「一旦进成绩或排名，必须收成凭 token」。本轮提前做，
+  因为下一步就是要拿真人试跑。
+- **落地**：
+  1. 新增 `/s/{token}/report`（HTML）——**报告的正规入口**。交卷后的 303、学生页的「打开我的报告」、
+     交卷 JSON 的 `report_url` 全部改指这里。
+  2. `/submissions/{id}`、`?view=original`、`/reappraisals`、`/appeals`、`/report.html` 全部要凭证：
+     `?token=` / `Authorization: Bearer` / `X-Admin-Token`（助教按 id 抽查）。
+  3. **不匹配一律 404，不是 403**：403 等于告诉对方"这个 id 存在，只是你没权限"。
+  4. 申诉的 `user_id` 改用**凭证对应的人**，不再信任 payload：以前知道别人的编号就能替他申诉。
+- **判据**（`tests/test_submission_api.py`）：
+  `test_report_by_id_needs_the_session_token`（裸读 404 / 自己的 token 通 / 别人的 token 404）、
+  `test_report_by_session_token_is_the_front_door`、`test_report_before_submitting_says_so`（409）。
+- **代价（要认）**：丢了链接就找不回报告，必须找老师从名单里查。这正是"token 就是凭证"的语义，
+  与不做登录是一致的取舍。
+- **测试夹具的调整**：`live` 默认带管理口令（维护者视角），另给 `anonymous` 走裸请求；
+  原来那条"没配口令时开不了会话"改成自己起一个无口令服务——拿带口令的夹具测它等于测不到。
+
 
 
 ---

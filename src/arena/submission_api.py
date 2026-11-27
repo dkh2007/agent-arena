@@ -19,11 +19,22 @@
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
+| POST | `/sessions` | 开一条做题链接（要 `X-Admin-Token`） |
+| GET | `/s/{token}` | 学习者那一页（题面 / 交卷入口 / 复习项 / 和上次比） |
+| POST | `/s/{token}/tools/{name}` | 代调一次工具，状态码原样回放 |
+| GET·POST | `/s/{token}/submit` | 交卷；浏览器 GET 走 303 到 `/s/{token}/report` |
+| GET | `/s/{token}/report` | **报告的正规入口**（token 就是凭证） |
 | POST | `/submissions` | 提交一份结果，返回诊断报告（DTO v2） |
-| GET | `/submissions/{id}` | 读回**当前生效**的报告（被重评过就是最新那次） |
+| GET | `/submissions/{id}` | 读回**当前生效**的报告（**要凭证**，见下） |
 | GET | `/submissions/{id}?view=original` | 读回**当时按原判据判的**那份，逐字节同落库时 |
 | GET | `/submissions/{id}/reappraisals` | 重评链（空数组 = 从没重评过；提交不存在则是 404） |
 | GET | `/healthz` | 存活探针 + 已注册任务清单 |
+
+**读报告要凭证（B-57）**：`/submissions/{id}` 系列接受 `?token=<会话编号>` 或
+`Authorization: Bearer <会话编号>`，也接受 `X-Admin-Token`（助教按 id 抽查）。
+不匹配一律 **404**——不是 403：403 等于承认"这个 id 存在，只是你没权限"，
+那本身就是一次探测成功。收口前这些东西只要知道 id 就能看，而 id 会随名单 CSV、
+报告页 URL、复查脚本到处走。
 
 **为什么默认给生效版**：这个端点的使用者是学习者与前端，"我现在得多少分"是它们要的答案。
 库里已经有了重评结论、P 与复习排期都按新结论算了，接口还回旧的那份，就是"改了数据层、
@@ -97,7 +108,8 @@ HTTP 端点**不跑 judge**：它花钱、依赖网络，而且模型不可用�
 |---|---|---|
 | `GET /tasks` | 前端选题页 | **白名单**：只有题面/工具签名/难度，`rubric_*`、`expected`、`fault_injection`、`tools[].mock` 一律不发 |
 | `GET /tasks/{id}` | 做题的人 | 同上，单道；未知 id → 404 `unknown_task` |
-| `GET /submissions/{id}/report.html` | 学习者本人 | 直接返回可读的 HTML（复用 `report_html`），浏览器打开即可，不用先存文件 |
+| `GET /s/{token}/report` | 学习者本人 | 直接返回可读的 HTML（复用 `report_html`），浏览器打开即可 |
+| `GET /submissions/{id}/report.html?token=` | 学习者本人 / 助教 | 同上，但要凭证（见上节） |
 
 这三条都是纯读：不落库、不改任何判定。`/tasks` 用**白名单**而不是黑名单——
 任务 YAML 里有答案，黑名单漏一个字段就是一次泄露。
@@ -753,6 +765,57 @@ class _Handler(BaseHTTPRequestHandler):
         given = str(self.headers.get("X-Admin-Token") or "")
         return bool(expected) and secrets.compare_digest(expected, given)
 
+    def _given_token(self) -> str:
+        """请求方手上的会话编号：`?token=` 或 `Authorization: Bearer`，两种都收。
+
+        为什么查询串也要收：报告链接是浏览器里**直接点开**的，没有地方塞 header。
+        为什么 header 也要收：脚本（参考 Agent、助教的对账行程）用 header 更自然，
+        而且 header 不会出现在浏览器历史、代理日志和"复制链接发给别人"里。
+        """
+        query_token = parse_qs(self.path.partition("?")[2], keep_blank_values=True).get("token")
+        if query_token and query_token[0]:
+            return query_token[0]
+        header = str(self.headers.get("Authorization") or "")
+        if header.lower().startswith("bearer "):
+            return header[len("bearer "):].strip()
+        return ""
+
+    def _session_user(self, token: str) -> str | None:
+        """会话编号 → 它绑的那个人。查不到返回 `None`（不猜、不给默认值）。"""
+        if not token:
+            return None
+        conn = self.ctx["conn_factory"]()
+        try:
+            row = conn.execute("SELECT user_id FROM sessions WHERE token = ?", (token,)).fetchone()
+            return str(row["user_id"]) if row else None
+        finally:
+            conn.close()
+
+    def _report_token_ok(self, submission_id: str, token: str | None = None) -> bool:
+        """读这份报告要不要凭证——判据只有一条：**你手上是不是这条会话的链接**。
+
+        收口前：`/submissions/<id>/report.html` 只要知道 id 就能看，而 id 会随
+        `roster` 的 CSV、报告页 URL、复查脚本到处传。一场活动结束后，一条链接的持有者
+        能看全班的报告。
+
+        返回 False 时调用方一律回 **404**，不回 403：403 等于告诉对方"这个 id 存在，
+        只是你没权限"，那本身就是一次探测成功。
+        """
+        if self._admin_ok():
+            return True
+        given = token or self._given_token()
+        if not given:
+            return False
+        conn = self.ctx["conn_factory"]()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sessions WHERE submission_id = ? AND token = ?",
+                (submission_id, given),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
     def _base_url(self) -> str:
         """给页面拼绝对地址。用 `Host` 头——它由请求方给，但只影响他自己看到的链接，
         不会改变服务行为；反过来写死 `127.0.0.1` 则会让托管后的页面把地址写错。"""
@@ -801,7 +864,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(201 if created else 200, {
                 "submission_id": sid,
                 "reused": not created,
-                "report_url": f"/submissions/{sid}/report.html",
+                # 报告入口给**这条路**：它凭 token，谁拿着这条链接谁就能看，
+                # 而 `/submissions/<id>/report.html` 现在也要 token 才能读。
+                "report_url": f"/s/{token}/report",
                 "report": report,
             })
             return True
@@ -827,10 +892,13 @@ class _Handler(BaseHTTPRequestHandler):
             raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
 
     def _session_get(self, path: str) -> None:
-        """`/s/<token>` 是做题那一页；`/s/<token>/submit` 是交卷并跳到报告。
+        """`/s/<token>` 是做题那一页；`/s/<token>/submit` 交卷；`/s/<token>/report` 看报告。
 
         交卷用 GET 是刻意的：这一页不许有脚本（与报告页同一条约束），
         没有脚本就没法用按钮发 POST。重复点由 `sessions.grade` 的"钉住 submission_id"兜住。
+
+        `/s/<token>/report` 是**报告的正规入口**：token 就是凭证，
+        所以"知道 id 就能看"这条旧路没有存在的必要（旧路保留但要求凭证）。
         """
         sessions = self._sessions()
         parts = [p for p in path.split("/") if p]
@@ -841,6 +909,14 @@ class _Handler(BaseHTTPRequestHandler):
             session = sessions.get(token)
         except hosting.HostError as exc:
             raise SubmissionError(exc.code, exc.message, status=exc.status) from exc
+
+        if len(parts) == 3 and parts[2] == "report":
+            sid = session.get("submission_id")
+            if not sid:
+                # 还没交卷：说清楚，而不是给一个空报告或 404"没有这份"。
+                raise SubmissionError("nothing_to_grade", "这个链接还没有交卷记录", status=409)
+            self._send_report_html(str(sid), token=token)
+            return
 
         if len(parts) == 2:
             task = sessions.task(session["task_id"])
@@ -858,7 +934,7 @@ class _Handler(BaseHTTPRequestHandler):
             page = hosting.render_landing(
                 session, public_task(task, self.ctx["registry"].items()), self._base_url(),
                 review=review,
-                report_url=(f"/submissions/{submitted}/report.html" if submitted else None),
+                report_url=(f"/s/{token}/report" if submitted else None),
                 since_last=since_last,
             )
             self._send_html(200, page)
@@ -873,7 +949,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_html(409, _empty_session_page(token, exc.message))
                 return
             sid = report["submission"]["submission_id"]
-            self._redirect(f"/submissions/{sid}/report.html")
+            self._redirect(f"/s/{token}/report")
             return
 
         raise SubmissionError("not_found", f"没有这个路径：{path}", status=404)
@@ -955,9 +1031,14 @@ class _Handler(BaseHTTPRequestHandler):
         self._guard(run)
 
     def _send_report(self, submission_id: str, view: str) -> None:
-        """`view=effective` 给生效报告，`view=original` 给当时那份。"""
+        """`view=effective` 给生效报告，`view=original` 给当时那份。
+
+        **要凭证**：报告里有逐条断言与期望值，凭 id 就能读等于全班成绩公开。
+        """
         if not submission_id:
             raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        if not self._report_token_ok(submission_id):
+            raise SubmissionError("not_found", "没有这份报告", status=404)
         conn = self.ctx["conn_factory"]()
         try:
             report = (store.load_report(conn, submission_id) if view == "original"
@@ -968,10 +1049,16 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _send_report_html(self, submission_id: str) -> None:
-        """把报告渲染成一页 HTML 直接返回——浏览器打开就能看，不用先存文件再跑命令。"""
+    def _send_report_html(self, submission_id: str, *, token: str | None = None) -> None:
+        """把报告渲染成一页 HTML 直接返回——浏览器打开就能看，不用先存文件再跑命令。
+
+        `token` 由 `/s/<token>/report` 显式传进来：那条路径上 token 是路径的一段，
+        查询串里没有，`_given_token()` 读不到它。
+        """
         if not submission_id:
             raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        if not self._report_token_ok(submission_id, token):
+            raise SubmissionError("not_found", "没有这份报告", status=404)
         conn = self.ctx["conn_factory"]()
         try:
             report = store.effective_report(conn, submission_id)
@@ -998,6 +1085,8 @@ class _Handler(BaseHTTPRequestHandler):
         """
         if not submission_id:
             raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        if not self._report_token_ok(submission_id):
+            raise SubmissionError("not_found", "没有这份记录", status=404)
         conn = self.ctx["conn_factory"]()
         try:
             store.load_report(conn, submission_id)          # 兼做存在性检查
@@ -1025,9 +1114,18 @@ class _Handler(BaseHTTPRequestHandler):
         """
         if not submission_id:
             raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        if not self._report_token_ok(submission_id):
+            raise SubmissionError("not_found", "没有这份记录", status=404)
         user_id = _str_field(payload, "user_id", max_len=100)
         reason = _str_field(payload, "reason_text", max_len=2000)
         target = _str_field(payload, "target_assertion", required=False, max_len=100)
+        if not self._admin_ok():
+            # 凭证就是身份：手上是这条链接，才谈得上"我的判分"。
+            # 以前只看 payload 里的 user_id，知道别人的编号就能替他申诉。
+            owner = self._session_user(self._given_token())
+            if user_id and owner and user_id != owner:
+                raise SubmissionError("invalid_appeal", "只能替自己申诉", status=400)
+            user_id = user_id or owner or ""
         conn = self.ctx["conn_factory"]()
         try:
             return store.create_appeal(conn, submission_id, user_id=user_id or "",
@@ -1052,6 +1150,8 @@ class _Handler(BaseHTTPRequestHandler):
         """
         if not submission_id:
             raise SubmissionError("bad_request", "缺 submission_id", status=400)
+        if not self._report_token_ok(submission_id):
+            raise SubmissionError("not_found", "没有这份记录", status=404)
         conn = self.ctx["conn_factory"]()
         try:
             store.load_report(conn, submission_id)          # 兼做存在性检查

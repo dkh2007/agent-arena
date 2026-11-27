@@ -42,17 +42,32 @@ TASK_PATH = ROOT / "tasks" / "dbg-001-order-report.yaml"
 
 @pytest.fixture()
 def live(tmp_path):
-    """起一个真服务，返回可调用的句柄。"""
+    """起一个真服务，返回可调用的句柄。
+
+    **`call` 默认带管理口令**：这个夹具是"维护者视角"——大部分用例关心的是报告内容与
+    协议，不是怎么证明身份。要测"没有凭证"的情形用 `anonymous`（同一条路由、不带 header）。
+    这不是给鉴权开后门：`anonymous` 与线上学生的请求一模一样，鉴权的判据在那条路线上测。
+    """
     db = tmp_path / "arena.db"
-    srv = api.make_server(db, port=0, quiet=True)
+    srv = api.make_server(db, port=0, quiet=True, admin_token=ADMIN)
     host, port = srv.server_address[:2]
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
 
-    def call(method: str, path: str, body=None, raw: bytes | None = None):
+    def anon(method: str, path: str, body=None, raw: bytes | None = None):
         conn = http.client.HTTPConnection(host, port, timeout=15)
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
         conn.request(method, path, body=data, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        payload = resp.read().decode("utf-8")
+        conn.close()
+        return resp.status, (json.loads(payload) if payload else None)
+
+    def call(method: str, path: str, body=None, raw: bytes | None = None):
+        conn = http.client.HTTPConnection(host, port, timeout=15)
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        conn.request(method, path, body=data,
+                     headers={"Content-Type": "application/json", "X-Admin-Token": ADMIN})
         resp = conn.getresponse()
         payload = resp.read().decode("utf-8")
         conn.close()
@@ -66,7 +81,9 @@ def live(tmp_path):
             c.close()
 
     try:
-        yield SimpleNamespace(host=host, port=port, db=db, srv=srv, call=call, count=count)
+        yield SimpleNamespace(host=host, port=port, db=db, srv=srv,
+                             call=call, anonymous=anon, count=count,
+                             admin={"X-Admin-Token": ADMIN})
     finally:
         srv.shutdown()
         srv.server_close()
@@ -574,14 +591,65 @@ def test_unknown_task_is_a_404_with_the_code(live):
     assert body["error"]["code"] == "unknown_task"
 
 
-def _get_html(live, path: str) -> tuple[int, str, str]:
+def _get_html(live, path: str, *, anonymous: bool = False) -> tuple[int, str, str]:
+    """取一页 HTML。默认带管理口令（维护者视角）；`anonymous=True` 就是学生/陌生人的裸请求。"""
+    headers = {} if anonymous else dict(live.admin or {})
     conn = http.client.HTTPConnection(live.host, live.port, timeout=15)
-    conn.request("GET", path)
+    conn.request("GET", path, headers=headers)
     resp = conn.getresponse()
     payload = resp.read().decode("utf-8")
     content_type = resp.getheader("Content-Type") or ""
     conn.close()
     return resp.status, content_type, payload
+
+
+def test_report_by_id_needs_the_session_token(hosted):
+    """凭 id 不再能读报告：那等于把全班成绩挂在"猜不猜得到 UUID"上。
+
+    收口前：`roster` 的 CSV、报告页 URL、复查脚本都会带着 id 到处走，
+    一场活动结束后，一条链接的持有者能看全班的逐条断言与期望值。
+
+    一律回 **404 而不是 403**：403 等于告诉对方"这个 id 存在，只是你没权限"。
+    """
+    session = _open(hosted)
+    token = session["session"]["token"]
+    hosted.json_call("POST", f"/s/{token}/tools/fetch_orders", {"offset": 0, "limit": 10})
+    status, payload = hosted.json_call("POST", f"/s/{token}/submit")
+    assert status in (200, 201), payload
+    sid = payload["submission_id"]
+
+    # 1) 裸的上旧路 → 看不见
+    assert hosted.call("GET", f"/submissions/{sid}/report.html")[0] == 404
+    assert hosted.json_call("GET", f"/submissions/{sid}")[0] == 404
+    assert hosted.json_call("GET", f"/submissions/{sid}/reappraisals")[0] == 404
+
+    # 2) 带上自己的 token → 通（两条路都通）
+    assert hosted.call("GET", f"/submissions/{sid}/report.html?token={token}")[0] == 200
+    status, body = hosted.json_call("GET", f"/submissions/{sid}?token={token}")
+    assert status == 200 and 0.0 <= body["score"]["ratio"] <= 1.0
+
+    # 3) 别人的 token → 同样看不见
+    other = _open(hosted)["session"]["token"]
+    assert hosted.json_call("GET", f"/submissions/{sid}?token={other}")[0] == 404
+
+
+def test_report_by_session_token_is_the_front_door(hosted):
+    """`/s/<token>/report` 是正规入口：交完卷 303 就落在这里，凭手上的链接就能看。"""
+    token = _open(hosted)["session"]["token"]
+    hosted.json_call("POST", f"/s/{token}/tools/fetch_orders", {"offset": 0, "limit": 10})
+    hosted.json_call("POST", f"/s/{token}/submit")
+
+    status, page, _loc, ctype = hosted.call("GET", f"/s/{token}/report")
+    assert status == 200 and ctype.startswith("text/html")
+    assert "订单数据核对报告" in page
+    assert not re.search(r"\bR\d+_[a-z_]+\b", page)
+
+
+def test_report_before_submitting_says_so(hosted):
+    """还没交卷时看报告：409 说"还没有交卷记录"，不是 404"没有这份"、也不是空报告。"""
+    token = _open(hosted)["session"]["token"]
+    status, body = hosted.json_call("GET", f"/s/{token}/report")
+    assert status == 409 and body["error"]["code"] == "nothing_to_grade"
 
 
 def test_report_html_endpoint_renders_the_page_for_a_browser(live):
@@ -672,14 +740,27 @@ def test_opening_a_session_needs_the_admin_token(hosted):
     assert status == 403
 
 
-def test_hosting_is_off_unless_the_server_was_started_with_a_token(live):
-    """没加 `--admin-token` 的服务上，这条路由存在但拒绝——不是"给个默认口令"。"""
-    conn = http.client.HTTPConnection(live.host, live.port, timeout=15)
-    conn.request("POST", "/sessions", body=json.dumps({"task_id": "dbg-001-order-report"}),
-                 headers={"Content-Type": "application/json"})
-    resp = conn.getresponse()
-    payload = json.loads(resp.read().decode("utf-8"))
-    conn.close()
+def test_hosting_is_off_unless_the_server_was_started_with_a_token(tmp_path):
+    """没加 `--admin-token` 的服务上，这条路由存在但拒绝——不是"给个默认口令"。
+
+    自己起一个不带口令的服务：`live` 夹具现在带口令（读报告要凭证），
+    不能拿它来测"没配口令"。
+    """
+    srv = api.make_server(tmp_path / "no-token.db", port=0, quiet=True)
+    host, port = srv.server_address[:2]
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=15)
+        conn.request("POST", "/sessions", body=json.dumps({"task_id": "dbg-001-order-report"}),
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        th.join(timeout=5)
     assert resp.status == 403
     assert payload["error"]["code"] == "session_hosting_disabled"
 
@@ -738,8 +819,9 @@ def test_submitting_from_the_browser_redirects_to_the_report(roomy):
                     {"path": "/workspace/report.json", "content": '{"valid_count": 9}'})
 
     status, _payload, location, _ctype = roomy.call("GET", f"/s/{token}/submit")
-    assert status == 303 and location.startswith("/submissions/")
-    assert location.endswith("/report.html")
+    # 交卷后落在**凭 token 的报告地址**上，不再落在 `/submissions/<id>/report.html`：
+    # 后者现在也要凭证，而 token 就在手里，没有理由再绕一圈。
+    assert status == 303 and location == f"/s/{token}/report"
 
     status, page, _loc, ctype = roomy.call("GET", location)
     assert status == 200 and ctype.startswith("text/html")
@@ -757,7 +839,7 @@ def test_submitting_twice_lands_on_the_same_report(roomy):
     _, _, first, _ = roomy.call("GET", f"/s/{token}/submit")
     status, payload = roomy.json_call("POST", f"/s/{token}/submit")
     assert status == 200 and payload["reused"] is True
-    assert f"/submissions/{payload['submission_id']}/report.html" == first
+    assert f"/s/{token}/report" == first
 
 
 def test_submitting_an_empty_session_says_so_in_html(hosted):
