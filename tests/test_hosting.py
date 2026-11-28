@@ -758,3 +758,65 @@ def test_roster_csv_flags_a_full_mark_that_was_never_explained(env, tmp_path, ca
     printed = capsys.readouterr().out
     assert "同一个 offset" not in printed, "原文只进 CSV，不进终端主视图"
     assert silent[:12] in printed and broken[:12] in printed
+
+
+def test_the_learner_page_asks_him_to_retell_when_he_has_not(env):
+    """交了卷却没讲一遍：学生自己这一页要提这件事（B-58 的学生侧）。
+
+    只放到助教的 `host.py recall` 里等于假定"几天后会有人来问他"。最可能的情形是
+    他刚看完报告、觉得自己做对了——而"满分但讲不出来"正是这套工具要抓的那一格。
+    """
+    sessions, submit_fn, _registry = env
+    token = sessions.create(TASK_ID, user_id="u-retell")["token"]
+    sessions.call(token, "fetch_orders", {"offset": 0, "limit": 10})
+    sessions.call(token, "write_report",
+                  {"path": "/workspace/report.json", "content": '{"valid_count": 9}'})
+    report, _created = sessions.grade(token, submit_fn)
+    sid = report["submission"]["submission_id"]
+
+    base = {"title": "标题", "scenario": "题面", "tools": []}
+    nudged = hosting.render_landing(sessions.get(token), base, "http://x",
+                                    report_url=f"/s/{token}/report", retell_pending=True)
+    assert "还差一步" in nudged and "讲一遍" in nudged
+    assert f'href="/s/{token}/report"' in nudged
+    assert "不打分" in nudged, "得说清它不打分，否则会被当成附加题"
+
+    quiet = hosting.render_landing(sessions.get(token), base, "http://x",
+                                   report_url=f"/s/{token}/report", retell_pending=False)
+    assert "还差一步" not in quiet
+
+    # 没交卷时也不该出现：那时没有"这一份"可讲（页面此时在讲做题步骤）
+    blank = hosting.render_landing(sessions.create(TASK_ID, user_id="u-fresh"),
+                                   base, "http://x", retell_pending=False)
+    assert "还差一步" not in blank and "让 AI 助手对着这个地址做" in blank
+
+
+def test_the_learner_page_asks_him_to_retell_when_he_has_not(env):
+    """交了卷却没讲一遍：学生自己这一页要提这件事（B-58 的学生侧）。
+
+    只放到助教的 `host.py recall` 里等于假定"几天后会有人来问他"。最可能的情形是
+    他刚看完报告、觉得自己做对了——而"满分但讲不出来"正是这套工具要抓的那一格。
+    """
+    sessions, submit_fn, _registry = env
+    token = sessions.create(TASK_ID, user_id="u-retell")["token"]
+    sessions.call(token, "fetch_orders", {"offset": 0, "limit": 10})
+    sessions.call(token, "write_report",
+                  {"path": "/workspace/report.json", "content": '{"valid_count": 9}'})
+    report, _created = sessions.grade(token, submit_fn)
+    sid = report["submission"]["submission_id"]
+
+    base = {"title": "标题", "scenario": "题面", "tools": []}
+    nudged = hosting.render_landing(sessions.get(token), base, "http://x",
+                                    report_url=f"/s/{token}/report", retell_pending=True)
+    assert "还差一步" in nudged and "讲一遍" in nudged
+    assert f'href="/s/{token}/report"' in nudged
+    assert "不打分" in nudged, "得说清它不打分，否则会被当成附加题"
+
+    quiet = hosting.render_landing(sessions.get(token), base, "http://x",
+                                   report_url=f"/s/{token}/report", retell_pending=False)
+    assert "还差一步" not in quiet
+
+    # 没交卷时也不该出现：那时没有"这一份"可讲（页面此时在讲做题步骤）
+    blank = hosting.render_landing(sessions.create(TASK_ID, user_id="u-fresh"),
+                                   base, "http://x", retell_pending=False)
+    assert "还差一步" not in blank and "让 AI 助手对着这个地址做" in blank

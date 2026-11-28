@@ -1021,6 +1021,10 @@ class _Handler(BaseHTTPRequestHandler):
                 since_last = (hosting.since_last_of(conn, submitted) if submitted else None)
                 # 「你做过的其他题」：`mint --user` 绑出来的多条链接，彼此本来看不见。
                 others = hosting.others_of(conn, session["user_id"], token)
+                # 交了卷却没讲过（B-58 的学生侧）：这一格以前只有助教看得到，
+                # 而"满分的人不会自己想到还要讲一遍"——所以提醒必须在学生自己这一页。
+                retell_pending = bool(
+                    submitted and store.load_recall(conn, str(submitted)) is None)
             finally:
                 conn.close()
             page = hosting.render_landing(
@@ -1030,6 +1034,7 @@ class _Handler(BaseHTTPRequestHandler):
                 since_last=since_last,
                 just_marked=parse_qs(urlsplit(self.path).query).get("marked") == ["1"],
                 others=others,
+                retell_pending=retell_pending,
             )
             self._send_html(200, page)
             return

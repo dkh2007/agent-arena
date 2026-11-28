@@ -959,19 +959,41 @@ def _others_block(others: list[dict] | None, *, base_url: str) -> str:
     )
 
 
+def _retell_block(pending: bool, report_url: str | None) -> str:
+    """「还差一步：讲一遍」。只在**交了卷、但库里没有复述**时出现。
+
+    为什么学生页要有这一块：复述是这套工具唯一能分辨"他自己会"和"AI 替他会"的地方
+    （第 1 份试用：满分但分不清是谁做的）。只把这件事放到助教侧的 `host.py recall`，
+    等于假定了"几天后会有人来问他"——而他自己此刻正看着这一页。
+    """
+    if not pending or not report_url:
+        return ""
+    return (
+        '<h2>还差一步：讲一遍</h2><div class="card">'
+        f'<a class="cta" href="{html.escape(str(report_url))}">去讲一遍</a>'
+        '<div class="muted">用你自己的话讲讲这题你卡在哪一步、下次先改哪一处。'
+        "不打分；过几天再打开，能看到自己上次是怎么说的。</div></div>"
+    )
+
+
 def render_landing(session: dict, public_task: dict, base_url: str, *,
                    review: dict | None = None, report_url: str | None = None,
                    since_last: dict | None = None, just_marked: bool = False,
-                   others: list[dict] | None = None) -> str:
+                   others: list[dict] | None = None,
+                   retell_pending: bool = False) -> str:
     """学习者打开链接看到的那一页。
 
-    **同一页要能回答四种状态**，否则回访的人只会看到一段过时的做题说明：
+    **同一页要能回答五种状态**，否则回访的人只会看到一段过时的做题说明：
     | 状态 | 页面先给什么 |
     |---|---|
     | 还没做 | 贴给 AI 的那段话 + 工具清单 |
     | 已经交过卷 | 报告入口；做题地址收起来，并说明这条链接只能用一次 |
+    | 交过卷但没讲一遍 | 「还差一步：讲一遍」——**复述是唯一能分辨"他会不会"的那一格**（B-58） |
     | 交过不止一次 | 「和上一次比」：哪条改好了、哪条还没过——**这是他重做的全部回报** |
     | 有复习项 | 「今天该复习」放在报告入口下面（不管交没交） |
+
+    `retell_pending` 由调用方现算（交了卷 && 库里没有复述）。**这件事不能只让助教看见**：
+    一个满分的人不会自己想到"我还得讲一遍"，而助教那次抽查很可能在几天以后。
 
     `since_last` 由 `since_last_of()` 现算，锚在**这一份提交**上而不是"最近两次"
     （同一个人交了四次时，回看第二次那一页不能拿第三、四次来比）。
@@ -1070,6 +1092,7 @@ th {{ color:#6b7280; font-weight:600; }}
 <h1>{title}</h1>
 <div class="muted">{subtitle}</div>
 {head}
+{_retell_block(retell_pending, report_url)}
 {marked}
 {_progress_block(since_last)}
 {_others_block(others, base_url=base_url)}

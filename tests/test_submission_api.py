@@ -1031,3 +1031,20 @@ def test_too_long_a_retell_is_refused_with_the_count(roomy):
         assert conn.execute("SELECT COUNT(*) FROM recalls").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_the_nudge_is_computed_from_the_database_not_from_a_flag(roomy):
+    """端到端：交卷后学生页提「讲一遍」，交完复述后这句消失。
+
+    这一条验的是**现算**（`store.load_recall`），不是一个由页面自己传进来的布尔值——
+    传进来的布尔值在"他换了设备打开"时就会失真。
+    """
+    token = _finish_a_paper(roomy)
+
+    _status, page, _loc, _ctype = roomy.call("GET", f"/s/{token}")
+    assert "还差一步" in page
+
+    roomy.form_call("POST", f"/s/{token}/report/recall", {"text": "第二页 500，我重试了"})
+
+    _status, page, _loc, _ctype = roomy.call("GET", f"/s/{token}")
+    assert "还差一步" not in page
