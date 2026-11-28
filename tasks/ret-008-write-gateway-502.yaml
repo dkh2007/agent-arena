@@ -1,0 +1,96 @@
+# 变体任务（B-05）：本文件**只写与母本的差异**，rubric 骨架 / 工具契约 / 执行边界
+# 一律从 `base_task` 深合并继承（规则见 src/arena/diagnosis_report.py 的 _merge_dict 注释）。
+# 想改骨架请改母本；改这里只影响本变体。改动后跑 `pytest tests/test_task_variants.py`。
+#
+# 扩题（B-30，2026-11-28）：retry-drill 第 8 道，也是全库第一道**故障不在拉数上**的题。
+#
+# 此前 27 道题的 `fault_injection` 全部打在分页工具上，考的都是"读到一半断了怎么办"。
+# 写产物那条路从没被考过，而它有一个更隐蔽的失败形态：
+#   Agent 调 write_report 拿到 502，**不检查状态码就结束**，自己以为交了卷，产物其实没落地。
+# 这种情形下 R1 判"没有产物"、R3 判"没重试"，两条一起读才是完整诊断——只读 R1 会归因成
+# 「他忘了写」，实际他写了、只是失败了一次没重写。
+#
+# 为什么故障位必须与拉数解耦：真机上"写盘报 502"与"翻页报 502"是两件不同的事，
+# 前者失败后**没有第二次机会**（不重写就永久没有产物），后者失败后数据仍在。
+# 全族 7 道都在练后者，等于把"重试"这件事只教了一半。
+base_task: dbg-001-order-report
+task_id: ret-008-write-gateway-502
+task_version: "2026-11-28.1"
+title: 退货入库核对报告（重试专项 · 写入时网关 502）
+primary_skill_id: failure_retry
+secondary_skill_ids: ['multi_step_planning', 'tool_param_validation']
+variant_template_id: tpl-tool-debug
+variant_meta:
+  family_id: retry-drill
+  # 难度按「要处理多少东西」算（页数 / 无效行数），不按「多难发现」：
+  # 20 行 / 每页 ≤10 ⇒ 2 页，只能标 1。这道题的隐蔽性不体现在这个字段上。
+  difficulty: 1
+  kind: variant
+
+scenario: |
+  你是一个数据助理 Agent，请完成以下工作：
+  1. 使用工具 fetch_orders 分页拉取全部退货入库记录（limit 取值必须在 1 到 10 之间，超过 10 服务端会返回错误 invalid_limit；共 20 条记录）
+  2. 剔除无效记录：amount 字段缺失、为 null 或为负数
+  3. 统计有效记录数量与总金额
+  4. 调用 write_report 将结果写入 /workspace/report.json，
+     内容为 JSON：{"valid_count": <有效记录数>, "total_amount": <总金额, 浮点>}
+
+fault_injection:
+  target_tool: write_report   # 全库第一次把故障打在**写产物**上（此前全部在 fetch_orders）
+  # `match: null` 不是笔误。母本的 match 是 `{offset_covers: 10}`，而 `_merge_dict` 对 dict 是
+  # 递归合并——写 `match: {path: ...}` 会留下 `offset_covers` 这个旧键，write_report 的入参里
+  # 没有它 ⇒ 永远不命中 ⇒ 故障空转，而页面看起来一切正常。
+  # dict 深合并删不掉旧键，只有"整体替换成 None"能清空：运行时 `fi.get("match") or {}` 得到 {}，
+  # `match_params({}, params)` 恒真 ⇒「任何一次写这个产物都命中」，正是这里要的语义。
+  # 代价是 authoring 自检的 ⑨ 号检查（match 与 R3.calls[0] 两处一致）在空 match 时无从比，
+  # 那边已补了空 match 分支（改为核对 R3 指的工具是不是 target_tool）。
+  match: null
+  failures:
+    - attempt: 1              # 第一次写失败
+      http_status: 502
+      error: bad_gateway
+  # then 继承母本的 success：第二次写成功。
+
+test_inputs:
+  # 20 条记录，2 页（每页 ≤10）。3 条无效行分在两页里，两页都要剔除：
+  # 第 1 页 1 条（ri-004 金额为 null），第 2 页 2 条（ri-011 缺字段 / ri-017 负数）。
+  orders_fixture:
+    - {order_id: ri-001, amount: 268.5}
+    - {order_id: ri-002, amount: 412.75}
+    - {order_id: ri-003, amount: 96.0}
+    - {order_id: ri-004, amount: null}                  # 金额为 null
+    - {order_id: ri-005, amount: 733.25}
+    - {order_id: ri-006, amount: 158.5}
+    - {order_id: ri-007, amount: 1204.0}
+    - {order_id: ri-008, amount: 87.75}
+    - {order_id: ri-009, amount: 640.25}
+    - {order_id: ri-010, amount: 319.0}
+    - {order_id: ri-011}                                # 缺 amount 字段
+    - {order_id: ri-012, amount: 505.5}
+    - {order_id: ri-013, amount: 182.25}
+    - {order_id: ri-014, amount: 921.75}
+    - {order_id: ri-015, amount: 46.0}
+    - {order_id: ri-016, amount: 1378.5}
+    - {order_id: ri-017, amount: -212.25}               # 负数
+    - {order_id: ri-018, amount: 388.0}
+    - {order_id: ri-019, amount: 1015.25}
+    - {order_id: ri-020, amount: 74.5}
+  expected:
+    valid_count: 17
+    total_amount: 8431.75
+
+rubric_credit:
+  - id: R2_report_correct
+    expected: {valid_count: 17, total_amount: 8431.75}
+  - id: R3_retry_evidence
+    # 判据从"重试那一页"换成"重写那个产物"。id / type / weight / skill_id / 依赖 / on_fail
+    # 全部继承母本——变的是**考哪个动作**，不是怎么算分。
+    expected:
+      calls:
+        - {name: write_report, params_match: {path: /workspace/report.json}, status: error, http_status: 502}
+        - {name: write_report, params_match: {path: /workspace/report.json}, status: success}
+      note: '两步都是 write_report：第一次 502、第二次成功。中间允许穿插别的调用（allow_interleaved 继承母本）——写失败后先补一次拉数再重写，同样是"重试过"，不该因为顺序不同被判没重试。'
+    error_pattern_detection:
+      # 分类投影跟着换工具：母本投影的是 fetch_orders 的 offset，这道题里那条序列永远是空的，
+      # 会让所有 cases 落到 default 的 retry_wrong_params（分数对、诊断全错）。
+      probe: "calls[?name=='write_report'].{path: params.path}"

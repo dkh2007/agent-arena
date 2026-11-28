@@ -355,12 +355,19 @@ def test_difficulty_is_not_decorative(all_tasks):
 # ── 一致性不变量：同一件事在两处出现时必须相等 ──────────────────────────────
 
 def test_fault_declaration_matches_retry_expectation(all_tasks):
-    """YAML 里故障位/故障码写了两处（fault_injection 与 R3.expected），必须相等。
+    """YAML 里故障位/故障码写了两处（fault_injection 与 R3.expected），必须**相容**。
 
     这是变体最容易出错的地方：改故障偏移/故障文件却忘了改 R3 的期望序列，
     结果是"Agent 正确重试了，但 R3 判失败"——看起来像学习者的问题。
     `params_match` 与 `match` 整体比，不写死键名：汇报骨架锁 offset、定位骨架锁 path，
     写死一个键名就等于默认只有一种骨架（round-86 把 `["offset"]` 去掉了）。
+
+    **2026-11-28 从「相等」放宽成「注入 ⊇ 判定」**（ret-008 撞出来的）：
+    那道题把故障打在 write_report 上，注入侧不设过滤（任何一次写这个产物都命中），
+    判定侧只认 `/workspace/report.json`——两个条件语义相容，但字面上不相等。
+    真正致命的方向只有一个：**判定比注入更宽**。那意味着会有一次根本不触发故障的调用
+    被 R3 当成"应该失败"，R3 对所有人都永远 fail（而分数看着只是"没重试"）。
+    反过来判定更窄是安全且必要的：写别的文件不该被算成这次重试。
     """
     for stem, task in all_tasks.items():
         fi = task.get("fault_injection")
@@ -375,9 +382,13 @@ def test_fault_declaration_matches_retry_expectation(all_tasks):
             continue
         calls = r3["expected"]["calls"]
         assert len(calls) == 2, f"{stem}: R3 期望应为「失败 → 成功」两步"
-        assert calls[0]["params_match"] == fi["match"], (
-            f"{stem}: R3 与 fault_injection 的匹配条件不一致"
-            f"（{calls[0]['params_match']!r} vs {fi['match']!r}）"
+        match = fi.get("match") or {}
+        got = calls[0].get("params_match") or {}
+        wide = sorted(k for k, v in match.items() if got.get(k) != v)
+        assert not wide, (
+            f"{stem}: R3 的匹配条件比注入更宽（{wide} 在 fault_injection.match 里是 "
+            f"{ {k: match[k] for k in wide} }，R3 却写成 {got!r}）——"
+            "会有一次不触发故障的调用被当成'应该失败'，R3 对所有人都永远 fail"
         )
         assert calls[0]["http_status"] == fi["failures"][0]["http_status"], (
             f"{stem}: R3 与 fault_injection 的故障码不一致"
@@ -410,13 +421,32 @@ def test_page_ceiling_and_report_expectations_are_self_consistent(all_tasks):
         assert page == limit, f"{stem}: 分页上限 {page} 与 limit.maximum {limit} 不一致"
 
         rows = task["test_inputs"]["orders_fixture"]
-        offset = task["fault_injection"]["match"]["offset_covers"]
-        # B-31 前这里还有一条 `assert offset % page == 0`（故障偏移必须是页上限的整数倍）。
-        # 它把「只能用最大页拉」写进了测试：limit 本就允许 1..上限，学习者用 limit=3 时
-        # 偏移序列是 0/3/6/…，永远踩不到 10，数据拉全了却被判「没重试」。
-        # 改覆盖语义后这条不再需要——按上限分页时 [0,page),[page,2page)… 必然有一页覆盖
-        # 任意 offset，是数学必然，不用断言。留下的只有「故障点必须在数据范围内」。
-        assert 0 < offset < len(rows), f"{stem}: 故障偏移 {offset} 不在 {len(rows)} 条数据的有效页内"
+        fi = task["fault_injection"]
+        match = fi.get("match") or {}
+        if fi.get("target_tool") == "fetch_orders":
+            offset = match["offset_covers"]
+            # B-31 前这里还有一条 `assert offset % page == 0`（故障偏移必须是页上限的整数倍）。
+            # 它把「只能用最大页拉」写进了测试：limit 本就允许 1..上限，学习者用 limit=3 时
+            # 偏移序列是 0/3/6/…，永远踩不到 10，数据拉全了却被判「没重试」。
+            # 改覆盖语义后这条不再需要——按上限分页时 [0,page),[page,2page)… 必然有一页覆盖
+            # 任意 offset，是数学必然，不用断言。留下的只有「故障点必须在数据范围内」。
+            assert 0 < offset < len(rows), f"{stem}: 故障偏移 {offset} 不在 {len(rows)} 条数据的有效页内"
+        else:
+            # 故障打在别的工具上（2026-11-28 ret-008 是第一道：写在 write_report 上）。
+            # 这时"页内位置"没有意义，要查的是**故障不会空转**——注入点写错一个字母，
+            # 整道题就退化成"没有故障"，而分数看起来完全正常（学习者照常做对，拿 1.0）。
+            # 静态那一半在 `authoring.check_task` 的 ⑩c（`offset_covers` 误用到非分页工具）；
+            # 这里只补它在运行时抓不到的一半：空 match 时 R3 与注入必须指同一个工具。
+            target = fi["target_tool"]
+            spec = next((t for t in task["tools"] if t["name"] == target), None)
+            assert spec is not None, f"{stem}: target_tool={target!r} 不在 tools 里，故障永不触发"
+            if not match:
+                r3 = next(r for r in task["rubric_credit"] if r["id"] == "R3_retry_evidence")
+                first = (r3.get("expected") or {}).get("calls", [{}])[0]
+                assert first.get("name") == target, (
+                    f"{stem}: 空 match 时 R3 首步必须指 target_tool={target!r}，"
+                    f"实际指 {first.get('name')!r}——注入与判定打在两个工具上，两边都'合理'"
+                )
 
         r2 = next(r for r in task["rubric_credit"] if r["id"] == "R2_report_correct")
         assert r2["expected"] == task["test_inputs"]["expected"], (

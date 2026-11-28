@@ -365,3 +365,70 @@ def test_check_exit_code_is_one_when_something_is_wrong(tmp_path, capsys):
     path = tmp_path / "bad.yaml"
     path.write_text("task_id: nope\n", encoding="utf-8")
     assert auth.main(["--check", str(path)]) == 1
+
+
+# ── 自检：故障打在「非分页工具」上（2026-11-28，ret-008 撞出来的）──────────────
+# 上面所有用例的故障都打在 fetch_orders 上，自检里"故障位"那几项也全按 offset 写。
+# ret-008 把故障挪到 write_report 之后暴露两件事：
+#   ① 空 match（`match: null`）是合法写法，而原来两个分支都在 `if match and ...` 里，
+#      空 match 会静默跳过——"静默跳过"正是故障空转最好的藏身处；
+#   ② match 里的键名拼错（`report_path`）会让服务端永远拿不到这个键，故障永不触发，
+#      而分数看起来完全正常（学习者照常做对）。
+WRITE_FAULT = ROOT / "tasks" / "ret-008-write-gateway-502.yaml"
+WF_ID = "ret-008-write-gateway-502"
+
+
+def _write_fault(tmp: Path, old: str = "", new: str = "") -> Path:
+    text = WRITE_FAULT.read_text(encoding="utf-8")
+    if old:
+        assert old in text, f"基准文件里找不到 {old[:40]!r}——本条测试要跟着题目一起改"
+        text = text.replace(old, new, 1)
+    path = tmp / WRITE_FAULT.name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _check_fault(path: Path):
+    return auth.check_task(path, families=auth.load_families(),
+                           log=[{"id": WF_ID, "why": "故障打在写产物上：写完 502 要重写"}])
+
+
+def test_check_accepts_a_fault_on_a_non_paging_tool(sandbox):
+    """基准必须过——不然下面三条"会拦"就没意义（可能只是本来就通不过）。"""
+    findings = _check_fault(_write_fault(sandbox))
+    assert not _errors(findings), _errors(findings)
+    assert any("空 match" in f.message for f in findings), "空 match 该有一条明说'任何一次调用都命中'"
+
+
+def test_check_flags_a_target_tool_that_does_not_exist(sandbox):
+    """`write_reprot` 少一个字母：故障永不触发，而页面一片正常。"""
+    path = _write_fault(sandbox, "target_tool: write_report   #", "target_tool: write_reprot   #")
+    msgs = _errors(_check_fault(path))
+    assert any("不在 tools" in m for m in msgs), msgs
+
+
+def test_check_flags_r3_pointing_at_another_tool_than_the_injection(sandbox):
+    """注入打 write_report、判定指 fetch_orders：各自都"合理"，合起来是错的。
+
+    这种错最难发现，因为两侧单独看都能自圆其说：注入侧"我确实注入了"，
+    判定侧"我确实在等一次失败"。只有对着看才知道它们从不是同一个调用。
+    """
+    path = _write_fault(
+        sandbox,
+        "        - {name: write_report, params_match: {path: /workspace/report.json}, status: error, http_status: 502}",
+        "        - {name: fetch_orders, params_match: {path: /workspace/report.json}, status: error, http_status: 502}",
+    )
+    msgs = _errors(_check_fault(path))
+    assert any("不一致" in m and "target_tool" in m for m in msgs), msgs
+
+
+def test_check_flags_offset_covers_on_a_tool_that_has_no_pages(sandbox):
+    """最真实的错法：抄母本的 `match: {offset_covers: 10}`，只把 target_tool 改掉。
+
+    它不报错、不崩，只是 `page_covers` 去读一个不存在的 `offset` ⇒ 判"不覆盖"
+    ⇒ 故障永不触发 ⇒ 这道题悄悄退化成"没有故障"，学习者照常满分。
+    这是唯一能**静态**抓住那种退化的检查。
+    """
+    path = _write_fault(sandbox, "  match: null\n", "  match: {offset_covers: 10}\n")
+    msgs = _errors(_check_fault(path))
+    assert any("offset_covers" in m and "不是分页工具" in m for m in msgs), msgs

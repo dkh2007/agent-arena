@@ -383,12 +383,17 @@ def check_task(path: str | Path, *, families: Sequence[dict] | None = None,
         if len(calls) != 2:
             out.append(Finding(X, f"R3.calls 应为「失败 → 成功」两步，实际 {len(calls)} 步"))
         else:
-            if calls[0].get("params_match") != match:
+            # 判据与 tests/test_task_variants.py::test_fault_declaration_matches_retry_expectation
+            # 同一口径：**注入 ⊇ 判定**，不是逐字符相等。判定比注入窄是安全的（只认这一个产物路径），
+            # 比注入宽才致命（一次不触发故障的调用被当成"应该失败"，R3 对所有人永远 fail）。
+            got = calls[0].get("params_match") or {}
+            wide = sorted(k for k, v in match.items() if got.get(k) != v)
+            if wide:
                 out.append(Finding(
-                    X, f"故障条件两处不一致：fault_injection.match={match} / "
-                       f"R3.calls[0].params_match={calls[0].get('params_match')}"))
+                    X, f"R3 的匹配条件比注入更宽：{wide} 在 match 里是 "
+                       f"{ {k: match[k] for k in wide} }，R3 写成 {got!r}"))
             else:
-                out.append(Finding(OK, f"故障条件两处一致：{match}"))
+                out.append(Finding(OK, f"故障条件相容：注入 {match} ⊇ 判定 {got}"))
             first_err = (failures[0] or {}).get("http_status") if failures else None
             if calls[0].get("http_status") != first_err:
                 out.append(Finding(
@@ -398,6 +403,36 @@ def check_task(path: str | Path, *, families: Sequence[dict] | None = None,
                 out.append(Finding(X, "R3 两步的状态应为 error → success"))
     elif match and not r3:
         out.append(Finding(X, "声明了 fault_injection 但 rubric_credit 里没有 R3_retry_evidence"))
+    elif r3:
+        # 空 match（`match: null` / `{}`）：**故意不给过滤条件**，任何一次对该工具的调用都命中。
+        # 2026-11-28 加这道分支，因为上面两条都在 `match and ...` 里，空 match 时会静默跳过
+        # ——而"静默跳过"正是故障空转最好的藏身处。空 match 时能查、也必须查的是两件事：
+        #   ① 目标工具真的存在（`target_tool` 写错一个字母，故障永不触发，页面一片正常）
+        #   ② R3 的第一步真的指这个工具（指错了 ⇒ 判定与注入打在两个工具上，两边都"合理"）
+        target = fi.get("target_tool")
+        tool_names = [t.get("name") for t in task.get("tools") or []]
+        if not target:
+            out.append(Finding(X, "空 match 时必须在 fault_injection.target_tool 里指明打哪个工具"))
+        elif target not in tool_names:
+            out.append(Finding(
+                X, f"fault_injection.target_tool={target!r} 不在 tools {tool_names} 里——故障永不触发"))
+        calls = (r3.get("expected") or {}).get("calls") or []
+        if len(calls) != 2:
+            out.append(Finding(X, f"R3.calls 应为「失败 → 成功」两步，实际 {len(calls)} 步"))
+        elif target and calls[0].get("name") != target:
+            out.append(Finding(
+                X, f"R3.calls[0].name={calls[0].get('name')!r} 与 target_tool={target!r} 不一致"
+                   "——注入与判定打在两个工具上，各自都'合理'，合起来是错的"))
+        else:
+            first_err = (failures[0] or {}).get("http_status") if failures else None
+            if calls[0].get("http_status") != first_err:
+                out.append(Finding(
+                    X, f"故障码两处不一致：failures[0].http_status={first_err} / "
+                       f"R3.calls[0].http_status={calls[0].get('http_status')}"))
+            elif calls[0].get("status") != "error" or calls[1].get("status") != "success":
+                out.append(Finding(X, "R3 两步的状态应为 error → success"))
+            else:
+                out.append(Finding(OK, f"空 match：任何一次 {target} 调用都命中，R3 也指 {target}"))
 
     # ⑩ 故障位落在数据范围内，且**不能是最后一条**
     #    判据来自 tests/test_task_variants.py::test_page_ceiling_and_report_expectations_are_self_consistent
@@ -414,6 +449,21 @@ def check_task(path: str | Path, *, families: Sequence[dict] | None = None,
         else:
             msg = f"故障位 offset_covers={at}（第 {at} 条，数据共 {rows} 条）"
         out.append(Finding(OK if 1 <= at < rows else X, msg))
+
+    # ⑩c `offset_covers` 只能用在分页工具上
+    #     2026-11-28 加：ret-008 把故障挪到 write_report 时，最自然的错法是直接抄母本的
+    #     `match: {offset_covers: 10}` 只改 target_tool。那时 `page_covers(params, 10)` 会去读
+    #     write_report 的 `offset`——它没有这个参数 ⇒ 判"不覆盖" ⇒ 故障永不触发。
+    #     而它不会报错、不会崩，只是这道题悄悄退化成"没有故障"（学习者照常满分）。
+    #     这是本模块所有检查里唯一能静态抓住那种退化的地方。
+    if "offset_covers" in match:
+        target = fi.get("target_tool")
+        paged = [t.get("name") for t in task.get("tools") or []
+                 if (t.get("mock") or {}).get("pagination")]
+        if target not in paged:
+            out.append(Finding(
+                X, f"offset_covers 用在了 {target!r} 上，但它不是分页工具（分页的只有 {paged}）"
+                   "——它的入参里没有 offset，故障永不触发"))
 
     # ⑩b 没显式写 fault_injection 时，提醒"故障是继承来的，不是没有"
     #    这条防的是 2026-11-22 那次误记：文件里没有这个块，台账却写"不注入故障"。
