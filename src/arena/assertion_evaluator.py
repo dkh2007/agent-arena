@@ -94,6 +94,14 @@ R2 与前面三个执行器有两处结构性差异：
 工具名 / 参数名 / 数值边界。分类按 `error_pattern_detection.cases` **首命中即止**
 （与 R2 的「收集全部命中」不同），四种违规都有对应 case，漏配在加载期就抛错。
 
+**覆盖面由 `expected.coverage_mode` 决定**（B-24 / TD-031，2026-11-28）：`any`（缺省）
+＝有一条目标工具的调用就算覆盖面成立；`all` ＝ `target_tools` 里每一个都必须被调过。
+`all` 下少调一个工具判 `unscored / no_target_coverage`（不是 fail）——R4 说的是
+「我检查过的那些调用入参都合规」，没调过的工具上没有任何观测，判 fail 就等于
+把「没看到」写成「看到了违规」，同时还会把「这一步没做」记到 `tool_param_validation`
+这个并不属于它的技能头上。漏做这一步该由要求该工具的断言判 fail。
+这条覆盖不足以前借 `trace_invalid`（TD-030 语义借码），现改为独立码。
+
 两处**假设**（YAML / DTO / 词表都没有现成口径，本步不擅自扩，S3-3-6 请人拍板）：
 
 - 调用里出现 tools 未声明的**工具名**时，无法对照 schema 判定，归
@@ -1116,6 +1124,11 @@ _PARAM_KIND_BY_KEY = {
 }
 _SUPPORTED_PARAM_TYPES = ("integer", "string")
 
+# R4 的覆盖率谓词（B-24 / TD-031）：
+#   any —— 只要有一条目标工具的调用，就算覆盖面成立（30 道题的既有行为，也是缺省值）；
+#   all —— target_tools 里每一个都必须至少被调过一次，少一个即「声明的检查面没走完」。
+_COVERAGE_MODES = ("any", "all")
+
 
 def _validate_tool_schemas(schemas: dict, rid: str) -> None:
     """tools 表结构校验：配置错在接触任何 trace 之前抛，不许静默降级。"""
@@ -1207,6 +1220,19 @@ def _validate_param_schema_spec(spec: dict) -> None:
         raise EvaluatorError(f"{rid}: expected.target_tools 只能是非空字符串")
     if len(set(target_tools)) != len(target_tools):
         raise EvaluatorError(f"{rid}: expected.target_tools 含重复工具名")
+    # 覆盖率谓词（B-24 / TD-031）。缺省 any 是既有 30 道题的行为，不写就等于 any。
+    coverage_mode = expected.get("coverage_mode", "any")
+    if coverage_mode not in _COVERAGE_MODES:
+        raise EvaluatorError(
+            f"{rid}: expected.coverage_mode 只支持 {_COVERAGE_MODES}，收到 {coverage_mode!r}"
+        )
+    if coverage_mode == "all" and len(target_tools) < 2:
+        # 只声明一个工具时 any 与 all 同义：写了 all 不改变任何判定，是空声明。
+        # 不许写，是为了让「all」这个字永远意味着「多个工具都得走一遍」。
+        raise EvaluatorError(
+            f"{rid}: coverage_mode=all 至少要声明两个目标工具；只声明 {target_tools} 时 "
+            "any 与 all 同义，这个开关是空声明"
+        )
     if expected.get("check_schema") is not True:
         raise EvaluatorError(
             f"{rid}: 只支持 check_schema=true，收到 {expected.get('check_schema')!r}"
@@ -1355,6 +1381,9 @@ def evaluate_param_schema(spec: dict, trace: dict | None,
         schemas = load_tool_schemas(schema_ref)
     _validate_tool_schemas(schemas, rid)
     target_tools = spec["expected"]["target_tools"]
+    # 缺省 any＝30 道既有题的原行为（有一条目标调用就算覆盖面成立），一个字都不改；
+    # all 才要求「每个目标工具都被调过」。取值合法性已在加载期校验过。
+    coverage_mode = spec["expected"].get("coverage_mode", "any")
     outside = sorted(set(target_tools) - set(schemas))
     if outside:
         raise EvaluatorError(
@@ -1413,9 +1442,27 @@ def evaluate_param_schema(spec: dict, trace: dict | None,
     # 已观测违规优先（上一段），否则会出现「有违规却因覆盖率不足而 unscored」。
     if not violations:
         target_calls = sum(1 for c in calls if c.get("name") in target_tools)
-        if target_calls == 0:
+        if coverage_mode == "all":
+            # 覆盖率谓词（B-24 / TD-031）：声明了 all，就必须每个目标工具都被调过。
+            # 少调一个仍判 pass 的话，R4 会对「只检查了一半」的轨迹说「参数合规」——
+            # 那不是判错，是**把没观测到说成观测到了**。
+            covered = [t for t in target_tools
+                       if any(c.get("name") == t for c in calls)]
+            missing = [t for t in target_tools if t not in covered]
+            if missing:
+                return unscored(
+                    "no_target_coverage",
+                    {"target_tools": target_tools, "coverage_mode": coverage_mode,
+                     "covered_tools": covered, "missing_tools": missing,
+                     "target_call_count": target_calls, "checked_calls": checked_calls},
+                    f"声明了 coverage_mode=all，但 {missing} 一次都没被调用："
+                    "被声明的检查面没走完，R4 只能对调过的那部分说话，判 unscored、不归因；"
+                    "「这一步没做」该由要求该工具的断言（R1/R2/R3/序列断言）判 fail，"
+                    "不由参数合规来代判",
+                )
+        elif target_calls == 0:
             return unscored(
-                "trace_invalid",
+                "no_target_coverage",
                 {"target_tools": target_tools, "target_call_count": 0,
                  "checked_calls": checked_calls},
                 "无目标工具的受检调用：R4 无法判定，判 unscored、不归因；"

@@ -62,7 +62,7 @@
     {
       "id": "R4_no_param_hallucination",
       "state": "unscored",
-      "reason_code": "trace_invalid",
+      "reason_code": "no_target_coverage",
       "evidence": {
         "observed": { "target_tools": ["fetch_orders"], "target_call_count": 0, "checked_calls": 0 },
         "expected": { "mode": "all_calls_must_be_valid" }

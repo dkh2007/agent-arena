@@ -142,9 +142,13 @@ def test_score_sequence_unchanged(name, ratio):
 
 
 def test_zero_calls_is_unscored_by_design():
-    """反转【现状】→ 正向：空集不再是平凡 pass，R4 无目标调用可判（F5 / TD-019b）。"""
+    """反转【现状】→ 正向：空集不再是平凡 pass，R4 无目标调用可判（F5 / TD-019b）。
+
+    B-24（2026-11-28）把这支的原因码从借用的 `trace_invalid` 换成独立的
+    `no_target_coverage`：`trace_invalid` 从此只表示「轨迹本身不可信」。
+    """
     r = run(items=[])
-    assert r["state"] == "unscored" and r["reason_code"] == "trace_invalid"
+    assert r["state"] == "unscored" and r["reason_code"] == "no_target_coverage"
     assert r["evidence"]["observed"]["checked_calls"] == 0
     assert r["evidence"]["observed"]["target_call_count"] == 0
 
@@ -440,10 +444,103 @@ def test_unscored_never_emits_error_patterns():
 
 
 def test_unscored_reason_codes_are_in_dto_enum():
-    """R4 只用既有码；对比 R1 的 artifact_invalid 缺口（TD-008）不扩大到这里。"""
+    """R4 只用既有码；对比 R1 的 artifact_invalid 缺口（TD-008）不扩大到这里。
+
+    B-24 起 R4 多了一个自己产的码 `no_target_coverage`，同样必须先在 DTO 枚举里——
+    否则 `validate_report()` 会当场拒掉一份完全正常的报告。
+    """
     schema = json.loads((ROOT / "docs" / "diagnosis-report.schema.json").read_text(encoding="utf-8"))
     enum = schema["properties"]["assertions"]["items"]["properties"]["reason_code"]["enum"]
-    assert {"trace_not_reported", "trace_invalid"}.issubset(set(enum))
+    assert {"trace_not_reported", "trace_invalid", "no_target_coverage"}.issubset(set(enum))
+
+
+# ---------------------------------------------------------------------------
+# 6b. 覆盖率谓词 coverage_mode（B-24 / TD-031）
+# ---------------------------------------------------------------------------
+
+WRITE_PARAMS = {"path": "/workspace/report.json", "content": "{}"}
+
+
+def two_tool_spec(mode=None) -> dict:
+    """把 R4 的目标工具扩成两个；`mode=None` 表示**不写** coverage_mode（走缺省）。"""
+    s = spec()
+    s["expected"]["target_tools"] = [FETCH, WRITE]
+    if mode is not None:
+        s["expected"]["coverage_mode"] = mode
+    return s
+
+
+def test_coverage_all_passes_when_every_target_tool_is_used():
+    r = run(items=calls((FETCH, GOOD_PARAMS), (WRITE, WRITE_PARAMS)), s=two_tool_spec("all"))
+    assert r["state"] == "pass" and patterns(r) == []
+
+
+def test_coverage_all_missing_one_tool_is_unscored_with_exact_evidence():
+    """缺一个工具：判 unscored（不是 fail），并说清少检查了谁。
+
+    这是本开关的全部意义——旧行为在这一份轨迹上判 pass，等于对「只检查了一半」说合规。
+    """
+    r = run(items=calls((FETCH, GOOD_PARAMS)), s=two_tool_spec("all"))
+    assert r["state"] == "unscored" and r["reason_code"] == "no_target_coverage"
+    assert patterns(r) == []          # 不归因：这是证据面不全，不是能力不足
+    assert r["evidence"]["observed"] == {
+        "target_tools": [FETCH, WRITE],
+        "coverage_mode": "all",
+        "covered_tools": [FETCH],
+        "missing_tools": [WRITE],
+        "target_call_count": 1,
+        "checked_calls": 1,
+    }
+
+
+def test_coverage_all_zero_calls_lists_every_tool_as_missing():
+    """零调用与「少调一个」共用同一个码：都是覆盖不足，只是差得多与少。"""
+    r = run(items=[], s=two_tool_spec("all"))
+    assert r["state"] == "unscored" and r["reason_code"] == "no_target_coverage"
+    assert r["evidence"]["observed"]["missing_tools"] == [FETCH, WRITE]
+    assert r["evidence"]["observed"]["covered_tools"] == []
+
+
+def test_coverage_default_is_any_so_single_call_still_passes():
+    """缺省 any＝旧行为：只调一个工具仍判 pass，且证据形状一个字都不多。
+
+    30 道题一份都没写这个键（见下一条），所以它们不该因为多了个开关而变样。
+    """
+    r = run(items=calls((FETCH, GOOD_PARAMS)), s=two_tool_spec())
+    assert r["state"] == "pass"
+    assert "coverage_mode" not in r["evidence"]["observed"]
+
+
+def test_coverage_gap_does_not_swallow_observed_violation():
+    """能判的先判：覆盖到的那个工具已经违规时，判 fail 并归因，不被覆盖不足吞掉。"""
+    r = run(items=calls((FETCH, {"offset": -1, "limit": 10})), s=two_tool_spec("all"))
+    assert r["state"] == "fail" and patterns(r)
+
+
+def test_coverage_mode_rejects_unknown_value_before_touching_trace():
+    s = two_tool_spec("ANY")
+    with pytest.raises(ae.EvaluatorError, match="coverage_mode"):
+        ae.evaluate_param_schema(s, None)     # trace=None 也要先抛配置错
+
+
+def test_coverage_all_with_single_target_tool_is_a_vacuous_declaration():
+    """只声明一个工具时 any 与 all 同义：写了等于什么都没写，加载期直接拒。"""
+    s = spec()
+    s["expected"]["coverage_mode"] = "all"
+    assert s["expected"]["target_tools"] == [FETCH]
+    with pytest.raises(ae.EvaluatorError, match="两个目标工具"):
+        ae.evaluate_param_schema(s, None)
+
+
+def test_no_task_declares_coverage_mode_yet():
+    """反证条件（刻意钉住）：30 道题全是单目标，谁都没写 coverage_mode。
+
+    出现第一道多目标任务时这条会红——那是**该红**：把白名单改成那几道题的 id，
+    顺便确认 `all` 不只是执行器里的一段死分支。
+    """
+    declared = [p.name for p in sorted((ROOT / "tasks").glob("*.yaml"))
+                if "coverage_mode" in p.read_text(encoding="utf-8")]
+    assert declared == []
 
 
 # ---------------------------------------------------------------------------

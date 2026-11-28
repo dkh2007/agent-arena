@@ -893,7 +893,8 @@ def test_f3_td018_only_write_report_stays_no_tool_calls():
     r4 = _f3_assertion(report, "R4_no_param_hallucination")
     assert report["trace_audit"]["call_count"] == 1
     # F5 / TD-013 反转：只有无关工具调用，目标工具零次 → R4 无覆盖，不再计掌握度。
-    assert r4["state"] == "unscored" and r4["reason_code"] == "trace_invalid"
+    # B-24（2026-11-28）：这支的原因码独立成 `no_target_coverage`，不再借 `trace_invalid`。
+    assert r4["state"] == "unscored" and r4["reason_code"] == "no_target_coverage"
     assert r3["state"] == "fail" and r3["error_patterns"] == ["no_retry"]
     assert r3["evidence"]["extra"]["classification_source"] == "case:no_tool_calls"
     assert report["score"]["ratio"] == 0.5
@@ -1162,9 +1163,12 @@ def test_f4_td019a_unknown_tool_alone_is_unscored():
 
 
 def test_f5_td019b_zero_calls_is_unscored():
-    """① 反转【现状】→ 正向：空集不再平凡 pass，判 unscored/trace_invalid。"""
+    """① 反转【现状】→ 正向：空集不再平凡 pass，判 unscored。
+
+    原因码是 `no_target_coverage`（B-24 起的独立码），`trace_invalid` 只留给真·轨迹不可信。
+    """
     r = _f45_r4_unit([])
-    assert r["state"] == "unscored" and r["reason_code"] == "trace_invalid"
+    assert r["state"] == "unscored" and r["reason_code"] == "no_target_coverage"
     assert r["evidence"]["observed"] == {
         "target_tools": ["fetch_orders"], "target_call_count": 0, "checked_calls": 0}
 
@@ -1201,7 +1205,7 @@ def test_f5_td019b_non_target_call_alone_is_unscored():
     """F5-B 口径：受检无关工具不等于覆盖目标技能。"""
     r = _f45_r4_unit(_f45_items(("write_report",
                                  {"path": "/workspace/report.json", "content": "{}"})))
-    assert r["state"] == "unscored" and r["reason_code"] == "trace_invalid"
+    assert r["state"] == "unscored" and r["reason_code"] == "no_target_coverage"
     assert r["evidence"]["observed"] == {
         "target_tools": ["fetch_orders"], "target_call_count": 0, "checked_calls": 1}
 
