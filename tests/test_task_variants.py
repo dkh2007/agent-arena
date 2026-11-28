@@ -381,20 +381,37 @@ def test_fault_declaration_matches_retry_expectation(all_tasks):
             )
             continue
         calls = r3["expected"]["calls"]
-        assert len(calls) == 2, f"{stem}: R3 期望应为「失败 → 成功」两步"
+        # 2026-11-28 从"必须两步"放宽成"N 次失败 + 1 次成功"：题库此前 24 道题全是
+        # "失败一次就成功"，于是"只重试一次"能过所有题，`retry_exhausted` 从没被真任务走到。
+        # `assertion_evaluator._filter_expr` 本来就只要求 ≥2 步，是这里把它钉成了 2。
+        assert len(calls) >= 2, f"{stem}: R3 期望至少要两步（失败 + 成功），实际 {len(calls)} 步"
+        statuses = [c.get("status") for c in calls]
+        assert statuses == ["error"] * (len(calls) - 1) + ["success"], (
+            f"{stem}: R3 的步骤应为「若干次失败 → 一次成功」，实际 {statuses}"
+        )
+        failures = fi.get("failures") or []
+        # 次数必须**相等**：少了 R3 等一个不存在的 error，多了 R3 要的 success 永远不来。
+        assert len(failures) == len(calls) - 1, (
+            f"{stem}: faults {len(failures)} 条 vs R3 的 {len(calls) - 1} 次失败——"
+            "两边对不上时 R3 对所有人都永远 fail"
+        )
         match = fi.get("match") or {}
-        got = calls[0].get("params_match") or {}
-        wide = sorted(k for k, v in match.items() if got.get(k) != v)
-        assert not wide, (
-            f"{stem}: R3 的匹配条件比注入更宽（{wide} 在 fault_injection.match 里是 "
-            f"{ {k: match[k] for k in wide} }，R3 却写成 {got!r}）——"
-            "会有一次不触发故障的调用被当成'应该失败'，R3 对所有人都永远 fail"
+        for i, call in enumerate(calls, 1):
+            got = call.get("params_match") or {}
+            wide = sorted(k for k, v in match.items() if got.get(k) != v)
+            assert not wide, (
+                f"{stem}: 第 {i} 步的匹配条件比注入更宽（{wide} 在 fault_injection.match 里是 "
+                f"{ {k: match[k] for k in wide} }，R3 却写成 {got!r}）——"
+                "会有一次不触发故障的调用被当成'应该失败'，R3 对所有人都永远 fail"
+            )
+            assert got == calls[0]["params_match"], (
+                f"{stem}: 第 {i} 步的 params_match 与首步不同（{got!r} vs {calls[0]['params_match']!r}）"
+                "——当前只支持「重试同一个请求」"
+            )
+        codes = [f.get("http_status") for f in failures]
+        assert [c.get("http_status") for c in calls[:-1]] == codes, (
+            f"{stem}: 故障码不一致：注入 {codes} / R3 {[c.get('http_status') for c in calls[:-1]]}"
         )
-        assert calls[0]["http_status"] == fi["failures"][0]["http_status"], (
-            f"{stem}: R3 与 fault_injection 的故障码不一致"
-        )
-        assert calls[0]["status"] == "error" and calls[1]["status"] == "success"
-        assert calls[0]["params_match"] == calls[1]["params_match"]
 
 
 def test_fault_target_tool_is_declared(all_tasks):
@@ -550,14 +567,22 @@ def _evaluate(task: dict, run) -> dict:
     return report
 
 
-def _drive(task: dict, flaw: str = "correct") -> dict:
+def _drive(task: dict, flaw: str = "correct", retries: int | None = None) -> dict:
+    """跑一份并判分。`retries=None` 用参考 Agent 的默认预算（3）。
+
+    `retries` 单独给，是为了能构造"预算不够但确实重试过"的客户端——
+    它与 `flaw="no_retry"`（预算 0）在"故障只失败一次"的题上不可区分，
+    只有"连续失败两次"的题能把它俩分开（见 ret-009 与下面对应的用例）。
+    """
     srv, svc = mt.make_server(task, port=0)
     host, port = srv.server_address[:2]
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
     try:
         svc.reset()
-        run = ra.ReferenceAgent(task, ra.ToolClient(f"http://{host}:{port}"), flaw=flaw).run()
+        kwargs = {} if retries is None else {"retries": retries}
+        run = ra.ReferenceAgent(task, ra.ToolClient(f"http://{host}:{port}"),
+                                flaw=flaw, **kwargs).run()
         return _evaluate(task, run)
     finally:
         srv.shutdown()
@@ -591,3 +616,50 @@ def test_each_task_classifies_its_own_failure(path):
     assert states["R3_retry_evidence"] == "fail", f"{path.stem}: 放弃重试却没判 R3 失败"
     patterns = {p for a in report["assertions"] for p in (a.get("error_patterns") or [])}
     assert "no_retry" in patterns, f"{path.stem}: 错误模式落到 {patterns}，期望含 no_retry"
+
+
+@pytest.mark.parametrize("path", TASK_FILES, ids=lambda p: p.stem)
+def test_a_budget_too_small_for_the_fault_is_exhausted_not_absent(path):
+    """「试了但没试够」必须与「根本没试」分开——这是 `retry_exhausted` 唯一可达的路径。
+
+    `test_each_task_classifies_its_own_failure` 只证明后者（预算 0）。前者的判据一直存在，
+    但**没有任何一道真任务能走到**：题库此前 24 道题的 `failures` 全是 1 条，
+    预算 1 与预算 0 都只调一次，两个形态在数值上不可区分。
+    `ret-009`（连续失败两次）第一次把两者分开：
+
+        预算 1 → 碰到故障点 2 次、最后一次仍是 error ⇒ retry_exhausted
+        预算 0 → 碰到故障点 1 次、遇到失败就放弃   ⇒ no_retry
+
+    判据对"只失败一次"的题仍然跳过而不是硬套：那种题里预算 1 就是够的，
+    套上去等于要求学习者多试一次没有理由的重试。
+    """
+    task = dr.load_task(path)
+    failures = (task.get("fault_injection") or {}).get("failures") or []
+    if not failures or len(failures) < 2:
+        pytest.skip("故障只失败一次：预算 1 与预算 0 在这道题上不可区分")
+
+    report = _drive(task, retries=1)
+    patterns = {p for a in report["assertions"] for p in (a.get("error_patterns") or [])}
+    assert "retry_exhausted" in patterns, (
+        f"{path.stem}: 预算 1 时错误模式落到 {patterns}，期望含 retry_exhausted"
+        "——它和 no_retry 是两件事：一个该多试，一个根本没试"
+    )
+    assert "no_retry" not in patterns, (
+        f"{path.stem}: 它明明重试过（预算 1 用在了第二次调用上），不该被判成 no_retry"
+    )
+
+
+def test_retry_budget_counts_retries_not_failed_calls():
+    """`retries=2` = 「允许再试 2 次」（共 3 次调用），不是「总共试 2 次」。
+
+    这个语义很容易写反（`attempts < retries` vs `attempts < retries - 1`），
+    而写反之后只在"失败次数恰好等于预算"的题上暴露——题库此前没有这种题，
+    所以 `ret-009`（连续失败 2 次）是第一个能把边界钉住的题：
+
+        预算 2 → 3 次调用、第 3 次成功 ⇒ 满分
+        预算 1 → 2 次调用、第 2 次仍失败 ⇒ retry_exhausted（见上一条）
+    """
+    task = dr.load_task(TASKS_DIR / "ret-009-consecutive-flaps.yaml")
+    report = _drive(task, retries=2)
+    states = {a["id"]: a["state"] for a in report["assertions"]}
+    assert report["score"]["ratio"] == 1.0, f"预算 2 应当够（失败 2 次），实际 {states}"

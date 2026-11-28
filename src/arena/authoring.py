@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -380,27 +381,52 @@ def check_task(path: str | Path, *, families: Sequence[dict] | None = None,
     r3 = next((r for r in credit if r.get("id") == "R3_retry_evidence"), None)
     if match and r3:
         calls = (r3.get("expected") or {}).get("calls") or []
-        if len(calls) != 2:
-            out.append(Finding(X, f"R3.calls 应为「失败 → 成功」两步，实际 {len(calls)} 步"))
+        # 2026-11-28 从"必须两步"放宽成"N 次失败 + 1 次成功"：
+        # 题库此前 24 道题全是"失败一次就成功"，于是「重试一次」能过所有题，
+        # `retry_exhausted` 这条错误模式从建库起只在手写夹具里出现过（没有真任务能走到）。
+        # `_filter_expr` 本来就只要求 ≥2 步（见 assertion_evaluator），是自检与测试把它钉成了 2。
+        if len(calls) < 2:
+            out.append(Finding(X, f"R3.calls 至少要两步（失败 + 成功），实际 {len(calls)} 步"))
+        elif [c.get("status") for c in calls] != ["error"] * (len(calls) - 1) + ["success"]:
+            out.append(Finding(
+                X, f"R3 的步骤应为「若干次失败 → 一次成功」，实际 {[c.get('status') for c in calls]}"))
+        elif len(failures) != len(calls) - 1:
+            # 必须**相等**，两个方向都会让 R3 永远等不到：
+            #   failures 少 → 多出来的那次失败永远不会发生，R3 等一个不存在的 error；
+            #   failures 多 → 后面那次调用其实还失败，R3 却已经要求 success。
+            if len(failures) < len(calls) - 1:
+                msg = (f"R3 声明了 {len(calls) - 1} 次失败，但 fault_injection.failures 只有 "
+                       f"{len(failures)} 条——多出来的那几步永远不会失败，R3 永远等不到")
+            else:
+                msg = (f"fault_injection.failures 有 {len(failures)} 条（第 {len(failures)} 次仍失败），"
+                       f"而 R3 只写了 {len(calls) - 1} 次失败后就要成功——那个成功永远不会来")
+            out.append(Finding(X, msg))
         else:
             # 判据与 tests/test_task_variants.py::test_fault_declaration_matches_retry_expectation
             # 同一口径：**注入 ⊇ 判定**，不是逐字符相等。判定比注入窄是安全的（只认这一个产物路径），
             # 比注入宽才致命（一次不触发故障的调用被当成"应该失败"，R3 对所有人永远 fail）。
-            got = calls[0].get("params_match") or {}
-            wide = sorted(k for k, v in match.items() if got.get(k) != v)
+            # 三步起，每一步都要相容——只查首步会让后面的步悄悄放宽（`_filter_expr` 要求全步一致，
+            # 但那是运行期，加载期这里先拦一次）。
+            gots = [c.get("params_match") or {} for c in calls]
+            wide = sorted({k for k, v in match.items()
+                           for got in gots if got.get(k) != v})
             if wide:
                 out.append(Finding(
                     X, f"R3 的匹配条件比注入更宽：{wide} 在 match 里是 "
-                       f"{ {k: match[k] for k in wide} }，R3 写成 {got!r}"))
-            else:
-                out.append(Finding(OK, f"故障条件相容：注入 {match} ⊇ 判定 {got}"))
-            first_err = (failures[0] or {}).get("http_status") if failures else None
-            if calls[0].get("http_status") != first_err:
+                       f"{ {k: match[k] for k in wide} }，R3 写成 {gots}"))
+            elif len({json.dumps(g, sort_keys=True) for g in gots}) > 1:
                 out.append(Finding(
-                    X, f"故障码两处不一致：failures[0].http_status={first_err} / "
-                       f"R3.calls[0].http_status={calls[0].get('http_status')}"))
-            if calls[0].get("status") != "error" or calls[1].get("status") != "success":
-                out.append(Finding(X, "R3 两步的状态应为 error → success"))
+                    X, f"R3 各步的 params_match 不一致：{gots}——当前只支持「重试同一个请求」"))
+            else:
+                out.append(Finding(OK, f"故障条件相容：注入 {match} ⊇ 判定 {gots[0]}"))
+            mismatched = [
+                (i, failures[i].get("http_status"), calls[i].get("http_status"))
+                for i in range(min(len(failures), len(calls) - 1))
+                if failures[i].get("http_status") != calls[i].get("http_status")
+            ]
+            if mismatched:
+                detail = "；".join(f"第 {i + 1} 次 注入 {a} / R3 {b}" for i, a, b in mismatched)
+                out.append(Finding(X, f"故障码两处不一致：{detail}"))
     elif match and not r3:
         out.append(Finding(X, "声明了 fault_injection 但 rubric_credit 里没有 R3_retry_evidence"))
     elif r3:

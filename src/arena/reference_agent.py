@@ -91,6 +91,17 @@ ROOT_CAUSE_OTHER = "other"
 FLAWS = ("correct", "wrong_filter", "extra_param", "no_retry", "wrong_line",
          "no_ask", "ask_late")
 
+# 参考 Agent 的重试预算：**固定 3，不随题目变**。
+#
+# 原来默认 1，理由是"题库里每道题都只失败一次，1 次就够"——这正是问题所在：
+# **题库的性质反过来决定了客户端参数**。真实客户端不会因为"这次只抖一次"就把预算设成 1。
+# 更严重的是，预算 1 让"重试用尽"与"没重试"在数值上不可区分（都只调 1 次），
+# 于是 `retry_exhausted` 这条错误模式从建库起只在手写夹具里出现过，没有一道真任务能走到。
+#
+# 改成 3 之后题库才能表达"连续失败 2 次"这类形态；`execution` 里仍声明
+# `platform_retry: 0`——平台不代劳，重试是**本次被测的能力**，变的只是"合规客户端的预算有多大"。
+DEFAULT_RETRIES = 3
+
 # 骨架 → 它实现了哪些缺陷形态。一套骨架不能"假装实现了"另一套的形态。
 _TEMPLATE_FLAWS = {
     TEMPLATE_DEBUG: ("correct", "wrong_filter", "extra_param", "no_retry"),
@@ -152,7 +163,8 @@ class ReferenceAgent:
     """按 dbg-001 的四步走完，产出 (trace, artifacts, answer)。"""
 
     def __init__(self, task: dict, tools: ToolClient, *,
-                 agent_id: str = AGENT_ID, retries: int = 1, flaw: str = "correct"):
+                 agent_id: str = AGENT_ID, retries: int = DEFAULT_RETRIES,
+                 flaw: str = "correct"):
         if flaw not in FLAWS:
             raise AgentError(f"flaw={flaw!r} 未实现；可选 {FLAWS}")
         self.task = task
@@ -647,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", default=str(
         Path(__file__).resolve().parents[2] / "tasks" / "dbg-001-order-report.yaml"))
     parser.add_argument("--tools", required=True, help="mock 工具服务基址，如 http://127.0.0.1:9001")
-    parser.add_argument("--retries", type=int, default=1)
+    parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--flaw", default="correct", choices=FLAWS,
                         help="故意做错的形态，用于验证评测器区分得开")
     args = parser.parse_args(argv)
