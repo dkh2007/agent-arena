@@ -533,9 +533,14 @@ def test_coverage_all_with_single_target_tool_is_a_vacuous_declaration():
 
 
 def test_no_task_declares_coverage_mode_yet():
-    """反证条件（刻意钉住）：30 道题全是单目标，谁都没写 coverage_mode。
+    """反证条件（刻意钉住）：没有一道题写 coverage_mode。
 
-    出现第一道多目标任务时这条会红——那是**该红**：把白名单改成那几道题的 id，
+    订正（2026-11-28 外评）：**不是「30 道题全是单目标」**——26 道声明一个目标工具，
+    交接族 4 道（`ask-001`…`ask-004`）声明两个（`[ask_policy, fetch_orders]`，靠 `base_task` 继承）。
+    它们仍然没写这个键：那两个工具各有专门断言在管（R6 管有没有问、R2 管数据对不对），
+    在它们上面写 `all` 只会多扣一次分，不多区分一类人。
+
+    出现第一道**靠它才区分得出来**的题时这条会红——那是**该红**：把白名单改成那几道题的 id，
     顺便确认 `all` 不只是执行器里的一段死分支。
     """
     declared = [p.name for p in sorted((ROOT / "tasks").glob("*.yaml"))
