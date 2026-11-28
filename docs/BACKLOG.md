@@ -1740,6 +1740,31 @@
   （默认去重会让"从没问过口径"的 Agent 悄悄做对，那正是这题要抓的）。
   变异验证：去掉去重 ⇒ `test_task_runs_to_full_marks[ask-004]` 立刻红（只有 R2 fail，ratio 0.5）。
   单题自检 8/8 通过（含"每页都有无效行"这条建议——第一版第 4 页没有，改过一版）。
+- **已加（2026-11-28，28 → 29）**：`ret-008-write-gateway-502`（重试族第 8 道，d1）。
+  动机同上一条：**让一条从没被走过的一半路真的走一次**。此前 19 道带故障的题，`target_tool`
+  全是 `fetch_orders`——考的全是"读到一半断了怎么办"，"写完没落地怎么办"一次都没考。
+  这道把 502 打在 `write_report` 上：Agent 拿到 502 若不检查状态码就结束，自己以为交了卷、
+  产物其实没落地；这时 R1 判"没有产物"（`no_output_file`）、R3 判"没重试"（`no_retry`），
+  两条一起读才是完整归因——只读 R1 会归因成「他忘了写」，实际他写了、只是失败一次没重写。
+  - **一个必须记下的坑**：`match: null` 不是笔误。母本 match 是 `{offset_covers: 10}`，
+    而 `_merge_dict` 对 dict 递归合并——写 `match: {path: ...}` 会留下 `offset_covers`，
+    write_report 入参里没有它 ⇒ 永不命中 ⇒ 故障空转，页面一片正常。只有"整体替换成 None"能清空。
+    变异验证过这一点：把 match 改回 `{offset_covers: 10}`，`test_task_runs_to_full_marks` 立刻红
+    （R3 fail、ratio 0.75）——**故障空转在正确形态上就看得出来，不用等放弃形态**。
+  - **顺带补了四条判据**（这几条此前都是空白）：
+    ① `authoring` 自检的 ⑨ 号检查原本两条分支都在 `if match and ...` 里，**空 match 会静默跳过**
+       ——现在有空 match 分支（查 target_tool 存在、R3 指同一个工具）；
+    ② 新增 ⑩c：`offset_covers` 只能用在分页工具上（抄母本只改 target_tool 是最自然的错法，
+       它不报错不崩，只是悄悄退化成"没有故障"）；
+    ③ `test_fault_declaration_matches_retry_expectation` 从「两处相等」放宽成「注入 ⊇ 判定」
+       （ret-008 的注入无过滤、判定只认一个产物路径：语义相容但不相等；真正致命的只有一个方向，
+       判定比注入更宽 ⇒ 一次不触发故障的调用被当成"应该失败"⇒ R3 对所有人永远 fail）；
+    ④ `test_page_ceiling...` 按 `target_tool` 分叉，非分页故障走"不空转"检查。
+  - 三处变异全部 DETECTED：target_tool 拼错（自检两条 X）、R3 指错工具（2 条测试红）、
+    match 留旧键（故障空转，full_marks 红）。
+  - **这一条让 ROADMAP 上一句判断失效**：「换场景要新骨架」是错的——同骨架换
+    `fault_injection.target_tool` 就够。已改。真正还缺的是**第二个失败语义**
+    （重试后仍失败要不要上报/换路），那才需要新的断言形状。
 - **未决（挡在 40 之前）**：`ROADMAP` 记着「12 个 > 计划书的『≤10』」——扩到 40 前必须先定计划书措辞，
   否则对外材料与仓库数字不一致。另见 `authoring-tasks.md` §6 的骨架张力（到 20 题再决定要不要新建骨架）。
 - **谁推**：我（方式 A）；方式 C 需人拍。
