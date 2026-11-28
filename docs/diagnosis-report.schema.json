@@ -285,6 +285,7 @@
             "enum": [
               "trace_not_reported",
               "trace_invalid",
+              "no_target_coverage",
               "dependency_blocked",
               "tool_no_response",
               "invoke_timeout",

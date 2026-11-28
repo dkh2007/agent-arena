@@ -1674,10 +1674,45 @@
 ### [ ] B-24 TD-030 / TD-031：语义借码 + 多目标覆盖率谓词
 
 - **是什么**：TD-030「无目标覆盖」借用了 `trace_invalid` 这个码，语义不精确；TD-031 无 `coverage_mode: any|all`。
-- **为什么现在不做**：单目标任务完全不受影响（现在只有 `dbg-001` 一个）。
+- **为什么现在不做**：单目标任务完全不受影响（30 道题全是单目标，每道只声明一个 `target_tools`）。
 - **做完判据**：出现第一个多目标任务时，覆盖率谓词有声明且有执行者。
 - **验证**：`grep -rn coverage_mode tasks/ src/` → 有声明有执行者
 - **谁推**：我（M2 多目标任务时）。
+
+#### 已落地一半（2026-11-28，执行器侧）
+
+- **TD-031 → 谓词有了执行者**：R4 的 `expected.coverage_mode` 支持 `any`（**缺省**，不写就是它）
+  与 `all`。`all` 要求 `target_tools` 里每一个都至少被调过一次，少一个即
+  `unscored / no_target_coverage`，evidence 带 `covered_tools` / `missing_tools`。
+  两条加载期 fail-fast：取值非法直接抛；`all` 只声明一个工具也抛（`any` 与 `all` 同义＝空声明）。
+- **TD-030 → 不再借码**：零目标调用那一支从 `trace_invalid` 换成 `no_target_coverage`
+  （按 TD-008 惯例扩 DTO 枚举，`docs/diagnosis-report.schema.json` + `diagnosis-report-schema.md` §6）。
+  `trace_invalid` 从此只表示「轨迹本身不可信」，不再兼职表示「没调目标工具」。
+- **为什么覆盖不足判 `unscored` 而不判 `fail`**（这一条是口径，不是实现细节）：R4 断言的是
+  「我检查过的那些调用入参都合规」——全称命题的域是**实际发生的调用**。某个声明的工具一次都没被
+  调过时，它的入参上没有任何观测；判 `fail` 等于把「没看到」写成「看到了违规」，还会把
+  「这一步没做」记到 `tool_param_validation` 这个不属于它的技能名下。漏做由要求该工具的断言判 `fail`。
+  分数不吃亏：`credit.denominator` 固定为总权重，`unscored` 贡献 0。
+- **顺手改了一处夹具**：`fixtures/raw-empty.json` 的 R4 `reason_code` 从 `trace_invalid` 改成
+  `no_target_coverage`（state / ratio / evidence 一字未动）。这是**换词表**，不是改基线：
+  `test_full_recompute_matches_s2_baseline[raw-empty]` 比的是「现算 vs 手写」，词表变了手写那份就得跟着换。
+- **变异验证 2/2**（各改一处 ⇒ 报出预期红灯）：
+  ① 把 `if coverage_mode == "all"` 改成 `if False`（`all` 退化成 `any`）⇒
+  `test_coverage_all_missing_one_tool_is_unscored_with_exact_evidence` 与
+  `..._zero_calls_lists_every_tool_as_missing` 立刻红（KeyError: 'missing_tools'，因为走了 pass 分支）；
+  ② 把该分支的原因码改回 `trace_invalid` ⇒ 同样两条红在 reason_code 上。
+- **反证条件（刻意钉住）**：`test_no_task_declares_coverage_mode_yet` 断言 30 道题一份都没写
+  `coverage_mode`。第一道多目标任务落地时这条会红——**那是该红**，届时把它改成白名单，
+  顺便证明 `all` 不只是执行器里的一段死分支。
+
+#### 还差的一半（下一轮）
+
+- **一道真的需要两个目标工具的任务**，且覆盖失败**不能被别的断言代判**（否则这个开关只是
+  别人的影子）。判据：在该题的"少调一个工具"变体上，只有 R4 从 pass 变 unscored，
+  R1/R2/R3/序列断言的判定不变——即它抓的是「答案对但没做那一步」，与 `R6_ask_before_act`
+  同一种 DNA（过程证据），只是换成「必须复核」。
+- 注意别踩的反例：若两个工具都写进"必须调"的序列断言（`trace_sequence`），`all` 就是冗余的；
+  只有当那个工具**不产出答案**（只做核对）时，覆盖率谓词才是唯一能抓到它的东西。
 
 ---
 

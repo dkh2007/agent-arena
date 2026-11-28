@@ -301,6 +301,7 @@ P5 的最终处置是**不加第 4 技能**，走 gate 通道：`score.disqualif
 |---|---|---|
 | `trace_not_reported` | `unscored` | Agent 完全没上报 trace |
 | `trace_invalid` | `unscored` | 报了但没通过前置校验（call_index 不连续、时间戳倒退等） |
+| `no_target_coverage` | `unscored` | **声明的检查面没被覆盖到**：目标工具一条都没调，或 `coverage_mode: all` 下少调了其中几个。没观测到 ≠ 观察到违规，所以判 unscored 而不判 fail、不归因；「漏做这一步」由要求该工具的断言判 fail。B-24（TD-030）按 TD-008 惯例扩入，取代此前借用 `trace_invalid` 的写法 |
 | `dependency_blocked` | `blocked` | 前置断言未通过，本断言无从判定 |
 | `tool_no_response` | `unscored`（原写 `blocked`，见下方订正） | 工具无响应，产物不可得 |
 | `invoke_timeout` | `unscored`（同上） | 调用超时 |

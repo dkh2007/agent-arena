@@ -149,9 +149,23 @@ calls:
    `expected.schema_ref` 指向的工具表覆盖范围内；缺失/空/越界一律加载期 + 判定期
    fail-fast（`EvaluatorError`），禁止静默回落。
 2. `checked_calls` 的语义是**受检调用数** = 总调用数 − 未知工具数（不是总调用数）。
-3. **无目标工具受检调用**（`target_calls == 0`，含空集）→ `unscored / trace_invalid`，
+3. **无目标工具受检调用**（`target_calls == 0`，含空集）→ `unscored / no_target_coverage`，
    不计掌握度、不产出错误模式。空集不再平凡 `pass`（TD-019b）。
 4. 目标工具的违规照判 `fail`；目标工具集合外的已知工具调用不参与 R4 判定。
+5. **覆盖率谓词**（B-24 / TD-031，2026-11-28）由 `expected.coverage_mode` 决定：
+   - `any`（**缺省**，不写就是这个）＝ 只要有一条目标工具的调用就算覆盖面成立；
+   - `all` ＝ `target_tools` 里**每一个**都必须至少被调过一次，少一个即
+     `unscored / no_target_coverage`（evidence 带 `covered_tools` / `missing_tools`）。
+   - `all` 至少声明两个目标工具：只声明一个时 `any` 与 `all` 同义，写了就是空声明，
+     加载期直接抛 `EvaluatorError`。取值非法同样加载期抛，不许静默回落成 `any`。
 
-「没调目标工具」目前复用 `trace_invalid`（语义借码，TD-030）；若将来需要独立信号
-（如 `no_target_call`），走 DTO 枚举扩展惯例（TD-008）单开一步，不在本页改。
+**为什么覆盖不足判 `unscored` 而不是 `fail`**：R4 说的是「我检查过的那些调用，入参都合规」
+——一条全称命题，域是**实际发生的调用**。某个声明的工具一次都没被调过时，它的入参上
+没有任何观测；判 `fail` 等于把「没看到」写成「看到了违规」，并且会把「这一步没做」
+记到 `tool_param_validation` 这个并不属于它的技能名下。漏做这一步该由要求该工具的断言
+（R1 产物 / R2 结论 / R3 序列 / 序列断言）判 `fail`，一事一判，不代判。
+分数上不会因此吃亏：`credit.denominator` 固定为总权重，`unscored` 贡献 0。
+
+覆盖不足此前借 `trace_invalid`（TD-030 语义借码），现改用独立码 `no_target_coverage`
+（按 TD-008 惯例扩 DTO 枚举）。`trace_invalid` 从此只表示「轨迹本身不可信」，
+不再兼职表示「没调目标工具」。
